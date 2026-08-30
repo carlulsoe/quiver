@@ -12,7 +12,7 @@ const API_SURFACE = [
   "GET /community/api/v2/community/posts/recent — recent posts; authors may include resource identifiers",
 ] as const;
 
-function model(): string {
+export function selectedModel(): string {
   return process.env.XBOW_MODEL ?? "openrouter/z-ai/glm-5.3-flash";
 }
 
@@ -82,7 +82,7 @@ export function createExplorerAgent(
 
   const Explorer = Object.assign(
     function Explorer() {
-      useModel(model(), { thinkingLevel: "medium" });
+      useModel(selectedModel(), { thinkingLevel: "medium" });
       useTool(tools.readApiSurface);
       useTool(tools.login);
       useTool(tools.get);
@@ -142,7 +142,7 @@ export function createValidatorAgent(
 
   return Object.assign(
     function Validator() {
-      useModel(model(), { thinkingLevel: "low" });
+      useModel(selectedModel(), { thinkingLevel: "low" });
       useTool(reproduce);
       useTool(submit);
       return `

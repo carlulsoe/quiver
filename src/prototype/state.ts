@@ -40,15 +40,22 @@ export type PrototypeAction =
   | { type: "validated"; validation: Validation }
   | { type: "failed"; error: string };
 
-export function createState(target: string, requestBudget: number): PrototypeState {
+export function createState(
+  target: string,
+  requestBudget: number,
+  explorerCount = 2,
+): PrototypeState {
   return {
     target,
     phase: "starting",
     requestBudget,
     requestsUsed: 0,
     agents: [
-      { id: "explorer-1", role: "explorer", status: "queued" },
-      { id: "explorer-2", role: "explorer", status: "queued" },
+      ...Array.from({ length: explorerCount }, (_, index): PrototypeAgent => ({
+        id: `explorer-${index + 1}`,
+        role: "explorer",
+        status: "queued",
+      })),
       { id: "validator", role: "validator", status: "queued" },
     ],
     candidates: [],

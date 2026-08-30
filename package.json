@@ -8,6 +8,9 @@
     "target:down": "bash scripts/crapi-down.sh",
     "spike:flue": "bun src/prototype/flue-bun-spike.ts",
     "prototype": "bun src/prototype/cli.ts",
+    "evals": "bunx --bun vitest run --config vitest.evals.config.ts",
+    "evals:json": "bunx --bun vitest run --config vitest.evals.config.ts --reporter=vitest-evals/reporter --reporter=json --outputFile.json=.prototype/eval-results.json",
+    "evals:report": "bunx --bun vitest-evals serve .prototype/eval-results.json",
     "check": "oxfmt --check . && oxlint && tsc --noEmit"
   },
   "dependencies": {
@@ -19,6 +22,8 @@
     "@types/bun": "latest",
     "oxfmt": "latest",
     "oxlint": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "4.1.11",
+    "vitest-evals": "0.16.1"
   }
 }

@@ -21,6 +21,10 @@ interface LocationResponse {
   vehicleLocation?: { latitude?: unknown; longitude?: unknown };
 }
 
+interface VehicleResponse {
+  uuid?: unknown;
+}
+
 export class LocalCrapiGateway {
   readonly #origin: string;
   readonly #requestBudget: number;
@@ -62,6 +66,17 @@ export class LocalCrapiGateway {
       headers:
         this.#testToken && authenticated ? { authorization: `Bearer ${this.#testToken}` } : {},
     });
+  }
+
+  async getOwnVehicleId(): Promise<string> {
+    await this.loginTestUser();
+    const result = await this.get("/identity/api/v2/vehicle/vehicles", true);
+    const vehicles = result.body as VehicleResponse[];
+    const vehicleId = vehicles[0]?.uuid;
+    if (result.status !== 200 || typeof vehicleId !== "string") {
+      throw new Error(`could not resolve the seeded user's vehicle: status=${result.status}`);
+    }
+    return vehicleId;
   }
 
   async reproduceBola(vehicleId: string): Promise<{
