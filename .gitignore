@@ -1,0 +1,7 @@
+node_modules/
+.env
+.flue/
+.prototype/
+*.db
+*.db-shm
+*.db-wal
