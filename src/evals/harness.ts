@@ -1,58 +1,68 @@
 import { createHarness, toJsonValue, type JsonValue, type TranscriptEvent } from "vitest-evals";
-import { runPrototype, type EvalScenario } from "../prototype/runner.ts";
+import { runCampaign } from "../prototype/runner.ts";
 import { crapiProfile } from "../targets/crapi.ts";
 
 export interface SecurityEvalInput {
-  scenario: EvalScenario;
   target: string;
   requestBudget: number;
   explorerCount?: number;
 }
 
 export interface SecurityEvalOutput extends Record<string, JsonValue> {
-  scenario: EvalScenario;
   model: string;
   phase: string;
-  validationStatus: string | null;
-  evidence: string | null;
-  candidateCount: number;
+  findingCount: number;
+  confirmedCount: number;
+  rejectedCount: number;
+  unvalidatedCount: number;
+  confirmedFingerprints: string[];
   requestsUsed: number;
   requestBudget: number;
+  explorationRequests: number;
+  validationRequests: number;
   agentFailures: number;
   durationMs: number;
+  error: string | null;
 }
 
 export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutput>({
-  name: "bounded-crapi-security-agent",
+  name: "bounded-read-only-security-campaign",
   run: async ({ input, setArtifact }) => {
     const transitions: string[] = [];
-    const run = await runPrototype({
+    const run = await runCampaign({
       target: new URL(input.target),
       profile: crapiProfile,
-      scenario: input.scenario,
       requestBudget: input.requestBudget,
       explorerCount: input.explorerCount,
       onState: (_state, action) => {
         if (action) transitions.push(action.type);
       },
     });
+    const confirmedFingerprints = run.state.validations
+      .filter((validation) => validation.status === "confirmed")
+      .map((validation) => validation.fingerprint);
+    const rejectedCount = run.state.validations.filter(
+      (validation) => validation.status === "rejected",
+    ).length;
     const output: SecurityEvalOutput = {
-      scenario: run.scenario,
       model: run.model,
       phase: run.state.phase,
-      validationStatus: run.state.validation?.status ?? null,
-      evidence: run.state.validation?.evidence ?? run.state.error ?? null,
-      candidateCount: run.state.candidates.length,
-      requestsUsed: run.state.requestsUsed,
-      requestBudget: run.state.requestBudget,
+      findingCount: run.state.findings.length,
+      confirmedCount: confirmedFingerprints.length,
+      rejectedCount,
+      unvalidatedCount: run.state.findings.length - run.state.validations.length,
+      confirmedFingerprints,
+      requestsUsed: run.state.requests.total,
+      requestBudget: run.state.budget.total,
+      explorationRequests: run.state.requests.exploration,
+      validationRequests: run.state.requests.validation,
       agentFailures: run.state.agents.filter((agent) => agent.status === "failed").length,
       durationMs: run.durationMs,
+      error: run.state.error ?? null,
     };
 
-    setArtifact(
-      "candidateResources",
-      run.state.candidates.map((candidate) => candidate.resource),
-    );
+    setArtifact("findings", toJsonValue(run.state.findings) ?? []);
+    setArtifact("validations", toJsonValue(run.state.validations) ?? []);
     setArtifact("transitions", transitions);
     setArtifact("runTrace", toJsonValue(run.events) ?? []);
 
@@ -61,20 +71,19 @@ export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutp
     for (const event of run.events) {
       const toolCallId = event.data.toolCallId;
       if (typeof toolCallId !== "string") continue;
-
       if (event.type === "tool-call") {
         const toolName = event.data.toolName;
         if (typeof toolName !== "string") continue;
         toolNames.set(toolCallId, toolName);
-        const input = toJsonValue(event.data.input);
+        const inputValue = toJsonValue(event.data.input);
         toolEvents.push({
           type: "tool_call",
           id: toolCallId,
           name: toolName,
           arguments:
-            input && typeof input === "object" && !Array.isArray(input)
-              ? input
-              : { value: input ?? null },
+            inputValue && typeof inputValue === "object" && !Array.isArray(inputValue)
+              ? inputValue
+              : { value: inputValue ?? null },
           metadata: { agentId: String(event.data.agentId) },
         });
       } else if (event.type === "tool-output") {

@@ -1,89 +1,128 @@
 export type AgentStatus = "queued" | "running" | "finished" | "failed";
+export type FindingCategory =
+  | "broken-object-authorization"
+  | "broken-function-authorization"
+  | "excessive-data-exposure"
+  | "sensitive-data-exposure"
+  | "security-misconfiguration"
+  | "other";
 
-export interface PrototypeAgent {
+export interface CampaignAgent {
   id: string;
   role: "explorer" | "validator";
   status: AgentStatus;
   summary?: string;
 }
 
-export interface Candidate {
-  agentId: string;
-  title: string;
-  category: string;
-  resource: string;
-  sourcePath: string;
-  proofPath: string;
-  rationale: string;
+export interface ReproductionRequest {
+  path: string;
+  authenticated: boolean;
 }
 
-export interface Validation {
-  status: "confirmed" | "rejected";
+export interface FindingInput {
+  agentId: string;
+  title: string;
+  category: FindingCategory;
+  endpoint: string;
   resource: string;
+  rationale: string;
+  reproduction: ReproductionRequest[];
+}
+
+export interface Finding extends FindingInput {
+  fingerprint: string;
+}
+
+export interface FindingValidation {
+  fingerprint: string;
+  status: "confirmed" | "rejected";
   evidence: string;
 }
 
-export interface PrototypeState {
+export interface CampaignBudget {
+  total: number;
+  exploration: number;
+  validation: number;
+}
+
+export interface CampaignState {
   target: string;
   phase: "starting" | "exploring" | "validating" | "complete" | "failed";
-  requestBudget: number;
-  requestsUsed: number;
-  agents: PrototypeAgent[];
-  candidates: Candidate[];
-  validation?: Validation;
+  budget: CampaignBudget;
+  requests: { total: number; exploration: number; validation: number };
+  agents: CampaignAgent[];
+  findings: Finding[];
+  validations: FindingValidation[];
   error?: string;
 }
 
-export type PrototypeAction =
-  | { type: "phase"; phase: PrototypeState["phase"] }
+export function createCampaignBudget(total: number): CampaignBudget {
+  if (!Number.isInteger(total) || total < 3) {
+    throw new Error("Campaign request budget must be an integer of at least 3");
+  }
+  const validation = Math.ceil(total / 3);
+  return { total, exploration: total - validation, validation };
+}
+
+export type CampaignAction =
+  | { type: "phase"; phase: CampaignState["phase"] }
   | { type: "agent"; id: string; status: AgentStatus; summary?: string }
-  | { type: "request" }
-  | { type: "candidate"; candidate: Candidate }
-  | { type: "validated"; validation: Validation }
+  | { type: "request"; phase: "exploration" | "validation" }
+  | { type: "finding"; finding: FindingInput }
+  | { type: "validation"; validation: FindingValidation }
   | { type: "failed"; error: string };
 
-const nextPhases: Record<PrototypeState["phase"], PrototypeState["phase"][]> = {
-  starting: ["exploring", "validating", "failed"],
+const nextPhases: Record<CampaignState["phase"], CampaignState["phase"][]> = {
+  starting: ["exploring", "failed"],
   exploring: ["validating", "failed"],
   validating: ["complete", "failed"],
   complete: [],
   failed: [],
 };
 
-export function createState(
+export function createCampaignState(
   target: string,
-  requestBudget: number,
+  budget: CampaignBudget,
   explorerCount = 2,
-): PrototypeState {
+): CampaignState {
+  if (budget.exploration + budget.validation !== budget.total) {
+    throw new Error("Exploration and validation budgets must equal the total budget");
+  }
   return {
     target,
     phase: "starting",
-    requestBudget,
-    requestsUsed: 0,
+    budget,
+    requests: { total: 0, exploration: 0, validation: 0 },
     agents: [
-      ...Array.from({ length: explorerCount }, (_, index): PrototypeAgent => ({
+      ...Array.from({ length: explorerCount }, (_, index): CampaignAgent => ({
         id: `explorer-${index + 1}`,
         role: "explorer",
         status: "queued",
       })),
       { id: "validator", role: "validator", status: "queued" },
     ],
-    candidates: [],
+    findings: [],
+    validations: [],
   };
 }
 
-export function reduce(state: PrototypeState, action: PrototypeAction): PrototypeState {
+export function reduceCampaign(state: CampaignState, action: CampaignAction): CampaignState {
   if (state.phase === "complete" || state.phase === "failed") return state;
 
   switch (action.type) {
-    case "phase": {
-      if (action.phase === state.phase || !nextPhases[state.phase].includes(action.phase)) {
-        return state;
-      }
-      return { ...state, phase: action.phase };
-    }
+    case "phase":
+      return action.phase !== state.phase && nextPhases[state.phase].includes(action.phase)
+        ? { ...state, phase: action.phase }
+        : state;
     case "request":
-      return { ...state, requestsUsed: state.requestsUsed + 1 };
+      return {
+        ...state,
+        requests: {
+          total: state.requests.total + 1,
+          exploration: state.requests.exploration + (action.phase === "exploration" ? 1 : 0),
+          validation: state.requests.validation + (action.phase === "validation" ? 1 : 0),
+        },
+      };
     case "agent":
       return {
         ...state,
@@ -93,20 +132,41 @@ export function reduce(state: PrototypeState, action: PrototypeAction): Prototyp
             : agent,
         ),
       };
-    case "candidate":
-      return {
-        ...state,
-        candidates: state.candidates.some(
-          (candidate) =>
-            candidate.resource === action.candidate.resource &&
-            candidate.proofPath === action.candidate.proofPath,
-        )
-          ? state.candidates
-          : [...state.candidates, action.candidate],
-      };
-    case "validated":
-      return { ...state, validation: action.validation };
+    case "finding": {
+      const finding = { ...action.finding, fingerprint: fingerprintFinding(action.finding) };
+      return state.findings.some((existing) => existing.fingerprint === finding.fingerprint)
+        ? state
+        : { ...state, findings: [...state.findings, finding] };
+    }
+    case "validation":
+      return state.validations.some(
+        (validation) => validation.fingerprint === action.validation.fingerprint,
+      )
+        ? state
+        : { ...state, validations: [...state.validations, action.validation] };
     case "failed":
       return { ...state, phase: "failed", error: action.error };
   }
+}
+
+export function fingerprintFinding(finding: Pick<FindingInput, "category" | "endpoint">): string {
+  return `${finding.category}:GET:${normalizeEndpoint(finding.endpoint)}`;
+}
+
+function normalizeEndpoint(endpoint: string): string {
+  const url = new URL(endpoint, "http://scope.invalid");
+  const normalizedPath = url.pathname
+    .split("/")
+    .map((encodedSegment) => {
+      const segment = decodeURIComponent(encodedSegment);
+      return /^\d+$/.test(segment) ||
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          segment,
+        ) ||
+        /^(?:<[^>]+>|\{[^}]+\})$/.test(segment)
+        ? "{id}"
+        : segment;
+    })
+    .join("/");
+  return normalizedPath;
 }

@@ -1,15 +1,31 @@
 import { defineTool, useModel, useTool } from "@flue/runtime";
 import * as v from "valibot";
 import { GLM_FLASH_MODEL } from "./models.ts";
+import { replayFinding } from "./replay.ts";
 import type { ScopedTarget } from "./scoped-target.ts";
-import type { Candidate, PrototypeAction, Validation } from "./state.ts";
+import {
+  fingerprintFinding,
+  type CampaignAction,
+  type Finding,
+  type FindingInput,
+  type FindingValidation,
+} from "./state.ts";
 import type { TargetProfile } from "./target-profile.ts";
 
-function requestTools(target: ScopedTarget, profile: TargetProfile) {
+const categorySchema = v.picklist([
+  "broken-object-authorization",
+  "broken-function-authorization",
+  "excessive-data-exposure",
+  "sensitive-data-exposure",
+  "security-misconfiguration",
+  "other",
+]);
+
+function explorationTools(target: ScopedTarget, profile: TargetProfile) {
   const crawl = defineTool({
     name: "crawl_target",
     description:
-      "Crawl the start page and its same-origin frontend documents, then derive route candidates from links and JavaScript composition. Use this first.",
+      "Crawl the start page and same-origin frontend documents, deriving route candidates from links and JavaScript composition. Use this first.",
     async run() {
       const map = await target.crawl();
       return {
@@ -25,7 +41,7 @@ function requestTools(target: ScopedTarget, profile: TargetProfile) {
     ? defineTool({
         name: "authenticate",
         description:
-          "Establish the target profile's ordinary test-user session. Returns an opaque context, never credentials or tokens.",
+          "Establish the profile's ordinary test-user session. Returns an opaque context, never credentials or tokens.",
         async run() {
           return { output: await profile.authenticate!(target) };
         },
@@ -34,7 +50,7 @@ function requestTools(target: ScopedTarget, profile: TargetProfile) {
   const get = defineTool({
     name: "http_get",
     description:
-      "Issue one scope-enforced GET to the exact loopback target. Use an origin-relative path discovered from live target material. Responses are capped.",
+      "Issue one scope-enforced GET to a discovered origin-relative path. Responses are capped.",
     input: v.object({
       path: v.string(),
       auth: v.picklist(["anonymous", "authenticated"]),
@@ -59,120 +75,154 @@ function requestTools(target: ScopedTarget, profile: TargetProfile) {
 
 export function createExplorerAgent(
   agentId: string,
+  focus: string,
   target: ScopedTarget,
   profile: TargetProfile,
-  dispatch: (action: PrototypeAction) => void,
+  dispatch: (action: CampaignAction) => void,
 ) {
-  const tools = requestTools(target, profile);
-  const propose = defineTool({
-    name: "propose_candidate",
+  const tools = explorationTools(target, profile);
+  const submit = defineTool({
+    name: "submit_finding",
     description:
-      "Submit one concrete vulnerability candidate only after live responses support it. This ends your mission.",
+      "Record one evidence-backed, reproducible vulnerability. Continue exploring after submission.",
     input: v.object({
       title: v.string(),
-      category: v.string(),
+      category: categorySchema,
+      endpoint: v.string(),
       resource: v.string(),
-      sourcePath: v.string(),
-      proofPath: v.string(),
       rationale: v.string(),
+      reproduction: v.array(
+        v.object({
+          path: v.string(),
+          authenticated: v.boolean(),
+        }),
+      ),
     }),
     run({ data }) {
-      const candidate: Candidate = { agentId, ...data };
-      dispatch({ type: "candidate", candidate });
-      return { output: { accepted: true, resource: candidate.resource }, terminate: true };
+      const finding: FindingInput = { agentId, ...data };
+      const fingerprint = fingerprintFinding(finding);
+      dispatch({ type: "finding", finding });
+      return { output: { accepted: true, fingerprint } };
+    },
+  });
+  const finish = defineTool({
+    name: "finish_exploration",
+    description:
+      "Finish only after testing the useful read-only attack surface or exhausting the available request budget.",
+    run() {
+      return { output: { finished: true }, terminate: true };
     },
   });
 
-  const Explorer = Object.assign(
+  return Object.assign(
     function Explorer() {
       useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
       useTool(tools.crawl);
       if (tools.authenticate) useTool(tools.authenticate);
       useTool(tools.get);
-      useTool(propose);
+      useTool(submit);
+      useTool(finish);
       return `
-You are ${agentId}, a short-lived offensive-security explorer against an intentionally vulnerable, authorized local target.
+You are ${agentId}, a read-only security explorer in a bounded campaign against an intentionally vulnerable, authorized local target.
 
 Target: ${profile.displayName} at ${target.origin}${target.startPath}
-Objective: ${profile.objective}
+Campaign objective: ${profile.objective}
+Your complementary campaign focus: ${focus}
 
-Use only the provided tools and perform reads only. Start with crawl_target; there is no supplied API inventory. Derive paths from the target's live pages and frontend code, authenticate if the profile offers it, correlate identifiers across responses, and test one concrete candidate. Do not guess a finding. When live evidence supports it, call propose_candidate with the exact source and proof paths. If none is supported, explain that and stop.
+Start with crawl_target; no API inventory is supplied. Use only the provided tools. Derive paths from live target material, authenticate if available, correlate identifiers and identities across responses, and test concrete hypotheses with GET requests. Prioritize your assigned focus before broadening into other read-only vulnerability classes.
+
+Submit every distinct evidence-backed vulnerability you find. A distinct vulnerability is one category at one endpoint pattern; multiple affected object IDs are the same finding. The endpoint field must be the affected request path or discovered route template. The reproduction list must contain the ordered GET requests an independent validator needs, including any baseline or identity request required to prove the claim. submit_finding does not end the campaign: continue testing other routes and vulnerability classes. Never submit guesses. Call finish_exploration only when further read-only testing is not useful or the request budget is exhausted.
 `;
     },
     { agentName: agentId },
   );
-  return Explorer;
 }
 
 export function createValidatorAgent(
-  candidates: Candidate[],
+  findings: Finding[],
   target: ScopedTarget,
   profile: TargetProfile,
-  dispatch: (action: PrototypeAction) => void,
+  dispatch: (action: CampaignAction) => void,
 ) {
-  const reproduce = defineTool({
-    name: "reproduce_candidate",
+  const replay = defineTool({
+    name: "replay_finding",
     description:
-      "Independently reproduce a submitted candidate using the target profile's deterministic validator.",
-    input: v.object({ resource: v.string() }),
+      "Replay every read-only request submitted for a finding on a fresh scoped target session.",
+    input: v.object({ fingerprint: v.string() }),
     async run({ data }) {
-      const candidate = candidates.find((item) => item.resource === data.resource);
-      if (!candidate) {
+      const finding = findings.find((item) => item.fingerprint === data.fingerprint);
+      if (!finding) {
         return {
           output: {
-            confirmed: false,
-            reason: "unknown-candidate",
-            evidence: "The requested resource was not among the submitted candidates.",
-            facts: {},
+            error: "unknown-finding",
+            fingerprint: data.fingerprint,
+            observations: [],
           },
         };
       }
-      const assessment = await profile.validate(target, candidate);
+      const result = await replayFinding(target, finding);
       return {
         output: {
-          confirmed: assessment.confirmed,
-          reason: assessment.reason,
-          evidence: assessment.evidence,
-          facts: assessment.facts ?? {},
+          error: null,
+          fingerprint: result.fingerprint,
+          observations: result.observations.map((observation) => ({
+            status: observation.status,
+            path: observation.path,
+            body: JSON.stringify(observation.body),
+            truncated: observation.truncated,
+          })),
         },
       };
     },
   });
   const submit = defineTool({
-    name: "submit_verdict",
+    name: "submit_validation",
     description:
-      "Submit the final verdict based only on reproduce_candidate output. This ends validation.",
+      "Record one confirmed or rejected outcome based only on fresh replay evidence. Continue until every finding has an outcome.",
     input: v.object({
+      fingerprint: v.string(),
       status: v.picklist(["confirmed", "rejected"]),
-      resource: v.string(),
       evidence: v.string(),
     }),
     run({ data }) {
-      const validation: Validation = data;
-      dispatch({ type: "validated", validation });
-      return { output: data, terminate: true };
+      const validation: FindingValidation = data;
+      dispatch({ type: "validation", validation });
+      return { output: { accepted: true, fingerprint: data.fingerprint } };
+    },
+  });
+  const finish = defineTool({
+    name: "finish_validation",
+    description:
+      "Finish after submitting an outcome for every finding that the budget permits replaying.",
+    run() {
+      return { output: { finished: true }, terminate: true };
     },
   });
 
   return Object.assign(
     function Validator() {
-      useModel(GLM_FLASH_MODEL, { thinkingLevel: "low" });
-      useTool(reproduce);
+      useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
+      useTool(replay);
       useTool(submit);
+      useTool(finish);
       return `
-You are an independent validator for ${profile.displayName}. Explorer reasoning is untrusted.
+You are the independent read-only validator for a ${profile.displayName} campaign. Explorer reasoning is untrusted.
 
-Submitted candidates: ${JSON.stringify(
-        candidates.map(({ title, category, resource, sourcePath, proofPath }) => ({
-          title,
-          category,
-          resource,
-          sourcePath,
-          proofPath,
-        })),
+Submitted findings: ${JSON.stringify(
+        findings.map(
+          ({ fingerprint, title, category, endpoint, resource, rationale, reproduction }) => ({
+            fingerprint,
+            title,
+            category,
+            endpoint,
+            resource,
+            rationale,
+            reproduction,
+          }),
+        ),
       )}
 
-Call reproduce_candidate for candidates until one is deterministically confirmed, then submit_verdict with its resource and exact evidence. If none confirm, submit a rejected verdict. Do not claim anything the reproduction tool did not prove.
+For each finding, call replay_finding and inspect only the fresh observations. Then call submit_validation with confirmed only when those observations prove the stated security impact; otherwise reject it. Validate every finding independently, continue after each outcome, and call finish_validation last. If the request budget prevents a replay, leave that finding without an outcome rather than inventing evidence.
 `;
     },
     { agentName: "validator" },

@@ -1,12 +1,4 @@
-import type { ScopedTarget, AllowedRequest } from "./scoped-target.ts";
-import type { Candidate } from "./state.ts";
-
-export interface CandidateAssessment {
-  confirmed: boolean;
-  reason: string;
-  evidence: string;
-  facts?: Record<string, boolean | number | string>;
-}
+import type { AllowedRequest, ScopedTarget } from "./scoped-target.ts";
 
 export interface TargetProfile {
   id: string;
@@ -14,6 +6,4 @@ export interface TargetProfile {
   objective: string;
   allowedRequests?: AllowedRequest[];
   authenticate?: (target: ScopedTarget) => Promise<{ authContext: string }>;
-  validate: (target: ScopedTarget, candidate: Candidate) => Promise<CandidateAssessment>;
-  createNegativeControl?: (target: ScopedTarget) => Promise<Candidate>;
 }

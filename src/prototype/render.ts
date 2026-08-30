@@ -1,18 +1,26 @@
-import type { PrototypeState } from "./state.ts";
+import type { CampaignState } from "./state.ts";
 
 const bold = "\x1b[1m";
 const dim = "\x1b[2m";
 const reset = "\x1b[0m";
 
-export function render(state: PrototypeState): void {
+export function render(state: CampaignState): void {
+  const confirmed = state.validations.filter(
+    (validation) => validation.status === "confirmed",
+  ).length;
+  const rejected = state.validations.filter(
+    (validation) => validation.status === "rejected",
+  ).length;
+  const unvalidated = state.findings.length - state.validations.length;
+
   if (!process.stdout.isTTY) {
     console.log(
       JSON.stringify({
         phase: state.phase,
-        requests: `${state.requestsUsed}/${state.requestBudget}`,
+        requests: state.requests,
+        budget: state.budget,
         agents: Object.fromEntries(state.agents.map((agent) => [agent.id, agent.status])),
-        candidates: state.candidates.map((candidate) => candidate.resource),
-        validation: state.validation,
+        findings: { total: state.findings.length, confirmed, rejected, unvalidated },
         error: state.error,
       }),
     );
@@ -20,12 +28,19 @@ export function render(state: PrototypeState): void {
   }
 
   console.clear();
-  console.log(`${bold}Quiver — bounded local pentest prototype${reset}`);
-  console.log(`${dim}Target-guided discovery and independent validation${reset}\n`);
+  console.log(`${bold}Quiver — bounded read-only pentest campaign${reset}`);
+  console.log(`${dim}Target-guided discovery and independent replay${reset}\n`);
   console.log(`${bold}target${reset}      ${state.target}`);
   console.log(`${bold}phase${reset}       ${state.phase}`);
-  console.log(`${bold}requests${reset}    ${state.requestsUsed}/${state.requestBudget}`);
-  console.log(`${bold}candidates${reset}  ${state.candidates.length}\n`);
+  console.log(
+    `${bold}requests${reset}    ${state.requests.total}/${state.budget.total} ` +
+      `(explore ${state.requests.exploration}/${state.budget.exploration}, ` +
+      `validate ${state.requests.validation}/${state.budget.validation})`,
+  );
+  console.log(
+    `${bold}findings${reset}    ${state.findings.length} ` +
+      `(confirmed ${confirmed}, rejected ${rejected}, unvalidated ${unvalidated})\n`,
+  );
 
   console.log(`${bold}agents${reset}`);
   for (const agent of state.agents) {
@@ -34,16 +49,15 @@ export function render(state: PrototypeState): void {
     );
   }
 
-  if (state.candidates.length > 0) {
-    console.log(`\n${bold}candidates${reset}`);
-    for (const candidate of state.candidates) {
-      console.log(`  ${candidate.title} — ${candidate.resource}`);
+  if (state.findings.length > 0) {
+    console.log(`\n${bold}findings${reset}`);
+    for (const finding of state.findings) {
+      const status =
+        state.validations.find((validation) => validation.fingerprint === finding.fingerprint)
+          ?.status ?? "unvalidated";
+      console.log(`  [${status}] ${finding.title}`);
+      console.log(`${dim}    ${finding.fingerprint}${reset}`);
     }
-  }
-
-  if (state.validation) {
-    console.log(`\n${bold}validation${reset}  ${state.validation.status}`);
-    console.log(`${dim}${state.validation.evidence}${reset}`);
   }
 
   if (state.error) console.log(`\n${bold}error${reset} ${state.error}`);

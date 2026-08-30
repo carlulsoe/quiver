@@ -1,12 +1,12 @@
 {
-  "name": "quiver-prototype",
+  "name": "quiver",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "target:up": "bash scripts/crapi-up.sh",
     "target:down": "bash scripts/crapi-down.sh",
-    "prototype": "bun src/prototype/cli.ts",
+    "campaign": "bun src/prototype/cli.ts",
     "evals": "bunx --bun vitest run --config vitest.evals.config.ts",
     "evals:json": "bunx --bun vitest run --config vitest.evals.config.ts --reporter=vitest-evals/reporter --reporter=json --outputFile.json=.prototype/eval-results.json",
     "evals:report": "bunx --bun vitest-evals serve .prototype/eval-results.json",

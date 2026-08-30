@@ -4,31 +4,27 @@ import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import { ScopedTarget } from "./scoped-target.ts";
 import {
-  createState,
-  reduce,
-  type Candidate,
-  type PrototypeAction,
-  type PrototypeState,
+  createCampaignBudget,
+  createCampaignState,
+  reduceCampaign,
+  type CampaignAction,
+  type CampaignState,
 } from "./state.ts";
 import type { TargetProfile } from "./target-profile.ts";
 
-export type EvalScenario = "discover" | "negative-control";
-
-export interface RunPrototypeOptions {
+export interface RunCampaignOptions {
   target: URL;
   profile: TargetProfile;
-  scenario?: EvalScenario;
   requestBudget?: number;
   explorerCount?: number;
-  onState?: (state: PrototypeState, action?: PrototypeAction) => void;
+  onState?: (state: CampaignState, action?: CampaignAction) => void;
 }
 
-export interface PrototypeRun {
-  scenario: EvalScenario;
+export interface CampaignRun {
   profileId: string;
   model: string;
   durationMs: number;
-  state: PrototypeState;
+  state: CampaignState;
   events: RunEvent[];
 }
 
@@ -39,11 +35,10 @@ export interface RunEvent {
   data: Record<string, unknown>;
 }
 
-export async function runPrototype(options: RunPrototypeOptions): Promise<PrototypeRun> {
+export async function runCampaign(options: RunCampaignOptions): Promise<CampaignRun> {
   const startedAt = performance.now();
-  const scenario = options.scenario ?? "discover";
-  const requestBudget = options.requestBudget ?? 30;
-  const explorerCount = scenario === "discover" ? (options.explorerCount ?? 2) : 0;
+  const budget = createCampaignBudget(options.requestBudget ?? 30);
+  const explorerCount = options.explorerCount ?? 2;
   const events: RunEvent[] = [];
   const record = (type: RunEvent["type"], data: Record<string, unknown>) => {
     events.push({
@@ -77,102 +72,128 @@ export async function runPrototype(options: RunPrototypeOptions): Promise<Protot
       });
     }
   };
-  let state = createState(
+  let state = createCampaignState(
     `${options.target.origin}${options.target.pathname}${options.target.search}`,
-    requestBudget,
+    budget,
     explorerCount,
   );
-  const dispatch = (action: PrototypeAction) => {
-    state = reduce(state, action);
+  const dispatch = (action: CampaignAction) => {
+    state = reduceCampaign(state, action);
     record("state", {
       action: action.type,
       phase: state.phase,
-      requestsUsed: state.requestsUsed,
-      candidateCount: state.candidates.length,
-      validationStatus: state.validation?.status,
+      requestsUsed: state.requests.total,
+      findingCount: state.findings.length,
+      validationCount: state.validations.length,
     });
     options.onState?.(state, action);
   };
   options.onState?.(state);
 
   try {
-    const target = new ScopedTarget({
+    const explorationTarget = new ScopedTarget({
       target: options.target,
-      requestBudget,
+      requestBudget: budget.exploration,
       allowedRequests: options.profile.allowedRequests,
       onRequest: (request) => {
-        record("request", { ...request });
-        dispatch({ type: "request" });
+        record("request", { phase: "exploration", ...request });
+        dispatch({ type: "request", phase: "exploration" });
       },
     });
-    let candidates: Candidate[];
-
-    if (scenario === "discover") {
-      dispatch({ type: "phase", phase: "exploring" });
-      const explorers = Array.from({ length: explorerCount }, (_, index) =>
-        createExplorerAgent(`explorer-${index + 1}`, target, options.profile, dispatch),
+    dispatch({ type: "phase", phase: "exploring" });
+    const focuses = [
+      "broken authorization and cross-object access, using identifiers discovered in one response against other GET endpoints",
+      "excessive or sensitive data exposure and security misconfiguration",
+    ];
+    const explorers = Array.from({ length: explorerCount }, (_, index) =>
+      createExplorerAgent(
+        `explorer-${index + 1}`,
+        focuses[index] ?? "the remaining read-only attack surface not covered by other explorers",
+        explorationTarget,
+        options.profile,
+        dispatch,
+      ),
+    );
+    {
+      await using _explorerRuntime = await start({ agents: explorers });
+      await Promise.all(
+        explorers.map(async (Explorer, index) => {
+          const id = `explorer-${index + 1}`;
+          dispatch({ type: "agent", id, status: "running" });
+          try {
+            const agent = init(Explorer);
+            const receipt = await agent.dispatch("Begin the bounded read-only campaign.");
+            const reply = await agent.read(receipt, {
+              onEvent: (chunk) => captureAgentEvent(id, chunk),
+            });
+            dispatch({
+              type: "agent",
+              id,
+              status: "finished",
+              summary: reply.text.slice(0, 100),
+            });
+          } catch (error) {
+            dispatch({ type: "agent", id, status: "failed", summary: String(error) });
+          }
+        }),
       );
-      {
-        await using _explorerRuntime = await start({ agents: explorers });
-        await Promise.all(
-          explorers.map(async (Explorer, index) => {
-            const id = `explorer-${index + 1}`;
-            dispatch({ type: "agent", id, status: "running" });
-            try {
-              const agent = init(Explorer);
-              const receipt = await agent.dispatch("Begin the bounded exploration mission.");
-              const reply = await agent.read(receipt, {
-                onEvent: (chunk) => captureAgentEvent(id, chunk),
-              });
-              dispatch({
-                type: "agent",
-                id,
-                status: "finished",
-                summary: reply.text.slice(0, 100),
-              });
-            } catch (error) {
-              dispatch({ type: "agent", id, status: "failed", summary: String(error) });
-            }
-          }),
-        );
-      }
-      if (state.candidates.length === 0)
-        throw new Error("Explorers produced no evidence-backed candidates");
-      candidates = state.candidates;
-    } else {
-      if (!options.profile.createNegativeControl) {
-        throw new Error(`Target profile ${options.profile.id} has no negative control`);
-      }
-      const candidate = await options.profile.createNegativeControl(target);
-      dispatch({ type: "candidate", candidate });
-      candidates = [candidate];
     }
 
     dispatch({ type: "phase", phase: "validating" });
-    dispatch({ type: "agent", id: "validator", status: "running" });
-    const Validator = createValidatorAgent(candidates, target, options.profile, dispatch);
-    {
-      await using _validatorRuntime = await start({ agents: [Validator] });
-      const validator = init(Validator);
-      const receipt = await validator.dispatch("Independently validate the submitted candidates.");
-      const reply = await validator.read(receipt, {
-        onEvent: (chunk) => captureAgentEvent("validator", chunk),
+    if (state.findings.length > 0) {
+      const validationTarget = new ScopedTarget({
+        target: options.target,
+        requestBudget: budget.validation,
+        allowedRequests: options.profile.allowedRequests,
+        onRequest: (request) => {
+          record("request", { phase: "validation", ...request });
+          dispatch({ type: "request", phase: "validation" });
+        },
       });
+      if (
+        options.profile.authenticate &&
+        state.findings.some((finding) =>
+          finding.reproduction.some((request) => request.authenticated),
+        )
+      ) {
+        await options.profile.authenticate(validationTarget);
+      }
+
+      dispatch({ type: "agent", id: "validator", status: "running" });
+      const Validator = createValidatorAgent(
+        state.findings,
+        validationTarget,
+        options.profile,
+        dispatch,
+      );
+      {
+        await using _validatorRuntime = await start({ agents: [Validator] });
+        const validator = init(Validator);
+        const receipt = await validator.dispatch("Validate every submitted campaign finding.");
+        const reply = await validator.read(receipt, {
+          onEvent: (chunk) => captureAgentEvent("validator", chunk),
+        });
+        dispatch({
+          type: "agent",
+          id: "validator",
+          status: "finished",
+          summary: reply.text.slice(0, 100),
+        });
+      }
+    } else {
       dispatch({
         type: "agent",
         id: "validator",
         status: "finished",
-        summary: reply.text.slice(0, 100),
+        summary: "No findings required validation.",
       });
     }
-    if (!state.validation) throw new Error("Validator did not submit a verdict");
     dispatch({ type: "phase", phase: "complete" });
   } catch (error) {
     dispatch({ type: "failed", error: error instanceof Error ? error.message : String(error) });
   }
 
   return {
-    scenario,
     profileId: options.profile.id,
     model: GLM_FLASH_MODEL,
     durationMs: Math.round(performance.now() - startedAt),

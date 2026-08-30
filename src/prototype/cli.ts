@@ -2,16 +2,17 @@
 import { CLI_HELP, parseCliOptions } from "./cli-options.ts";
 import { render } from "./render.ts";
 import { createRunReport, writeRunReport } from "./report.ts";
-import { runPrototype } from "./runner.ts";
+import { runCampaign } from "./runner.ts";
 import { crapiProfile } from "../targets/crapi.ts";
 
 const options = parseCliOptions(process.argv.slice(2));
 if (options.help) {
   console.log(CLI_HELP);
 } else {
-  const run = await runPrototype({
+  const run = await runCampaign({
     target: options.target,
     profile: crapiProfile,
+    requestBudget: options.requestBudget,
     onState: options.quiet ? undefined : render,
   });
 
@@ -21,5 +22,6 @@ if (options.help) {
   }
 
   if (run.state.phase === "failed") process.exitCode = 1;
-  else if (run.state.validation?.status !== "confirmed") process.exitCode = 2;
+  else if (!run.state.validations.some((validation) => validation.status === "confirmed"))
+    process.exitCode = 2;
 }

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "quiver-prototype",
+      "name": "quiver",
       "dependencies": {
         "@earendil-works/pi-ai": "0.83.0",
         "@flue/runtime": "2.0.3",

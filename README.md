@@ -1,72 +1,70 @@
-# Quiver prototype
+# Quiver
 
-Quiver is a bounded Bun CLI for experimenting with Flue security agents against
-authorized local web targets. Given a loopback URL, explorers crawl the live
-frontend, derive route candidates from links and compiled JavaScript, exercise
-read-only requests, and submit concrete findings to a fresh validator.
+Quiver is a bounded Bun CLI for running read-only Flue security campaigns against
+authorized local web targets. Given a loopback URL and an HTTP request budget,
+explorers crawl the live frontend, derive routes from links and compiled
+JavaScript, test concrete hypotheses, and submit every distinct vulnerability
+they can support. A fresh validator independently replays each finding.
 
-The orchestration is target-agnostic. Target-specific authentication,
-objectives, and deterministic proof live behind a small `TargetProfile` adapter.
-The current CLI selects the OWASP crAPI profile; adding a comparable local target
-does not require changing the crawler, agents, run state, reporting, or eval
-harness.
+The campaign engine is target-agnostic. A small `TargetProfile` supplies target
+setup such as authentication and narrowly allowed setup requests. The current
+CLI selects the OWASP crAPI profile; the campaign state, crawler, agents,
+validation, reporting, and eval harness contain no crAPI route inventory or
+vulnerability-specific proof code.
 
-This remains a prototype, not a general-purpose vulnerability scanner. Only test
-systems you own or are explicitly authorized to assess.
+This is not a general-purpose vulnerability scanner. Only test systems you own
+or are explicitly authorized to assess.
 
-## Run it
+## Run a campaign
 
 This requires Bun, Docker Compose, and an `OPENROUTER_API_KEY`. The model is fixed
 to `openrouter/z-ai/glm-5.3-flash`.
 
-Start the pinned OWASP crAPI 1.1.5 checkout on loopback port 8888:
+Start the pinned OWASP crAPI 1.1.5 checkout and run a campaign:
 
 ```sh
 bun run target:up
-bun run prototype -- http://127.0.0.1:8888
+bun run campaign -- http://127.0.0.1:8888 --budget 36
 ```
 
-The supplied URL is the crawl start. A path is allowed, so the same CLI can start
-from a specific application surface:
+The URL is the crawl start and may include a path. `--budget` is the total HTTP
+request budget. Quiver reserves one third for independent validation and gives
+the remainder to exploration. Explorers share their portion; the validator gets
+a fresh scoped target and authenticated session.
+
+Write the complete finding set, outcomes, budget usage, HTTP activity, and Flue
+tool trace to JSON without the live terminal view:
 
 ```sh
-bun run prototype -- http://127.0.0.1:8888/dashboard
-```
-
-Write a structured report without the live terminal view:
-
-```sh
-bun run prototype -- http://127.0.0.1:8888 \
+bun run campaign -- http://127.0.0.1:8888 \
+  --budget 36 \
   --quiet \
   --report .prototype/runs/latest.json
 ```
 
-Run `bun run prototype -- --help` for CLI options. Stop crAPI without deleting
-its database volumes with `bun run target:down`.
+Run `bun run campaign -- --help` for all options. Stop crAPI without deleting its
+database volumes with `bun run target:down`.
 
-## Architecture and boundaries
+## Campaign behavior
 
-`ScopedTarget` is the deep boundary around HTTP. It owns exact-origin scope,
-the shared request budget, redirects, timeouts, response caps, authenticated
-session headers, and a cached same-origin crawl. The crawler follows frontend
-documents and derives routes from ordinary links, quoted paths, and JavaScript
-string composition. Agents receive that live map through `crawl_target`; there
-is no supplied crAPI API inventory.
+Explorers begin with `crawl_target`; there is no supplied endpoint list. They may
+submit multiple findings and continue exploring after each submission. Findings
+carry an ordered reproduction plan containing only anonymous or authenticated
+GET requests.
 
-The crAPI profile supplies only the details the generic engine cannot infer:
-
-- The assessment objective
-- An opaque seeded-user authentication procedure
-- A whitelist for the login POST
-- Deterministic BOLA validation and its negative control
+Quiver deduplicates findings by vulnerability category and normalized endpoint.
+For example, two different vehicle UUIDs affected by the same object-level
+authorization flaw become one finding. The validator replays every unique
+finding and records it as confirmed or rejected. If the validation budget is
+insufficient, the report leaves the remaining findings explicitly unvalidated.
 
 Current hard boundaries:
 
 - Loopback HTTP(S) targets only
 - Agent traffic is GET-only; a profile may whitelist exact setup POSTs
 - Exact-origin enforcement with redirects disabled
-- Thirty-request shared default budget
-- 12 KB response cap for agent-visible requests
+- Shared campaign budget with a reserved validation portion
+- 12 KB cap for agent-visible responses
 - No shell, browser, filesystem, or arbitrary network tools exposed to agents
 
 ## Evals
@@ -78,35 +76,24 @@ bun run target:up
 bun run evals
 ```
 
-It checks two behavioral contracts:
+The campaign contract requires the agents to crawl the live target, submit
+unique findings, independently replay every submitted finding, confirm at least
+one result, leave no finding unvalidated, and remain within the total request
+budget. The runtime has no dedicated BOLA mode or negative-control scenario.
 
-- Explorers must begin from live crawl discovery, find a candidate, and obtain a
-  deterministic confirmed verdict within budget.
-- Given the authenticated user's own vehicle, the model-backed validator must
-  reject the claim rather than create a false confirmation.
-
-The discovery contract explicitly requires `crawl_target`, `propose_candidate`,
-`reproduce_candidate`, and `submit_verdict` in the trace. A separate live HTTP
-integration test proves that the generic crawler derives crAPI's relevant routes
-from the served frontend bundle.
-
-Run repeated GLM discovery trials with:
+Run repeated GLM trials and inspect the generated report with:
 
 ```sh
 XBOW_EVAL_TRIALS=5 bun run evals:json
+bun run evals:report
 ```
-
-Inspect `.prototype/eval-results.json` with `bun run evals:report`.
 
 ## Developer loop
 
 ```sh
-bun run test              # fast crawler, state, target-profile, CLI, and report tests
-bun run test:integration  # live crawl and deterministic proof against local crAPI
+bun run test              # fast campaign, replay, crawler, CLI, and report tests
+bun run test:integration  # live crawl and authentication checks against crAPI
 bun run test:all          # fast and live HTTP suites
-bun run evals             # live GLM agent acceptance suite
+bun run evals             # live GLM campaign acceptance suite
 bun run verify            # formatting, linting, types, and fast tests
 ```
-
-Use `bun run test:watch` for the fast loop. The live layers remain separate so
-ordinary refactoring does not spend model tokens.

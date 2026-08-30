@@ -1,14 +1,8 @@
 import type { ScopedTarget } from "../prototype/scoped-target.ts";
-import type { Candidate } from "../prototype/state.ts";
 import type { TargetProfile } from "../prototype/target-profile.ts";
-import { assessVehicleLocationBola } from "./crapi-validator.ts";
 
 interface LoginResponse {
   token?: unknown;
-}
-
-interface VehicleResponse {
-  uuid?: unknown;
 }
 
 async function authenticate(target: ScopedTarget): Promise<{ authContext: string }> {
@@ -31,54 +25,11 @@ async function authenticate(target: ScopedTarget): Promise<{ authContext: string
   return { authContext: "ordinary-test-user" };
 }
 
-async function validate(target: ScopedTarget, candidate: Candidate) {
-  const proofMatch = candidate.proofPath.match(
-    /^\/identity\/api\/v2\/vehicle\/([^/?#]+)\/location$/,
-  );
-  if (!proofMatch) {
-    return {
-      confirmed: false,
-      reason: "invalid-proof-path",
-      evidence: "The submitted proof path is not a crAPI vehicle-location route.",
-    };
-  }
-  await authenticate(target);
-  const dashboard = await target.request({
-    path: "/identity/api/v2/user/dashboard",
-    authenticated: true,
-  });
-  const location = await target.request({ path: candidate.proofPath, authenticated: true });
-  return assessVehicleLocationBola(dashboard, location);
-}
-
-async function createNegativeControl(target: ScopedTarget): Promise<Candidate> {
-  await authenticate(target);
-  const result = await target.request({
-    path: "/identity/api/v2/vehicle/vehicles",
-    authenticated: true,
-  });
-  const vehicleId = (result.body as VehicleResponse[])[0]?.uuid;
-  if (result.status !== 200 || typeof vehicleId !== "string") {
-    throw new Error(`could not resolve the test user's vehicle: status=${result.status}`);
-  }
-  return {
-    agentId: "negative-control",
-    title: "Authenticated user's own vehicle location",
-    category: "BOLA",
-    resource: vehicleId,
-    sourcePath: "/identity/api/v2/vehicle/vehicles",
-    proofPath: `/identity/api/v2/vehicle/${encodeURIComponent(vehicleId)}/location`,
-    rationale: "Negative control: this vehicle belongs to the authenticated user.",
-  };
-}
-
 export const crapiProfile: TargetProfile = {
   id: "crapi",
   displayName: "OWASP crAPI",
   objective:
-    "Find one BOLA where an ordinary authenticated user can read another user's vehicle location. Set proofPath to the exact location endpoint tested.",
+    "Find as many distinct read-only vulnerabilities as the request budget supports. Prioritize broken authorization, excessive data exposure, sensitive data exposure, and security misconfiguration. Treat multiple affected resources at the same endpoint as one vulnerability.",
   allowedRequests: [{ method: "POST", path: "/identity/api/auth/login" }],
   authenticate,
-  validate,
-  createNegativeControl,
 };

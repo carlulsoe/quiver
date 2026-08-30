@@ -3,6 +3,7 @@ export interface CliOptions {
   reportPath?: string;
   quiet: boolean;
   help: boolean;
+  requestBudget: number;
 }
 
 export function parseCliOptions(args: string[]): CliOptions {
@@ -11,6 +12,7 @@ export function parseCliOptions(args: string[]): CliOptions {
   let quiet = false;
   let help = false;
   let targetProvided = false;
+  let requestBudget = 30;
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -19,6 +21,13 @@ export function parseCliOptions(args: string[]): CliOptions {
       if (!reportPath || reportPath.startsWith("-")) {
         throw new Error("--report requires a file path");
       }
+      index += 1;
+    } else if (argument === "--budget") {
+      const value = Number(args[index + 1]);
+      if (!Number.isInteger(value) || value < 3) {
+        throw new Error("--budget must be an integer of at least 3");
+      }
+      requestBudget = value;
       index += 1;
     } else if (argument === "--quiet") {
       quiet = true;
@@ -33,13 +42,14 @@ export function parseCliOptions(args: string[]): CliOptions {
     }
   }
 
-  return { target, reportPath, quiet, help };
+  return { target, reportPath, quiet, help, requestBudget };
 }
 
-export const CLI_HELP = `Usage: bun run prototype -- [target] [options]
+export const CLI_HELP = `Usage: bun run campaign -- [target] [options]
 
 Options:
   --report <path>  Write a structured JSON run report
+  --budget <count> Total HTTP request budget (default: 30)
   --quiet          Suppress live state rendering
   -h, --help       Show this help
 `;
