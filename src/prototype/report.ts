@@ -3,9 +3,10 @@ import { mkdir } from "node:fs/promises";
 import type { PrototypeRun } from "./runner.ts";
 
 export interface RunReport {
-  schemaVersion: 1;
+  schemaVersion: 2;
   generatedAt: string;
   scenario: PrototypeRun["scenario"];
+  profileId: string;
   model: string;
   target: string;
   outcome: {
@@ -22,9 +23,10 @@ export interface RunReport {
 
 export function createRunReport(run: PrototypeRun, generatedAt = new Date()): RunReport {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: generatedAt.toISOString(),
     scenario: run.scenario,
+    profileId: run.profileId,
     model: run.model,
     target: run.state.target,
     outcome: {

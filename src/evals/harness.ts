@@ -1,5 +1,6 @@
 import { createHarness, toJsonValue, type JsonValue, type TranscriptEvent } from "vitest-evals";
 import { runPrototype, type EvalScenario } from "../prototype/runner.ts";
+import { crapiProfile } from "../targets/crapi.ts";
 
 export interface SecurityEvalInput {
   scenario: EvalScenario;
@@ -27,6 +28,7 @@ export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutp
     const transitions: string[] = [];
     const run = await runPrototype({
       target: new URL(input.target),
+      profile: crapiProfile,
       scenario: input.scenario,
       requestBudget: input.requestBudget,
       explorerCount: input.explorerCount,
@@ -48,8 +50,8 @@ export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutp
     };
 
     setArtifact(
-      "candidateVehicleIds",
-      run.state.candidates.map((candidate) => candidate.vehicleId),
+      "candidateResources",
+      run.state.candidates.map((candidate) => candidate.resource),
     );
     setArtifact("transitions", transitions);
     setArtifact("runTrace", toJsonValue(run.events) ?? []);

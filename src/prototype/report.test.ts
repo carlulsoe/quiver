@@ -13,13 +13,14 @@ describe("run report", () => {
       type: "validated",
       validation: {
         status: "confirmed",
-        vehicleId: "vehicle-2",
+        resource: "vehicle-2",
         evidence: "cross-owner coordinates returned",
       },
     });
     const state = reduce(validated, { type: "phase", phase: "complete" });
     const run = {
       scenario: "discover",
+      profileId: "crapi",
       model: "openrouter/z-ai/glm-5.3-flash",
       durationMs: 1234,
       state,
@@ -34,9 +35,10 @@ describe("run report", () => {
     } as PrototypeRun;
 
     expect(createRunReport(run, new Date("2026-08-30T21:00:00.000Z"))).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatedAt: "2026-08-30T21:00:00.000Z",
       scenario: "discover",
+      profileId: "crapi",
       model: "openrouter/z-ai/glm-5.3-flash",
       target: "http://127.0.0.1:8888",
       outcome: {

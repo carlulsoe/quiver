@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assessVehicleLocationBola } from "./bola.ts";
+import { assessVehicleLocationBola } from "./crapi-validator.ts";
 
 describe("vehicle-location BOLA assessment", () => {
   it("confirms coordinates returned for a different owner", () => {

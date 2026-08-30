@@ -1,13 +1,8 @@
-/**
- * PROTOTYPE QUESTION
- * Can a bounded Flue discovery loop reliably confirm a real crAPI BOLA while
- * rejecting an authenticated user's own vehicle as a negative control?
- */
 import { init, type ConversationStreamChunk } from "@flue/runtime";
 import { start } from "@flue/runtime/node";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
-import { LocalCrapiGateway } from "./gateway.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
+import { ScopedTarget } from "./scoped-target.ts";
 import {
   createState,
   reduce,
@@ -15,11 +10,13 @@ import {
   type PrototypeAction,
   type PrototypeState,
 } from "./state.ts";
+import type { TargetProfile } from "./target-profile.ts";
 
-export type EvalScenario = "discover" | "safe-control";
+export type EvalScenario = "discover" | "negative-control";
 
 export interface RunPrototypeOptions {
   target: URL;
+  profile: TargetProfile;
   scenario?: EvalScenario;
   requestBudget?: number;
   explorerCount?: number;
@@ -28,6 +25,7 @@ export interface RunPrototypeOptions {
 
 export interface PrototypeRun {
   scenario: EvalScenario;
+  profileId: string;
   model: string;
   durationMs: number;
   state: PrototypeState;
@@ -79,7 +77,11 @@ export async function runPrototype(options: RunPrototypeOptions): Promise<Protot
       });
     }
   };
-  let state = createState(options.target.origin, requestBudget, explorerCount);
+  let state = createState(
+    `${options.target.origin}${options.target.pathname}${options.target.search}`,
+    requestBudget,
+    explorerCount,
+  );
   const dispatch = (action: PrototypeAction) => {
     state = reduce(state, action);
     record("state", {
@@ -94,23 +96,22 @@ export async function runPrototype(options: RunPrototypeOptions): Promise<Protot
   options.onState?.(state);
 
   try {
-    const gateway = new LocalCrapiGateway({
+    const target = new ScopedTarget({
       target: options.target,
       requestBudget,
+      allowedRequests: options.profile.allowedRequests,
       onRequest: (request) => {
         record("request", { ...request });
         dispatch({ type: "request" });
       },
     });
-    await gateway.healthcheck();
     let candidates: Candidate[];
 
     if (scenario === "discover") {
       dispatch({ type: "phase", phase: "exploring" });
       const explorers = Array.from({ length: explorerCount }, (_, index) =>
-        createExplorerAgent(`explorer-${index + 1}`, gateway, dispatch),
+        createExplorerAgent(`explorer-${index + 1}`, target, options.profile, dispatch),
       );
-
       {
         await using _explorerRuntime = await start({ agents: explorers });
         await Promise.all(
@@ -119,7 +120,7 @@ export async function runPrototype(options: RunPrototypeOptions): Promise<Protot
             dispatch({ type: "agent", id, status: "running" });
             try {
               const agent = init(Explorer);
-              const receipt = await agent.dispatch("Begin the bounded BOLA exploration mission.");
+              const receipt = await agent.dispatch("Begin the bounded exploration mission.");
               const reply = await agent.read(receipt, {
                 onEvent: (chunk) => captureAgentEvent(id, chunk),
               });
@@ -135,27 +136,21 @@ export async function runPrototype(options: RunPrototypeOptions): Promise<Protot
           }),
         );
       }
-
-      if (state.candidates.length === 0) {
+      if (state.candidates.length === 0)
         throw new Error("Explorers produced no evidence-backed candidates");
-      }
       candidates = state.candidates;
     } else {
-      const vehicleId = await gateway.getOwnVehicleId();
-      const safeCandidate: Candidate = {
-        agentId: "negative-control",
-        vehicleId,
-        sourcePath: "/identity/api/v2/vehicle/vehicles",
-        locationPath: `/identity/api/v2/vehicle/${vehicleId}/location`,
-        rationale: "Negative control: this vehicle belongs to the authenticated user.",
-      };
-      dispatch({ type: "candidate", candidate: safeCandidate });
-      candidates = [safeCandidate];
+      if (!options.profile.createNegativeControl) {
+        throw new Error(`Target profile ${options.profile.id} has no negative control`);
+      }
+      const candidate = await options.profile.createNegativeControl(target);
+      dispatch({ type: "candidate", candidate });
+      candidates = [candidate];
     }
 
     dispatch({ type: "phase", phase: "validating" });
     dispatch({ type: "agent", id: "validator", status: "running" });
-    const Validator = createValidatorAgent(candidates, gateway, dispatch);
+    const Validator = createValidatorAgent(candidates, target, options.profile, dispatch);
     {
       await using _validatorRuntime = await start({ agents: [Validator] });
       const validator = init(Validator);
@@ -170,7 +165,6 @@ export async function runPrototype(options: RunPrototypeOptions): Promise<Protot
         summary: reply.text.slice(0, 100),
       });
     }
-
     if (!state.validation) throw new Error("Validator did not submit a verdict");
     dispatch({ type: "phase", phase: "complete" });
   } catch (error) {
@@ -179,6 +173,7 @@ export async function runPrototype(options: RunPrototypeOptions): Promise<Protot
 
   return {
     scenario,
+    profileId: options.profile.id,
     model: GLM_FLASH_MODEL,
     durationMs: Math.round(performance.now() - startedAt),
     state,

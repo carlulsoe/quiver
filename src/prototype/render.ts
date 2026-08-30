@@ -11,7 +11,7 @@ export function render(state: PrototypeState): void {
         phase: state.phase,
         requests: `${state.requestsUsed}/${state.requestBudget}`,
         agents: Object.fromEntries(state.agents.map((agent) => [agent.id, agent.status])),
-        candidates: state.candidates.map((candidate) => candidate.vehicleId),
+        candidates: state.candidates.map((candidate) => candidate.resource),
         validation: state.validation,
         error: state.error,
       }),
@@ -20,8 +20,8 @@ export function render(state: PrototypeState): void {
   }
 
   console.clear();
-  console.log(`${bold}Quiver — crAPI BOLA prototype${reset}`);
-  console.log(`${dim}Throwaway logic and orchestration spike${reset}\n`);
+  console.log(`${bold}Quiver — bounded local pentest prototype${reset}`);
+  console.log(`${dim}Target-guided discovery and independent validation${reset}\n`);
   console.log(`${bold}target${reset}      ${state.target}`);
   console.log(`${bold}phase${reset}       ${state.phase}`);
   console.log(`${bold}requests${reset}    ${state.requestsUsed}/${state.requestBudget}`);
@@ -35,8 +35,10 @@ export function render(state: PrototypeState): void {
   }
 
   if (state.candidates.length > 0) {
-    console.log(`\n${bold}candidate vehicle IDs${reset}`);
-    for (const candidate of state.candidates) console.log(`  ${candidate.vehicleId}`);
+    console.log(`\n${bold}candidates${reset}`);
+    for (const candidate of state.candidates) {
+      console.log(`  ${candidate.title} — ${candidate.resource}`);
+    }
   }
 
   if (state.validation) {

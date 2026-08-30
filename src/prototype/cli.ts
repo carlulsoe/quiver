@@ -3,6 +3,7 @@ import { CLI_HELP, parseCliOptions } from "./cli-options.ts";
 import { render } from "./render.ts";
 import { createRunReport, writeRunReport } from "./report.ts";
 import { runPrototype } from "./runner.ts";
+import { crapiProfile } from "../targets/crapi.ts";
 
 const options = parseCliOptions(process.argv.slice(2));
 if (options.help) {
@@ -10,6 +11,7 @@ if (options.help) {
 } else {
   const run = await runPrototype({
     target: options.target,
+    profile: crapiProfile,
     onState: options.quiet ? undefined : render,
   });
 

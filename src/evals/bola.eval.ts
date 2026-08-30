@@ -50,9 +50,9 @@ describeEval("crAPI vehicle-location BOLA", { harness: securityHarness }, (it) =
       expect(result.output.requestsUsed).toBeLessThanOrEqual(result.output.requestBudget);
       expect(toolCalls(result).map((call) => call.name)).toEqual(
         expect.arrayContaining([
-          "read_api_surface",
-          "propose_bola_candidate",
-          "reproduce_bola",
+          "crawl_target",
+          "propose_candidate",
+          "reproduce_candidate",
           "submit_verdict",
         ]),
       );
@@ -62,7 +62,7 @@ describeEval("crAPI vehicle-location BOLA", { harness: securityHarness }, (it) =
 
   it("rejects the authenticated user's own vehicle", async ({ run }) => {
     const result = await run({
-      scenario: "safe-control",
+      scenario: "negative-control",
       target,
       requestBudget: 10,
     });
@@ -74,7 +74,7 @@ describeEval("crAPI vehicle-location BOLA", { harness: securityHarness }, (it) =
     });
     expect(result.output.requestsUsed).toBeLessThanOrEqual(result.output.requestBudget);
     expect(toolCalls(result).map((call) => call.name)).toEqual([
-      "reproduce_bola",
+      "reproduce_candidate",
       "submit_verdict",
     ]);
     await expect(result).toSatisfyJudge(BehavioralContractJudge);

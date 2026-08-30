@@ -1,9 +1,4 @@
-export interface HttpObservation {
-  status: number;
-  path: string;
-  body: unknown;
-  truncated?: boolean;
-}
+import type { HttpObservation } from "../prototype/scoped-target.ts";
 
 interface DashboardResponse {
   name?: unknown;

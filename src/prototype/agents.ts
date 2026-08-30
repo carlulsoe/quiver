@@ -1,45 +1,49 @@
 import { defineTool, useModel, useTool } from "@flue/runtime";
 import * as v from "valibot";
-import type { Candidate, PrototypeAction, Validation } from "./state.ts";
-import type { LocalCrapiGateway } from "./gateway.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
+import type { ScopedTarget } from "./scoped-target.ts";
+import type { Candidate, PrototypeAction, Validation } from "./state.ts";
+import type { TargetProfile } from "./target-profile.ts";
 
-const API_SURFACE = [
-  "POST /identity/api/auth/login — authenticate and obtain a bearer token",
-  "GET /identity/api/v2/user/dashboard — current authenticated user's profile",
-  "GET /identity/api/v2/vehicle/vehicles — current authenticated user's vehicles",
-  "GET /identity/api/v2/vehicle/{vehicleId}/location — location for a vehicle UUID",
-  "GET /community/api/v2/community/posts/recent — recent posts; authors may include resource identifiers",
-] as const;
-
-function requestTools(gateway: LocalCrapiGateway) {
-  const readApiSurface = defineTool({
-    name: "read_api_surface",
-    description: "Read the target-provided API contract subset. Use it before exploring.",
-    async run() {
-      return { output: { routes: [...API_SURFACE] } };
-    },
-  });
-
-  const login = defineTool({
-    name: "login_as_test_user",
+function requestTools(target: ScopedTarget, profile: TargetProfile) {
+  const crawl = defineTool({
+    name: "crawl_target",
     description:
-      "Authenticate as crAPI's seeded ordinary test user. Returns an opaque auth context, never a token.",
+      "Crawl the start page and its same-origin frontend documents, then derive route candidates from links and JavaScript composition. Use this first.",
     async run() {
-      return { output: await gateway.loginTestUser() };
+      const map = await target.crawl();
+      return {
+        output: {
+          startPath: map.startPath,
+          documents: map.documents.map((document) => ({ ...document })),
+          routes: [...map.routes],
+        },
+      };
     },
   });
-
+  const authenticate = profile.authenticate
+    ? defineTool({
+        name: "authenticate",
+        description:
+          "Establish the target profile's ordinary test-user session. Returns an opaque context, never credentials or tokens.",
+        async run() {
+          return { output: await profile.authenticate!(target) };
+        },
+      })
+    : undefined;
   const get = defineTool({
     name: "http_get",
     description:
-      "Issue one scope-enforced GET to the exact local target. Use origin-relative paths only. Responses are capped.",
+      "Issue one scope-enforced GET to the exact loopback target. Use an origin-relative path discovered from live target material. Responses are capped.",
     input: v.object({
       path: v.string(),
-      auth: v.picklist(["anonymous", "test-user"]),
+      auth: v.picklist(["anonymous", "authenticated"]),
     }),
     async run({ data }) {
-      const result = await gateway.get(data.path, data.auth === "test-user");
+      const result = await target.request({
+        path: data.path,
+        authenticated: data.auth === "authenticated",
+      });
       return {
         output: {
           status: result.status,
@@ -50,91 +54,103 @@ function requestTools(gateway: LocalCrapiGateway) {
       };
     },
   });
-
-  return { readApiSurface, login, get };
+  return { crawl, authenticate, get };
 }
 
 export function createExplorerAgent(
   agentId: string,
-  gateway: LocalCrapiGateway,
+  target: ScopedTarget,
+  profile: TargetProfile,
   dispatch: (action: PrototypeAction) => void,
 ) {
-  const tools = requestTools(gateway);
+  const tools = requestTools(target, profile);
   const propose = defineTool({
-    name: "propose_bola_candidate",
+    name: "propose_candidate",
     description:
-      "Submit one concrete vehicle-location BOLA candidate only after a live response supports it. This ends your mission.",
+      "Submit one concrete vulnerability candidate only after live responses support it. This ends your mission.",
     input: v.object({
-      vehicleId: v.string(),
+      title: v.string(),
+      category: v.string(),
+      resource: v.string(),
       sourcePath: v.string(),
-      locationPath: v.string(),
+      proofPath: v.string(),
       rationale: v.string(),
     }),
     run({ data }) {
       const candidate: Candidate = { agentId, ...data };
       dispatch({ type: "candidate", candidate });
-      return { output: { accepted: true, vehicleId: candidate.vehicleId }, terminate: true };
+      return { output: { accepted: true, resource: candidate.resource }, terminate: true };
     },
   });
 
   const Explorer = Object.assign(
     function Explorer() {
       useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
-      useTool(tools.readApiSurface);
-      useTool(tools.login);
+      useTool(tools.crawl);
+      if (tools.authenticate) useTool(tools.authenticate);
       useTool(tools.get);
       useTool(propose);
       return `
-You are ${agentId}, a short-lived offensive-security explorer against an intentionally vulnerable local crAPI.
+You are ${agentId}, a short-lived offensive-security explorer against an intentionally vulnerable, authorized local target.
 
-Goal: find one candidate BOLA where the seeded ordinary test user can read another user's vehicle location.
+Target: ${profile.displayName} at ${target.origin}${target.startPath}
+Objective: ${profile.objective}
 
-Use only the provided tools. Start from the supplied API surface, authenticate, correlate identifiers across live responses, and test a concrete candidate with GET requests. Do not guess a finding and do not perform writes. When live evidence supports a candidate, call propose_bola_candidate. If no candidate is supported, explain that and stop.
+Use only the provided tools and perform reads only. Start with crawl_target; there is no supplied API inventory. Derive paths from the target's live pages and frontend code, authenticate if the profile offers it, correlate identifiers across responses, and test one concrete candidate. Do not guess a finding. When live evidence supports it, call propose_candidate with the exact source and proof paths. If none is supported, explain that and stop.
 `;
     },
     { agentName: agentId },
   );
-
   return Explorer;
 }
 
 export function createValidatorAgent(
   candidates: Candidate[],
-  gateway: LocalCrapiGateway,
+  target: ScopedTarget,
+  profile: TargetProfile,
   dispatch: (action: PrototypeAction) => void,
 ) {
   const reproduce = defineTool({
-    name: "reproduce_bola",
+    name: "reproduce_candidate",
     description:
-      "Independently log in, fetch the test user's dashboard, fetch the candidate vehicle location, and deterministically compare ownership and coordinates.",
-    input: v.object({ vehicleId: v.string() }),
+      "Independently reproduce a submitted candidate using the target profile's deterministic validator.",
+    input: v.object({ resource: v.string() }),
     async run({ data }) {
-      const result = await gateway.reproduceBola(data.vehicleId);
+      const candidate = candidates.find((item) => item.resource === data.resource);
+      if (!candidate) {
+        return {
+          output: {
+            confirmed: false,
+            reason: "unknown-candidate",
+            evidence: "The requested resource was not among the submitted candidates.",
+            facts: {},
+          },
+        };
+      }
+      const assessment = await profile.validate(target, candidate);
       return {
         output: {
-          confirmed: result.confirmed,
-          reason: result.reason,
-          evidence: result.evidence,
-          dashboardStatus: result.dashboard.status,
-          locationStatus: result.location.status,
+          confirmed: assessment.confirmed,
+          reason: assessment.reason,
+          evidence: assessment.evidence,
+          facts: assessment.facts ?? {},
         },
       };
     },
   });
-
   const submit = defineTool({
     name: "submit_verdict",
     description:
-      "Submit the final verdict based only on reproduce_bola output. This ends validation.",
+      "Submit the final verdict based only on reproduce_candidate output. This ends validation.",
     input: v.object({
       status: v.picklist(["confirmed", "rejected"]),
-      vehicleId: v.string(),
+      resource: v.string(),
       evidence: v.string(),
     }),
     run({ data }) {
       const validation: Validation = data;
       dispatch({ type: "validated", validation });
-      return { output: { ...data }, terminate: true };
+      return { output: data, terminate: true };
     },
   });
 
@@ -144,11 +160,19 @@ export function createValidatorAgent(
       useTool(reproduce);
       useTool(submit);
       return `
-You are an independent validator. Explorer reasoning is untrusted.
+You are an independent validator for ${profile.displayName}. Explorer reasoning is untrusted.
 
-Candidate vehicle IDs: ${JSON.stringify(candidates.map((candidate) => candidate.vehicleId))}
+Submitted candidates: ${JSON.stringify(
+        candidates.map(({ title, category, resource, sourcePath, proofPath }) => ({
+          title,
+          category,
+          resource,
+          sourcePath,
+          proofPath,
+        })),
+      )}
 
-Call reproduce_bola for candidates until one is deterministically confirmed, then submit_verdict with its exact evidence. If none confirm, submit a rejected verdict. Do not claim anything that the reproduction tool did not prove.
+Call reproduce_candidate for candidates until one is deterministically confirmed, then submit_verdict with its resource and exact evidence. If none confirm, submit a rejected verdict. Do not claim anything the reproduction tool did not prove.
 `;
     },
     { agentName: "validator" },

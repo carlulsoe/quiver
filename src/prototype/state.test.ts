@@ -24,9 +24,11 @@ describe("prototype state", () => {
         type: "candidate",
         candidate: {
           agentId: "explorer-1",
-          vehicleId: "vehicle-1",
+          title: "late finding",
+          category: "access control",
+          resource: "vehicle-1",
           sourcePath: "/posts",
-          locationPath: "/vehicles/vehicle-1/location",
+          proofPath: "/vehicles/vehicle-1/location",
           rationale: "late result",
         },
       }),

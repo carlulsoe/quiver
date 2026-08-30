@@ -9,15 +9,17 @@ export interface PrototypeAgent {
 
 export interface Candidate {
   agentId: string;
-  vehicleId: string;
+  title: string;
+  category: string;
+  resource: string;
   sourcePath: string;
-  locationPath: string;
+  proofPath: string;
   rationale: string;
 }
 
 export interface Validation {
   status: "confirmed" | "rejected";
-  vehicleId: string;
+  resource: string;
   evidence: string;
 }
 
@@ -95,7 +97,9 @@ export function reduce(state: PrototypeState, action: PrototypeAction): Prototyp
       return {
         ...state,
         candidates: state.candidates.some(
-          (candidate) => candidate.vehicleId === action.candidate.vehicleId,
+          (candidate) =>
+            candidate.resource === action.candidate.resource &&
+            candidate.proofPath === action.candidate.proofPath,
         )
           ? state.candidates
           : [...state.candidates, action.candidate],
