@@ -40,6 +40,14 @@ export type PrototypeAction =
   | { type: "validated"; validation: Validation }
   | { type: "failed"; error: string };
 
+const nextPhases: Record<PrototypeState["phase"], PrototypeState["phase"][]> = {
+  starting: ["exploring", "validating", "failed"],
+  exploring: ["validating", "failed"],
+  validating: ["complete", "failed"],
+  complete: [],
+  failed: [],
+};
+
 export function createState(
   target: string,
   requestBudget: number,
@@ -63,9 +71,15 @@ export function createState(
 }
 
 export function reduce(state: PrototypeState, action: PrototypeAction): PrototypeState {
+  if (state.phase === "complete" || state.phase === "failed") return state;
+
   switch (action.type) {
-    case "phase":
+    case "phase": {
+      if (action.phase === state.phase || !nextPhases[state.phase].includes(action.phase)) {
+        return state;
+      }
       return { ...state, phase: action.phase };
+    }
     case "request":
       return { ...state, requestsUsed: state.requestsUsed + 1 };
     case "agent":

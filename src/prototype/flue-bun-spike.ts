@@ -2,12 +2,12 @@
  * PROTOTYPE: Prove whether Flue's documented Node runtime can complete a real
  * model turn when the host process is Bun.
  */
-import "./models.ts";
 import { init, useModel } from "@flue/runtime";
 import { start } from "@flue/runtime/node";
+import { GLM_FLASH_MODEL } from "./models.ts";
 
 function BunSmokeAgent() {
-  useModel(process.env.XBOW_MODEL ?? "openrouter/z-ai/glm-5.3-flash", {
+  useModel(GLM_FLASH_MODEL, {
     thinkingLevel: "low",
   });
 

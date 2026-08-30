@@ -14,10 +14,9 @@ explicit authorization.
 bun run spike:flue
 ```
 
-The model defaults to `openrouter/z-ai/glm-5.3-flash`. Because Flue 2.0.3's
-bundled OpenRouter catalog predates that model, the prototype registers its
-current OpenRouter metadata explicitly. Override it with `XBOW_MODEL` using any
-Flue model specifier.
+The prototype is intentionally fixed to `openrouter/z-ai/glm-5.3-flash`.
+Because Flue 2.0.3's bundled OpenRouter catalog predates that model, the
+prototype registers its current OpenRouter metadata explicitly.
 
 ## Run the prototype
 
@@ -30,6 +29,17 @@ Start the pinned OWASP crAPI 1.1.5 checkout on loopback port 8888, then run:
 bun run target:up
 bun run prototype -- http://127.0.0.1:8888
 ```
+
+Write the final verdict, metrics, scoped HTTP activity, and Flue tool trace to a
+JSON report while suppressing live terminal rendering:
+
+```sh
+bun run prototype -- http://127.0.0.1:8888 \
+  --quiet \
+  --report .prototype/runs/latest.json
+```
+
+Run `bun run prototype -- --help` for CLI options.
 
 Stop the target without deleting its database volumes:
 
@@ -70,18 +80,32 @@ It evaluates two contracts:
 - Given only the authenticated user's own vehicle, the model-backed validator
   must reject it rather than produce a false confirmation.
 
-Run repeated discovery trials against another Flue model with environment
-variables. The negative control still runs once per suite:
+Run repeated GLM discovery trials when checking reliability. The negative
+control still runs once per suite:
 
 ```sh
-XBOW_EVAL_TRIALS=5 \
-XBOW_MODEL=openrouter/z-ai/glm-5.3-flash \
-bun run evals:json
+XBOW_EVAL_TRIALS=5 bun run evals:json
 ```
 
 The JSON report is written to `.prototype/eval-results.json`; inspect it with
-`bun run evals:report`. Change `XBOW_MODEL` to run the same cases against a
-comparison model.
+`bun run evals:report`. The report includes normalized Flue tool calls and their
+results in addition to the deterministic behavioral score.
+
+## Developer loop
+
+The three verification layers stay separate so the common loop remains fast:
+
+```sh
+bun run test              # pure state, validation, gateway, CLI, and report tests
+bun run test:integration  # live HTTP checks against the local crAPI stack
+bun run test:all          # both fast and live HTTP suites
+bun run evals             # live GLM agent acceptance suite
+bun run verify            # formatting, linting, types, and fast tests
+```
+
+Use `bun run test:watch` while changing pure logic. Integration tests cover the
+seeded user's safe vehicle and a dynamically discovered cross-owner vehicle;
+they do not spend model tokens.
 
 ## Observed verdict
 
@@ -91,8 +115,8 @@ tested the local target. A fresh validator confirmed one vehicle-location BOLA
 with deterministic cross-owner and coordinate checks. The successful run used
 16 of the 30 permitted HTTP requests.
 
-The first report-producing eval run also passed both behavioral contracts: the
-discovery case confirmed the BOLA in 51.4 seconds using 16 requests, and the
-negative control rejected the authenticated user's own vehicle in 12.3 seconds
-using 5 requests. Both received a deterministic score of 1.00. This is an
-initial smoke result, not yet enough trials to compare models statistically.
+The latest report-producing eval run passed both behavioral contracts and
+captured normalized tool activity: discovery confirmed the BOLA in 45.9 seconds
+using 15 requests and 18 tool calls; the negative control rejected the seeded
+user's own vehicle in 10.5 seconds using 5 requests and 2 tool calls. Both
+received a deterministic score of 1.00.

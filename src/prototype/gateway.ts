@@ -1,41 +1,65 @@
-import type { PrototypeAction } from "./state.ts";
-
-interface HttpResult {
-  status: number;
-  path: string;
-  body: unknown;
-}
+import { assessVehicleLocationBola, type HttpObservation } from "./bola.ts";
 
 interface LoginResponse {
   token?: unknown;
-}
-
-interface DashboardResponse {
-  name?: unknown;
-  email?: unknown;
-}
-
-interface LocationResponse {
-  fullName?: unknown;
-  carId?: unknown;
-  vehicleLocation?: { latitude?: unknown; longitude?: unknown };
 }
 
 interface VehicleResponse {
   uuid?: unknown;
 }
 
+export type HttpTransport = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export interface GatewayRequest {
+  number: number;
+  method: string;
+  path: string;
+}
+
+export interface LocalCrapiGatewayOptions {
+  target: URL;
+  requestBudget: number;
+  onRequest?: (request: GatewayRequest) => void;
+  transport?: HttpTransport;
+  timeoutMs?: number;
+  maxResponseChars?: number;
+}
+
+export class RequestBudgetExceededError extends Error {
+  override readonly name = "RequestBudgetExceededError";
+}
+
+export class TargetScopeError extends Error {
+  override readonly name = "TargetScopeError";
+}
+
 export class LocalCrapiGateway {
   readonly #origin: string;
   readonly #requestBudget: number;
-  readonly #dispatch: (action: PrototypeAction) => void;
+  readonly #onRequest?: (request: GatewayRequest) => void;
+  readonly #transport: HttpTransport;
+  readonly #timeoutMs: number;
+  readonly #maxResponseChars: number;
   #requestsUsed = 0;
   #testToken?: string;
 
-  constructor(target: URL, requestBudget: number, dispatch: (action: PrototypeAction) => void) {
-    this.#origin = target.origin;
-    this.#requestBudget = requestBudget;
-    this.#dispatch = dispatch;
+  constructor(options: LocalCrapiGatewayOptions) {
+    const localHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
+    if (
+      !localHosts.has(options.target.hostname) ||
+      !["http:", "https:"].includes(options.target.protocol)
+    ) {
+      throw new TargetScopeError("Only loopback HTTP(S) targets are allowed");
+    }
+    this.#origin = options.target.origin;
+    this.#requestBudget = options.requestBudget;
+    this.#onRequest = options.onRequest;
+    this.#transport = options.transport ?? fetch;
+    this.#timeoutMs = options.timeoutMs ?? 10_000;
+    this.#maxResponseChars = options.maxResponseChars ?? 12_000;
   }
 
   async healthcheck(): Promise<void> {
@@ -59,7 +83,7 @@ export class LocalCrapiGateway {
     return { authContext: "test-user" };
   }
 
-  async get(path: string, authenticated: boolean): Promise<HttpResult> {
+  async get(path: string, authenticated: boolean): Promise<HttpObservation> {
     if (authenticated && !this.#testToken) await this.loginTestUser();
     return this.#request(path, {
       method: "GET",
@@ -81,48 +105,45 @@ export class LocalCrapiGateway {
 
   async reproduceBola(vehicleId: string): Promise<{
     confirmed: boolean;
+    reason: ReturnType<typeof assessVehicleLocationBola>["reason"];
     evidence: string;
-    dashboard: HttpResult;
-    location: HttpResult;
+    facts: ReturnType<typeof assessVehicleLocationBola>["facts"];
+    dashboard: HttpObservation;
+    location: HttpObservation;
   }> {
     await this.loginTestUser();
     const dashboard = await this.get("/identity/api/v2/user/dashboard", true);
     const locationPath = `/identity/api/v2/vehicle/${encodeURIComponent(vehicleId)}/location`;
     const location = await this.get(locationPath, true);
-    const dashboardBody = dashboard.body as DashboardResponse;
-    const locationBody = location.body as LocationResponse;
-    const hasCoordinates =
-      typeof locationBody.vehicleLocation?.latitude === "string" &&
-      typeof locationBody.vehicleLocation?.longitude === "string";
-    const differentOwner =
-      typeof dashboardBody.name === "string" &&
-      typeof locationBody.fullName === "string" &&
-      dashboardBody.name !== locationBody.fullName;
-    const confirmed =
-      dashboard.status === 200 && location.status === 200 && hasCoordinates && differentOwner;
-    const evidence = confirmed
-      ? `Authenticated as ${String(dashboardBody.email)} (${String(dashboardBody.name)}) but ${locationPath} returned coordinates for ${String(locationBody.fullName)}.`
-      : `Could not prove cross-owner access: dashboard=${dashboard.status}, location=${location.status}, differentOwner=${differentOwner}, coordinates=${hasCoordinates}.`;
-
-    return { confirmed, evidence, dashboard, location };
+    return { ...assessVehicleLocationBola(dashboard, location), dashboard, location };
   }
 
-  async #request(path: string, init: RequestInit): Promise<HttpResult> {
+  async #request(path: string, init: RequestInit): Promise<HttpObservation> {
     if (!path.startsWith("/") || path.startsWith("//"))
-      throw new Error("Only origin-relative paths are allowed");
-    if (this.#requestsUsed >= this.#requestBudget) throw new Error("Request budget exhausted");
+      throw new TargetScopeError("Only origin-relative paths are allowed");
+    if (this.#requestsUsed >= this.#requestBudget) {
+      throw new RequestBudgetExceededError(
+        `Request budget exhausted (${this.#requestsUsed}/${this.#requestBudget})`,
+      );
+    }
 
     const url = new URL(path, this.#origin);
-    if (url.origin !== this.#origin) throw new Error("Out-of-scope origin blocked");
+    if (url.origin !== this.#origin) throw new TargetScopeError("Out-of-scope origin blocked");
 
     this.#requestsUsed += 1;
-    this.#dispatch({ type: "request" });
-    const response = await fetch(url, {
+    this.#onRequest?.({
+      number: this.#requestsUsed,
+      method: init.method ?? "GET",
+      path: `${url.pathname}${url.search}`,
+    });
+    const response = await this.#transport(url, {
       ...init,
       redirect: "manual",
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(this.#timeoutMs),
     });
-    const text = (await response.text()).slice(0, 12_000);
+    const responseText = await response.text();
+    const truncated = responseText.length > this.#maxResponseChars;
+    const text = responseText.slice(0, this.#maxResponseChars);
     let body: unknown = text;
     try {
       body = JSON.parse(text);
@@ -130,6 +151,6 @@ export class LocalCrapiGateway {
       // Text is a valid prototype response body.
     }
 
-    return { status: response.status, path: `${url.pathname}${url.search}`, body };
+    return { status: response.status, path: `${url.pathname}${url.search}`, body, truncated };
   }
 }

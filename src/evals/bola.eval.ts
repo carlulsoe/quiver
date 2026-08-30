@@ -1,5 +1,5 @@
 import { expect } from "vitest";
-import { createJudge, describeEval } from "vitest-evals";
+import { createJudge, describeEval, toolCalls } from "vitest-evals";
 import { securityHarness, type SecurityEvalInput, type SecurityEvalOutput } from "./harness.ts";
 
 const BehavioralContractJudge = createJudge<SecurityEvalInput, SecurityEvalOutput>(
@@ -48,6 +48,14 @@ describeEval("crAPI vehicle-location BOLA", { harness: securityHarness }, (it) =
       });
       expect(result.output.candidateCount).toBeGreaterThan(0);
       expect(result.output.requestsUsed).toBeLessThanOrEqual(result.output.requestBudget);
+      expect(toolCalls(result).map((call) => call.name)).toEqual(
+        expect.arrayContaining([
+          "read_api_surface",
+          "propose_bola_candidate",
+          "reproduce_bola",
+          "submit_verdict",
+        ]),
+      );
       await expect(result).toSatisfyJudge(BehavioralContractJudge);
     },
   );
@@ -65,6 +73,10 @@ describeEval("crAPI vehicle-location BOLA", { harness: securityHarness }, (it) =
       candidateCount: 1,
     });
     expect(result.output.requestsUsed).toBeLessThanOrEqual(result.output.requestBudget);
+    expect(toolCalls(result).map((call) => call.name)).toEqual([
+      "reproduce_bola",
+      "submit_verdict",
+    ]);
     await expect(result).toSatisfyJudge(BehavioralContractJudge);
   });
 });

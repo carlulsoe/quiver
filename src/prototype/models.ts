@@ -2,6 +2,8 @@ import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import type { Model } from "@earendil-works/pi-ai";
 import { setProvider } from "@flue/runtime";
 
+export const GLM_FLASH_MODEL = "openrouter/z-ai/glm-5.3-flash";
+
 const openrouter = openrouterProvider();
 const reference = openrouter.getModels().find((model) => model.id === "z-ai/glm-5.2");
 if (!reference) throw new Error("Flue's OpenRouter provider has no GLM reference model");

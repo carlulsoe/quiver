@@ -1,8 +1,8 @@
-import "./models.ts";
 import { defineTool, useModel, useTool } from "@flue/runtime";
 import * as v from "valibot";
 import type { Candidate, PrototypeAction, Validation } from "./state.ts";
 import type { LocalCrapiGateway } from "./gateway.ts";
+import { GLM_FLASH_MODEL } from "./models.ts";
 
 const API_SURFACE = [
   "POST /identity/api/auth/login — authenticate and obtain a bearer token",
@@ -11,10 +11,6 @@ const API_SURFACE = [
   "GET /identity/api/v2/vehicle/{vehicleId}/location — location for a vehicle UUID",
   "GET /community/api/v2/community/posts/recent — recent posts; authors may include resource identifiers",
 ] as const;
-
-export function selectedModel(): string {
-  return process.env.XBOW_MODEL ?? "openrouter/z-ai/glm-5.3-flash";
-}
 
 function requestTools(gateway: LocalCrapiGateway) {
   const readApiSurface = defineTool({
@@ -49,6 +45,7 @@ function requestTools(gateway: LocalCrapiGateway) {
           status: result.status,
           path: result.path,
           body: JSON.stringify(result.body),
+          truncated: result.truncated ?? false,
         },
       };
     },
@@ -82,7 +79,7 @@ export function createExplorerAgent(
 
   const Explorer = Object.assign(
     function Explorer() {
-      useModel(selectedModel(), { thinkingLevel: "medium" });
+      useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
       useTool(tools.readApiSurface);
       useTool(tools.login);
       useTool(tools.get);
@@ -116,6 +113,7 @@ export function createValidatorAgent(
       return {
         output: {
           confirmed: result.confirmed,
+          reason: result.reason,
           evidence: result.evidence,
           dashboardStatus: result.dashboard.status,
           locationStatus: result.location.status,
@@ -142,7 +140,7 @@ export function createValidatorAgent(
 
   return Object.assign(
     function Validator() {
-      useModel(selectedModel(), { thinkingLevel: "low" });
+      useModel(GLM_FLASH_MODEL, { thinkingLevel: "low" });
       useTool(reproduce);
       useTool(submit);
       return `
