@@ -74,7 +74,7 @@ describe("campaign report", () => {
     const report = createRunReport(run, new Date("2026-08-31T00:00:00.000Z"));
 
     expect(report).toMatchObject({
-      schemaVersion: 6,
+      schemaVersion: 7,
       generatedAt: "2026-08-31T00:00:00.000Z",
       profileId: "crapi",
       outcome: {

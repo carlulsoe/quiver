@@ -19,7 +19,7 @@ export function createHeldOutFixture(seed: string): HeldOutFixture {
   const foreignOwnerId = uuid(seed, "owner");
   const ownedVaultId = uuid(seed, "owned-vault");
   const foreignVaultId = uuid(seed, "foreign-vault");
-  const canary = `QUIVER-CANARY-${token(seed, "canary").toUpperCase()}`;
+  const canary = heldOutCanary(seed);
   const api = `/api/${namespace}`;
 
   return {
@@ -92,6 +92,10 @@ export function createHeldOutFixture(seed: string): HeldOutFixture {
       return json({ error: "not-found" }, 404);
     },
   };
+}
+
+export function heldOutCanary(seed: string): string {
+  return `QUIVER-CANARY-${token(seed, "canary").toUpperCase()}`;
 }
 
 function isAuthorized(request: Request): boolean {

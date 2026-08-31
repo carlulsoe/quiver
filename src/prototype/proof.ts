@@ -2,35 +2,52 @@ import type {
   Finding,
   FindingCategory,
   ProofCheck,
+  ProofArtifacts,
   ProofPredicate,
   ProofResult,
   RequestMutation,
   ValidationObservation,
 } from "./state.ts";
 import { hasPotentialAuthenticationHeaders } from "./scoped-target.ts";
+import type { ProofPolicy } from "./target-profile.ts";
 
 /** Code-owned compatibility is the first vulnerability-specific validation boundary. */
 export const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["type"][]> = {
   "broken-object-authorization": ["cross-principal-access", "unauthenticated-success"],
   "broken-function-authorization": ["cross-principal-access", "unauthenticated-success"],
   "authentication-bypass": [],
-  "excessive-data-exposure": ["cross-principal-data-exposure", "internal-field-exposure"],
-  "sensitive-data-exposure": ["cross-principal-data-exposure", "internal-field-exposure"],
-  "cross-site-scripting": [],
+  "excessive-data-exposure": [
+    "cross-principal-data-exposure",
+    "internal-field-exposure",
+    "canary-retrieval",
+  ],
+  "sensitive-data-exposure": [
+    "cross-principal-data-exposure",
+    "internal-field-exposure",
+    "canary-retrieval",
+  ],
+  "cross-site-scripting": ["browser-visible-effect"],
   "sql-injection": [],
   "command-injection": [],
-  "server-side-request-forgery": [],
-  "path-traversal": [],
+  "server-side-request-forgery": ["oast-callback"],
+  "path-traversal": ["canary-retrieval"],
   "open-redirect": [],
   "cross-site-request-forgery": [],
-  "business-logic": [],
+  "business-logic": ["state-transition"],
   "security-misconfiguration": ["unauthenticated-success"],
   other: [],
 };
 
+export interface ProofEvaluationContext {
+  policies?: readonly ProofPolicy[];
+  artifacts?: ProofArtifacts;
+  stateResetAvailable?: boolean;
+}
+
 export function evaluateProof(
   finding: Pick<Finding, "category" | "endpoint" | "method" | "proof" | "reproduction">,
   observations: readonly ValidationObservation[],
+  context: ProofEvaluationContext = {},
 ): ProofResult {
   const checks: ProofCheck[] = [
     check(
@@ -208,6 +225,202 @@ export function evaluateProof(
       );
       break;
     }
+    case "canary-retrieval": {
+      const policy = policyFor(context.policies, finding.proof.policyId, "canary");
+      const observation = observations[finding.proof.requestIndex];
+      const selected = observation
+        ? jsonPointer(observation.body, finding.proof.jsonPointer)
+        : { found: false };
+      const canaryValue = typeof selected.value === "string" ? selected.value : undefined;
+      const request = finding.reproduction[finding.proof.requestIndex];
+      checks.push(
+        check(policy?.category === finding.category, "target policy authorizes this canary proof"),
+        check(
+          policy?.source === "immutable-fixture" &&
+            finding.proof.jsonPointer === policy.jsonPointer &&
+            finding.reproduction.length === 1 &&
+            request !== undefined &&
+            ["GET", "HEAD"].includes(request.method ?? "GET") &&
+            request.body === undefined &&
+            Object.keys(request.headers ?? {}).length === 0 &&
+            new URL(request.path, "http://proof.invalid").search === "",
+          "canary comes from an immutable fixture through one bodyless headerless read",
+        ),
+        check(
+          policy !== undefined &&
+            request !== undefined &&
+            (request.method ?? "GET") === policy.method &&
+            endpointMatchesRequest(policy.endpoint, request.path) &&
+            affectedOperationMatches(finding, request),
+          "canary retrieval request matches the policy and affected operation",
+        ),
+        check(selected.found && typeof selected.value === "string", "canary value was retrieved"),
+        check(
+          policy !== undefined &&
+            request !== undefined &&
+            canaryValue !== undefined &&
+            !finding.reproduction.some((candidate) => requestContains(candidate, canaryValue)) &&
+            verifyCanary(policy, canaryValue),
+          "retrieved value passes the verifier-only canary contract and was not reflected",
+          selected.value,
+        ),
+      );
+      break;
+    }
+    case "state-transition": {
+      const policy = policyFor(context.policies, finding.proof.policyId, "state-transition");
+      const before = policy
+        ? selectedAt(observations, finding.proof.beforeRequestIndex, policy.jsonPointer)
+        : { found: false };
+      const after = policy
+        ? selectedAt(observations, finding.proof.afterRequestIndex, policy.jsonPointer)
+        : { found: false };
+      const transition = finding.reproduction[finding.proof.transitionRequestIndex];
+      checks.push(
+        check(policy?.category === finding.category, "target policy authorizes this state proof"),
+        check(
+          context.stateResetAvailable === true,
+          "target provides a fresh-state preparation hook for validation",
+        ),
+        check(
+          finding.reproduction.length === 3 &&
+            finding.proof.beforeRequestIndex === 0 &&
+            finding.proof.transitionRequestIndex === 1 &&
+            finding.proof.afterRequestIndex === 2,
+          "state proof is a closed adjacent read-transition-read reproduction",
+        ),
+        check(
+          policy !== undefined &&
+            transition !== undefined &&
+            (transition.method ?? "GET") === policy.method &&
+            endpointMatchesRequest(policy.endpoint, transition.path) &&
+            affectedOperationMatches(finding, transition),
+          "declared transition request matches the protected operation",
+        ),
+        check(
+          policy !== undefined &&
+            [finding.proof.beforeRequestIndex, finding.proof.afterRequestIndex].every((index) => {
+              const request = finding.reproduction[index];
+              return (
+                request !== undefined &&
+                (request.method ?? "GET") === policy.readMethod &&
+                endpointMatchesRequest(policy.readEndpoint, request.path)
+              );
+            }) &&
+            sameConcreteRequest(
+              finding.reproduction[finding.proof.beforeRequestIndex],
+              finding.reproduction[finding.proof.afterRequestIndex],
+            ),
+          "before and after requests read the same policy-bound resource",
+        ),
+        check(
+          before.found && sameValue(before.value, policy?.before),
+          "protected state starts at policy value",
+          before.value,
+        ),
+        check(
+          after.found && sameValue(after.value, policy?.after),
+          "protected state reaches policy value",
+          after.value,
+        ),
+      );
+      break;
+    }
+    case "browser-visible-effect": {
+      const proof = finding.proof;
+      const policy = policyFor(context.policies, proof.policyId, "browser-effect");
+      const pattern = policy ? safeRegex(policy.markerPattern) : undefined;
+      const artifact = context.artifacts?.browserEffects.find(
+        ({ probeId }) => probeId === proof.probeId,
+      );
+      checks.push(
+        check(policy?.category === finding.category, "target policy authorizes this browser proof"),
+        check(
+          affectedOperationMatches(finding, finding.reproduction[proof.requestIndex]),
+          "browser payload request matches the affected operation",
+        ),
+        check(
+          policy !== undefined && proof.challenge.template === policy.payloadTemplate,
+          "browser challenge uses the target-owned executable payload template",
+        ),
+        check(
+          policy !== undefined && proof.pageAuthenticated === policy.pageAuthenticated,
+          "browser page authentication matches the target policy",
+        ),
+        check(
+          policy !== undefined && proof.collectorRequestBudget === policy.requestBudget,
+          "browser collector request budget matches the target policy",
+        ),
+        check(
+          canonicalJson(proof.pageChallenge) === canonicalJson(policy?.pageChallenge),
+          "browser navigation challenge matches the target policy",
+        ),
+        check(
+          proof.pageChallenge === undefined ||
+            (finding.method === "GET" &&
+              proof.requestIndex === 0 &&
+              finding.reproduction.length === 1 &&
+              proof.pagePath === finding.reproduction[proof.requestIndex]?.path &&
+              challengePathMatches(proof.pagePath, proof.pageChallenge, proof.marker)),
+          "reflected browser challenge is the exact affected GET request",
+        ),
+        check(
+          challengeRequestMatches(
+            finding.reproduction[proof.requestIndex],
+            proof.challenge,
+            proof.marker,
+          ),
+          "issued browser marker is bound to the declared request mutation",
+        ),
+        check(
+          artifact !== undefined &&
+            policy !== undefined &&
+            policy.effect === "dialog" &&
+            proof.kind === policy.effect &&
+            artifact.kind === policy.effect &&
+            endpointMatchesRequest(policy.pagePath, proof.pagePath) &&
+            endpointMatchesRequest(policy.pagePath, artifact.path),
+          "fresh browser artifact matches the policy effect and page",
+        ),
+        check(
+          artifact?.value === proof.marker && pattern !== undefined && pattern.test(proof.marker),
+          "browser effect contains the policy-approved marker",
+          artifact?.value,
+        ),
+      );
+      break;
+    }
+    case "oast-callback": {
+      const proof = finding.proof;
+      const policy = policyFor(context.policies, proof.policyId, "oast");
+      const artifact = context.artifacts?.oastCallbacks.find(
+        ({ probeId, token }) => probeId === proof.probeId && token === proof.token,
+      );
+      const request = finding.reproduction[proof.requestIndex];
+      checks.push(
+        check(policy?.category === finding.category, "target policy authorizes this OAST proof"),
+        check(
+          policy !== undefined &&
+            request !== undefined &&
+            (request.method ?? "GET") === policy.method &&
+            endpointMatchesRequest(policy.endpoint, request.path) &&
+            affectedOperationMatches(finding, request),
+          "OAST probe request matches the policy and affected operation",
+        ),
+        check(
+          request !== undefined &&
+            proof.callbackUrl.includes(proof.token) &&
+            challengeRequestMatches(request, proof.challenge, proof.callbackUrl),
+          "issued OAST callback URL is bound to the declared request mutation",
+        ),
+        check(
+          artifact !== undefined && artifact.protocol === policy?.protocol,
+          "fresh target callback reached the issued OAST probe",
+          artifact?.path,
+        ),
+      );
+      break;
+    }
   }
 
   const passed = checks.every((item) => item.passed);
@@ -326,6 +539,113 @@ function affectedOperationMatches(
   );
 }
 
+function policyFor<K extends ProofPolicy["kind"]>(
+  policies: readonly ProofPolicy[] | undefined,
+  id: string,
+  kind: K,
+): Extract<ProofPolicy, { kind: K }> | undefined {
+  return policies?.find(
+    (policy): policy is Extract<ProofPolicy, { kind: K }> =>
+      policy.id === id && policy.kind === kind,
+  );
+}
+
+function safeRegex(pattern: string): RegExp | undefined {
+  if (pattern.length > 256) return undefined;
+  try {
+    return new RegExp(pattern);
+  } catch {
+    return undefined;
+  }
+}
+
+function verifyCanary(policy: Extract<ProofPolicy, { kind: "canary" }>, value: string): boolean {
+  try {
+    return policy.verify(value);
+  } catch {
+    return false;
+  }
+}
+
+function challengeRequestMatches(
+  request: ProofRequest | undefined,
+  challenge: { location: "query" | "json-body"; parameter: string; template: string },
+  value: string,
+): boolean {
+  return (
+    challenge.template.split("{{challenge}}").length === 2 &&
+    requestMutationValue(request, challenge) === challenge.template.replace("{{challenge}}", value)
+  );
+}
+
+function challengePathMatches(
+  path: string,
+  challenge: { location: "query" | "json-body"; parameter: string; template: string },
+  value: string,
+): boolean {
+  return (
+    challenge.location === "query" &&
+    challengeRequestMatches({ path, authenticated: false }, challenge, value)
+  );
+}
+
+function selectedAt(
+  observations: readonly ValidationObservation[],
+  requestIndex: number,
+  pointer: string,
+): { found: boolean; value?: unknown } {
+  const observation = observations[requestIndex];
+  return observation ? jsonPointer(observation.body, pointer) : { found: false };
+}
+
+function requestContains(request: ProofRequest, value: string): boolean {
+  const entries = [
+    request.path,
+    request.body ?? "",
+    ...Object.entries(request.headers ?? {}).flatMap(([name, entry]) => [name, entry]),
+  ];
+  try {
+    entries.push(...controlledStrings(JSON.parse(request.body ?? "")));
+  } catch {
+    // Non-JSON bodies remain covered by their raw representation.
+  }
+  return entries.some((entry) => entry.includes(value) || decodeRequestText(entry).includes(value));
+}
+
+function controlledStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(controlledStrings);
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value).flatMap(([name, entry]) => [name, ...controlledStrings(entry)]);
+  }
+  return [];
+}
+
+function sameConcreteRequest(
+  left: Finding["reproduction"][number] | undefined,
+  right: Finding["reproduction"][number] | undefined,
+): boolean {
+  if (!left || !right) return false;
+  return (
+    canonicalJson({ ...left, path: canonicalRequestPath(left.path), sampleId: undefined }) ===
+    canonicalJson({ ...right, path: canonicalRequestPath(right.path), sampleId: undefined })
+  );
+}
+
+function canonicalRequestPath(path: string): string {
+  const url = new URL(path, "http://proof.invalid");
+  url.searchParams.sort();
+  return `${url.pathname}${url.search}`;
+}
+
+function decodeRequestText(value: string): string {
+  try {
+    return decodeURIComponent(value.replaceAll("+", " "));
+  } catch {
+    return value;
+  }
+}
+
 type ProofRequest = {
   path: string;
   method?: string;
@@ -355,7 +675,7 @@ function requestsShareMutationShape(
 
 function requestMutationValue(
   request: Pick<ProofRequest, "path" | "body"> | undefined,
-  mutation: RequestMutation,
+  mutation: Pick<RequestMutation, "location" | "parameter">,
 ): string | undefined {
   if (!request) return undefined;
   if (mutation.location === "query") {

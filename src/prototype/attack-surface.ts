@@ -457,11 +457,11 @@ function routeParameters(path: string): Array<{ name: string; index: number }> {
   return parameters;
 }
 
-async function launchChromium(executablePath: string): Promise<Browser> {
+export async function launchChromium(executablePath: string): Promise<Browser> {
   return chromium.launch({ executablePath, headless: true });
 }
 
-async function findBrowserExecutable(): Promise<string> {
+export async function findBrowserExecutable(): Promise<string> {
   const candidates = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",

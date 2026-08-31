@@ -52,6 +52,33 @@ export interface RequestMutation {
   probeValue: string;
 }
 
+export interface ChallengeMutation {
+  location: "query" | "json-body";
+  parameter: string;
+  template: string;
+}
+
+export interface BrowserEffectEvidence {
+  probeId: string;
+  path: string;
+  kind: "dialog";
+  value: string;
+}
+
+export interface OastCallbackEvidence {
+  probeId: string;
+  token: string;
+  protocol: "http";
+  method: string;
+  path: string;
+  observedAt: string;
+}
+
+export interface ProofArtifacts {
+  browserEffects: BrowserEffectEvidence[];
+  oastCallbacks: OastCallbackEvidence[];
+}
+
 export type ProofPredicate =
   | {
       type: "cross-principal-access";
@@ -94,6 +121,41 @@ export type ProofPredicate =
       probeRequestIndexes: number[];
       minimumDeltaMs: number;
       mutation: RequestMutation;
+    }
+  | {
+      type: "canary-retrieval";
+      policyId: string;
+      requestIndex: number;
+      jsonPointer: string;
+    }
+  | {
+      type: "state-transition";
+      policyId: string;
+      transitionRequestIndex: number;
+      beforeRequestIndex: number;
+      afterRequestIndex: number;
+    }
+  | {
+      type: "browser-visible-effect";
+      policyId: string;
+      probeId: string;
+      marker: string;
+      requestIndex: number;
+      pagePath: string;
+      kind: "dialog";
+      challenge: ChallengeMutation;
+      pageAuthenticated: boolean;
+      pageChallenge?: ChallengeMutation;
+      collectorRequestBudget: number;
+    }
+  | {
+      type: "oast-callback";
+      policyId: string;
+      probeId: string;
+      token: string;
+      requestIndex: number;
+      callbackUrl: string;
+      challenge: ChallengeMutation;
     };
 
 export interface FindingInput {
@@ -122,6 +184,9 @@ export interface FindingValidation {
   evidence: string;
   proof: ProofResult;
   observations: ValidationObservation[];
+  artifacts?: ProofArtifacts;
+  reproduction?: ReproductionRequest[];
+  replayedProof?: ProofPredicate;
   reviewer: {
     assessment: "supported" | "unsupported";
     evidence: string;

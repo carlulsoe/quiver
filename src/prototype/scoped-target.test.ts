@@ -6,6 +6,59 @@ function response(body: string, contentType: string): Response {
 }
 
 describe("scoped target", () => {
+  it("charges browser proof requests to both the collector cap and campaign budget", async () => {
+    const requested: string[] = [];
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 3,
+      onRequest: ({ method, path }) => requested.push(`${method} ${path}`),
+      browserEffectCollector: async (probe) => {
+        expect(probe.decideRequest("GET", "/proof")).toBe(true);
+        expect(probe.decideRequest("GET", "/asset.js")).toBe(true);
+        expect(probe.decideRequest("GET", "/extra.js")).toBe(false);
+        expect(probe.decideRequest("POST", "/submit")).toBe(false);
+        return undefined;
+      },
+    });
+
+    await target.observeBrowserEffect({
+      probeId: "probe-1",
+      path: "/proof",
+      marker: "QUIVER-BROWSER-1",
+      kind: "dialog",
+      authenticated: false,
+      requestBudget: 2,
+    });
+
+    expect(requested).toEqual(["GET /proof", "GET /asset.js"]);
+    expect(target.remainingRequests).toBe(1);
+  });
+
+  it("rejects an authenticated browser proof without configured browser credentials", async () => {
+    let browserCollections = 0;
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 1,
+      browserEffectCollector: async () => {
+        browserCollections += 1;
+        return undefined;
+      },
+    });
+
+    await expect(
+      target.observeBrowserEffect({
+        probeId: "probe-1",
+        path: "/proof",
+        marker: "QUIVER-BROWSER-1",
+        kind: "dialog",
+        authenticated: true,
+        requestBudget: 1,
+      }),
+    ).rejects.toThrow("no authenticated browser session");
+    expect(browserCollections).toBe(0);
+    expect(target.remainingRequests).toBe(1);
+  });
+
   it("delegates to a budgeted REST attack-surface mapper", async () => {
     const requested: string[] = [];
     const target = new ScopedTarget({

@@ -1,4 +1,9 @@
 import type { TargetProfile } from "../prototype/target-profile.ts";
+import { heldOutCanary } from "./held-out-fixture.ts";
+import { readFileSync } from "node:fs";
+
+const configuredSeed = process.env.QUIVER_HELD_OUT_SEED ?? readPublishedSeed();
+const configuredCanary = configuredSeed ? heldOutCanary(configuredSeed) : undefined;
 
 export const heldOutProfile: TargetProfile = {
   id: "held-out",
@@ -14,4 +19,28 @@ export const heldOutProfile: TargetProfile = {
       "The local held-out fixture uses a fixed synthetic bearer token; it is not a real credential.",
     commands: [`export QUIVER_TOKEN='quiver-showcase-user'`],
   },
+  proofPolicies: configuredCanary
+    ? [
+        {
+          id: "held-out-record-canary",
+          kind: "canary",
+          category: "sensitive-data-exposure",
+          description: "The seeded foreign record contains a verifier-only synthetic canary.",
+          endpoint: "/api/{namespace}/vaults/{id}",
+          method: "GET",
+          verify: (value: string) => value === configuredCanary,
+          source: "immutable-fixture",
+          jsonPointer: "/record/canary",
+        },
+      ]
+    : [],
 };
+
+function readPublishedSeed(): string | undefined {
+  try {
+    const seed = readFileSync(".prototype/held-out-seed", "utf8").trim();
+    return seed || undefined;
+  } catch {
+    return undefined;
+  }
+}

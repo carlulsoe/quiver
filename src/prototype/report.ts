@@ -10,7 +10,7 @@ export interface ReportedFinding extends Finding {
 }
 
 export interface RunReport {
-  schemaVersion: 6;
+  schemaVersion: 7;
   generatedAt: string;
   profileId: string;
   reproductionAuthentication?: CampaignRun["reproductionAuthentication"];
@@ -59,7 +59,7 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
   ).length;
 
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt: generatedAt.toISOString(),
     profileId: run.profileId,
     reproductionAuthentication: run.reproductionAuthentication,
@@ -186,7 +186,12 @@ export function renderMarkdownReport(report: RunReport): string {
 
   if (
     report.reproductionAuthentication &&
-    report.findings.some((finding) => finding.reproduction.some((request) => request.authenticated))
+    report.findings.some(
+      (finding) =>
+        finding.reproduction.some((request) => request.authenticated) ||
+        (finding.validation?.replayedProof?.type === "browser-visible-effect" &&
+          finding.validation.replayedProof.pageAuthenticated),
+    )
   ) {
     lines.push(
       "## Authentication for reproduction",
@@ -273,7 +278,7 @@ export function renderMarkdownReport(report: RunReport): string {
         });
       }
       lines.push("Reproduction:", "", "```sh");
-      for (const request of finding.reproduction) {
+      for (const request of finding.validation?.reproduction ?? finding.reproduction) {
         const url = new URL(request.path, report.target).href;
         const auth = request.authenticated ? " --header 'Authorization: Bearer $QUIVER_TOKEN'" : "";
         const method = request.method ?? "GET";
@@ -301,6 +306,35 @@ export function renderMarkdownReport(report: RunReport): string {
         );
       }
       lines.push("```", "");
+      const replayedProof = finding.validation?.replayedProof;
+      if (replayedProof?.type === "browser-visible-effect") {
+        lines.push(
+          "Artifact collection:",
+          "",
+          `1. Open \`${new URL(replayedProof.pagePath, report.target).href}\` in a constrained Chromium session${replayedProof.pageAuthenticated ? " using the authenticated reproduction session" : " without authentication"}.`,
+          `2. Block cross-origin requests, WebSockets, and popups; observe a dialog whose complete message is \`${replayedProof.marker}\`.`,
+          "",
+        );
+      } else if (replayedProof?.type === "oast-callback") {
+        lines.push(
+          "Artifact collection:",
+          "",
+          "1. Start a fresh HTTP OAST listener reachable from the target (for Docker, configure a host-gateway advertised address).",
+          `2. Replace the expired campaign callback \`${replayedProof.callbackUrl}\` in the request with the fresh listener URL, then replay the request.`,
+          "3. Confirm the listener receives the fresh unguessable token; historical callback metadata is retained below as validation evidence.",
+          "",
+        );
+      }
+      if (finding.validation?.artifacts) {
+        lines.push(
+          "Collected artifacts:",
+          "",
+          "```json",
+          JSON.stringify(finding.validation.artifacts, null, 2),
+          "```",
+          "",
+        );
+      }
     }
   }
 

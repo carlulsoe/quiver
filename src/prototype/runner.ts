@@ -4,6 +4,7 @@ import { AdaptiveCoordinator } from "./adaptive-coordinator.ts";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
+import { ProofArtifactStore } from "./proof-artifacts.ts";
 import { ScopedTarget } from "./scoped-target.ts";
 import {
   createCampaignBudget,
@@ -42,6 +43,7 @@ export interface RunEvent {
 }
 
 export async function runCampaign(options: RunCampaignOptions): Promise<CampaignRun> {
+  await using artifacts = new ProofArtifactStore();
   const startedAt = performance.now();
   const budget = createCampaignBudget(options.requestBudget ?? 30);
   const explorerCount = options.explorerCount ?? 2;
@@ -152,6 +154,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         options.profile,
         ledger,
         coordinator,
+        artifacts,
         dispatch,
         options.context,
       ),
@@ -164,6 +167,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         return validationTarget;
       },
       options.profile,
+      artifacts,
       dispatch,
     );
     await using _campaignRuntime = await start({ agents: [...explorers, Validator] });
@@ -214,13 +218,14 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       });
       if (
         options.profile.authenticate &&
-        state.findings.some((finding) =>
-          finding.reproduction.some((request) => request.authenticated),
+        state.findings.some(
+          (finding) =>
+            finding.reproduction.some((request) => request.authenticated) ||
+            (finding.proof.type === "browser-visible-effect" && finding.proof.pageAuthenticated),
         )
       ) {
         await options.profile.authenticate(validationTarget);
       }
-
       dispatch({ type: "agent", id: "validator", status: "running" });
       const validator = init(Validator);
       const receipt = await validator.dispatch("Validate every submitted campaign finding.");

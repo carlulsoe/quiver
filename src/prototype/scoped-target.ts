@@ -4,6 +4,8 @@ import {
   type AttackSurfaceMap,
   type BrowserCookie,
 } from "./attack-surface.ts";
+import { collectBrowserEffect, type BrowserProofProbe } from "./browser-proof.ts";
+import type { BrowserEffectEvidence } from "./state.ts";
 
 export type {
   AttackSurfaceCallSite as CrawlGetCallSite,
@@ -54,6 +56,7 @@ export interface ScopedTargetOptions {
   openApi?: unknown;
   browserExecutablePath?: string;
   attackSurfaceMapper?: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
+  browserEffectCollector?: (probe: BrowserProofProbe) => Promise<BrowserEffectEvidence | undefined>;
 }
 
 export interface AttackSurfaceMapperOptions {
@@ -89,6 +92,15 @@ export interface ScopedRequest {
   sampleId?: string;
 }
 
+export interface BrowserEffectRequest {
+  probeId: string;
+  path: string;
+  marker: string;
+  kind: BrowserEffectEvidence["kind"];
+  authenticated: boolean;
+  requestBudget: number;
+}
+
 export type RestMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 
 export type CrawlDocument = AttackSurfaceDocument;
@@ -118,6 +130,9 @@ export class ScopedTarget {
   readonly #openApi?: unknown;
   readonly #browserExecutablePath?: string;
   readonly #attackSurfaceMapper: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
+  readonly #browserEffectCollector: (
+    probe: BrowserProofProbe,
+  ) => Promise<BrowserEffectEvidence | undefined>;
   #requestsUsed = 0;
   #authenticationHeaders?: Record<string, string>;
   #browserLocalStorage?: Record<string, string>;
@@ -152,6 +167,7 @@ export class ScopedTarget {
     this.#attackSurfaceMapper =
       options.attackSurfaceMapper ??
       ((mapperOptions) => new BrowserAttackSurfaceMapper(mapperOptions).map());
+    this.#browserEffectCollector = options.browserEffectCollector ?? collectBrowserEffect;
   }
 
   get origin(): string {
@@ -164,6 +180,10 @@ export class ScopedTarget {
 
   get isAuthenticated(): boolean {
     return this.#authenticationHeaders !== undefined;
+  }
+
+  get remainingRequests(): number {
+    return Math.max(0, this.#requestBudget - this.#requestsUsed);
   }
 
   setAuthentication(headers: Record<string, string>): void {
@@ -186,6 +206,43 @@ export class ScopedTarget {
 
   async request(request: ScopedRequest): Promise<HttpObservation> {
     return this.#request(request, this.#maxResponseChars);
+  }
+
+  async observeBrowserEffect(
+    request: BrowserEffectRequest,
+  ): Promise<BrowserEffectEvidence | undefined> {
+    this.#resolvePath(request.path);
+    if (request.authenticated && !this.#hasBrowserAuthentication()) {
+      throw new Error("This target has no authenticated browser session");
+    }
+    let collectorRequests = 0;
+    return this.#browserEffectCollector({
+      ...request,
+      origin: this.#origin,
+      timeoutMs: this.#timeoutMs,
+      authenticationHeaders: request.authenticated ? this.#authenticationHeaders : undefined,
+      cookies: request.authenticated ? this.#browserCookies : undefined,
+      localStorage: request.authenticated ? this.#browserLocalStorage : undefined,
+      sessionStorage: request.authenticated ? this.#browserSessionStorage : undefined,
+      executablePath: this.#browserExecutablePath,
+      decideRequest: (method, path) => {
+        if (!["GET", "HEAD"].includes(method) || collectorRequests >= request.requestBudget) {
+          return false;
+        }
+        const decision = this.#decideBrowserRequest(method, path, true, false);
+        if (decision.allowed) collectorRequests += 1;
+        return decision.allowed;
+      },
+    });
+  }
+
+  #hasBrowserAuthentication(): boolean {
+    return (
+      Object.keys(this.#authenticationHeaders ?? {}).length > 0 ||
+      (this.#browserCookies?.length ?? 0) > 0 ||
+      Object.keys(this.#browserLocalStorage ?? {}).length > 0 ||
+      Object.keys(this.#browserSessionStorage ?? {}).length > 0
+    );
   }
 
   async #request(request: ScopedRequest, responseLimit: number): Promise<HttpObservation> {
