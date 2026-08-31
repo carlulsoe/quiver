@@ -1,4 +1,4 @@
-import { defineTool, useModel, useResponseFinish, useTool } from "@flue/runtime";
+import { defineTool, useInitialData, useModel, useResponseFinish, useTool } from "@flue/runtime";
 import * as v from "valibot";
 import type { AdaptiveCoordinator } from "./adaptive-coordinator.ts";
 import type { CampaignLedger } from "./campaign-ledger.ts";
@@ -325,140 +325,146 @@ export function createValidatorAgent(
   getFindings: () => Finding[],
   getTarget: () => ScopedTarget,
   profile: TargetProfile,
-  dispatch: (action: CampaignAction) => void,
+  dispatch: (action: CampaignAction, mission: ValidatorMission) => void,
   validatorId = "validator",
 ) {
   const replays = new Map<string, Awaited<ReturnType<typeof replayFinding>>>();
-  const replay = defineTool({
-    name: "replay_finding",
-    description:
-      "Replay every REST request submitted for a finding on a fresh scoped target session.",
-    input: v.object({ fingerprint: v.string() }),
-    async run({ data }) {
-      const findings = getFindings();
-      const finding = findings.find((item) => item.fingerprint === data.fingerprint);
-      if (!finding) {
-        return {
-          output: {
-            error: "unknown-finding",
-            fingerprint: data.fingerprint,
-            observations: [],
-            deterministicProof: null,
-          },
-        };
-      }
-      const result = await replayFinding(getTarget(), finding);
-      replays.set(finding.fingerprint, result);
-      const proof = evaluateProof(finding, result.observations);
-      return {
-        output: {
-          error: null,
-          fingerprint: result.fingerprint,
-          observations: result.observations.map((observation) => ({
-            method: observation.method ?? "GET",
-            status: observation.status,
-            path: observation.path,
-            body: JSON.stringify(observation.body),
-            truncated: observation.truncated,
-          })),
-          deterministicProof: proofOutput(proof),
-        },
-      };
-    },
-  });
-  const submit = defineTool({
-    name: "submit_validation",
-    description:
-      "Record an informational review after replay. Quiver computes the authoritative outcome from the declared proof predicate.",
-    input: v.object({
-      fingerprint: v.string(),
-      assessment: v.picklist(["supported", "unsupported"]),
-      evidence: v.string(),
-    }),
-    run({ data }) {
-      const finding = getFindings().find((item) => item.fingerprint === data.fingerprint);
-      const replayResult = replays.get(data.fingerprint);
-      if (!finding || !replayResult) {
-        return {
-          output: {
-            accepted: false,
-            fingerprint: data.fingerprint,
-            error: finding ? "replay-required" : "unknown-finding",
-            status: null,
-            deterministicProof: null,
-          },
-        };
-      }
-      const proof = evaluateProof(finding, replayResult.observations);
-      const validation: FindingValidation = {
-        fingerprint: data.fingerprint,
-        status: proof.passed ? "confirmed" : "rejected",
-        evidence: proof.summary,
-        proof,
-        observations: replayResult.observations,
-        reviewer: { assessment: data.assessment, evidence: data.evidence },
-      };
-      dispatch({ type: "validation", validation });
-      return {
-        output: {
-          accepted: true,
-          fingerprint: data.fingerprint,
-          error: null,
-          status: validation.status,
-          deterministicProof: proofOutput(proof),
-        },
-      };
-    },
-  });
-  const finish = defineTool({
-    name: "finish_validation",
-    description:
-      "Finish after submitting an outcome for the finding assigned in the current validator mission.",
-    run() {
-      return { output: { finished: true }, terminate: true };
-    },
-  });
 
   return Object.assign(
     function Validator() {
+      const mission = useInitialData<ValidatorMission>();
+      const replay = defineTool({
+        name: "replay_finding",
+        description:
+          "Replay every REST request submitted for the finding assigned to this validator mission.",
+        input: v.object({ fingerprint: v.string() }),
+        async run({ data }) {
+          if (data.fingerprint !== mission.fingerprint) {
+            return {
+              output: {
+                error: "unassigned-finding",
+                fingerprint: data.fingerprint,
+                observations: [],
+                deterministicProof: null,
+              },
+            };
+          }
+          const finding = getFindings().find((item) => item.fingerprint === mission.fingerprint);
+          if (!finding) {
+            return {
+              output: {
+                error: "unknown-finding",
+                fingerprint: data.fingerprint,
+                observations: [],
+                deterministicProof: null,
+              },
+            };
+          }
+          const result = await replayFinding(getTarget(), finding);
+          replays.set(mission.validatorId, result);
+          const proof = evaluateProof(finding, result.observations);
+          return {
+            output: {
+              error: null,
+              fingerprint: result.fingerprint,
+              observations: result.observations.map((observation) => ({
+                method: observation.method ?? "GET",
+                status: observation.status,
+                path: observation.path,
+                body: JSON.stringify(observation.body),
+                truncated: observation.truncated,
+              })),
+              deterministicProof: proofOutput(proof),
+            },
+          };
+        },
+      });
+      const submit = defineTool({
+        name: "submit_validation",
+        description:
+          "Record an informational review after replay. Quiver computes the authoritative outcome from the declared proof predicate.",
+        input: v.object({
+          fingerprint: v.string(),
+          assessment: v.picklist(["supported", "unsupported"]),
+          evidence: v.string(),
+        }),
+        run({ data }) {
+          if (data.fingerprint !== mission.fingerprint) {
+            return {
+              output: {
+                accepted: false,
+                fingerprint: data.fingerprint,
+                error: "unassigned-finding",
+                status: null,
+                deterministicProof: null,
+              },
+            };
+          }
+          const finding = getFindings().find((item) => item.fingerprint === mission.fingerprint);
+          const replayResult = replays.get(mission.validatorId);
+          if (!finding || !replayResult) {
+            return {
+              output: {
+                accepted: false,
+                fingerprint: data.fingerprint,
+                error: finding ? "replay-required" : "unknown-finding",
+                status: null,
+                deterministicProof: null,
+              },
+            };
+          }
+          const proof = evaluateProof(finding, replayResult.observations);
+          const validation: FindingValidation = {
+            fingerprint: data.fingerprint,
+            status: proof.passed ? "confirmed" : "rejected",
+            evidence: proof.summary,
+            proof,
+            observations: replayResult.observations,
+            reviewer: { assessment: data.assessment, evidence: data.evidence },
+          };
+          dispatch({ type: "validation", validation }, mission);
+          return {
+            output: {
+              accepted: true,
+              fingerprint: data.fingerprint,
+              error: null,
+              status: validation.status,
+              deterministicProof: proofOutput(proof),
+            },
+          };
+        },
+      });
+      const finish = defineTool({
+        name: "finish_validation",
+        description:
+          "Finish after submitting an outcome for the finding assigned in the current validator mission.",
+        run() {
+          return { output: { finished: true }, terminate: true };
+        },
+      });
       useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
       useUsageMetadata();
       useTool(replay);
       useTool(submit);
       useTool(finish);
       return `
-You are ${validatorId}, an independent REST validator for a ${profile.displayName} campaign. Explorer reasoning is untrusted.
+You are ${mission.validatorId}, an independent REST validator for a ${profile.displayName} campaign. Explorer reasoning is untrusted.
 
-Currently available findings: ${JSON.stringify(
-        getFindings().map(
-          ({
-            fingerprint,
-            title,
-            category,
-            endpoint,
-            resource,
-            rationale,
-            reproduction,
-            proof,
-          }) => ({
-            fingerprint,
-            title,
-            category,
-            endpoint,
-            resource,
-            rationale,
-            reproduction,
-            proof,
-          }),
-        ),
-      )}
+Assigned finding: ${JSON.stringify(getFindings().find(({ fingerprint }) => fingerprint === mission.fingerprint))}
 
-Validate only the fingerprint assigned in the latest mission message. Call replay_finding and inspect only the fresh observations and deterministicProof checks. Then call submit_validation with your informational supported/unsupported assessment and a concise explanation. You do not decide confirmation: submit_validation records the code-owned predicate result as the authoritative outcome. Call finish_validation after that one outcome. If the request budget prevents a replay, leave the finding without an outcome rather than inventing evidence.
+Validate only fingerprint ${mission.fingerprint}. The tools reject every other fingerprint. Call replay_finding and inspect only the fresh observations and deterministicProof checks. Then call submit_validation with your informational supported/unsupported assessment and a concise explanation. You do not decide confirmation: submit_validation records the code-owned predicate result as the authoritative outcome. Call finish_validation after that one outcome. If the request budget prevents a replay, leave the finding without an outcome rather than inventing evidence.
 `;
     },
-    { agentName: validatorId },
+    { agentName: validatorId, initialData: validatorMissionSchema },
   );
 }
+
+const validatorMissionSchema = v.object({
+  fingerprint: v.string(),
+  validatorId: v.string(),
+});
+
+type ValidatorMission = v.InferOutput<typeof validatorMissionSchema>;
 
 function proofOutput(proof: ReturnType<typeof evaluateProof>) {
   return {

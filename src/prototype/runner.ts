@@ -187,17 +187,16 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         dispatch({ type: "request", phase: "validation" });
       },
     });
-    let currentValidatorId = "validator";
     const Validator = createValidatorAgent(
       () => state.findings,
       () => validationTarget,
       options.profile,
-      (action) => {
+      (action, mission) => {
         if (action.type === "validation") {
           coordinator.recordValidation(
             action.validation.fingerprint,
             action.validation.status,
-            currentValidatorId,
+            mission.validatorId,
           );
         }
         dispatch(action);
@@ -238,11 +237,11 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       }
       dispatch({ type: "agent", id: validatorId, status: "running" });
       try {
-        currentValidatorId = validatorId;
         const validator = init(Validator, { id: `mission-${validationMissionIndex}` });
-        const receipt = await validator.dispatch(
-          `Validate only finding ${fingerprint}, submit its outcome, then finish validation.`,
-        );
+        const receipt = await validator.dispatch({
+          message: `Validate only finding ${fingerprint}, submit its outcome, then finish validation.`,
+          initialData: { fingerprint, validatorId },
+        });
         const reply = await validator.read(receipt, {
           onEvent: (chunk) => captureAgentEvent(validatorId, chunk),
         });
