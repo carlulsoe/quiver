@@ -60,6 +60,13 @@ grant. Add cross-principal tests for every object-detail handler.
 
 ## Raw replay proof
 
+The held-out fixture uses a fixed synthetic token. Set it before running the
+authenticated reproduction requests; it is not a real credential:
+
+```sh
+export QUIVER_TOKEN='quiver-showcase-user'
+```
+
 Actor/ownership baseline:
 
 ```http

@@ -9,4 +9,9 @@ export const heldOutProfile: TargetProfile = {
     target.setAuthentication({ authorization: "Bearer quiver-showcase-user" });
     return { authContext: "held-out-ordinary-user" };
   },
+  reproductionAuthentication: {
+    description:
+      "The local held-out fixture uses a fixed synthetic bearer token; it is not a real credential.",
+    commands: [`export QUIVER_TOKEN='quiver-showcase-user'`],
+  },
 };

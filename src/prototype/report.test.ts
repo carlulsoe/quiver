@@ -74,7 +74,7 @@ describe("campaign report", () => {
     const report = createRunReport(run, new Date("2026-08-31T00:00:00.000Z"));
 
     expect(report).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       generatedAt: "2026-08-31T00:00:00.000Z",
       profileId: "crapi",
       outcome: {
@@ -170,6 +170,10 @@ describe("campaign report", () => {
     state = reduceCampaign(state, { type: "phase", phase: "complete" });
     const report = createRunReport({
       profileId: "crapi",
+      reproductionAuthentication: {
+        description: "Log in as an ordinary test user.",
+        commands: ["export QUIVER_TOKEN='example-token'"],
+      },
       model: "openrouter/z-ai/glm-5.3-flash",
       durationMs: 1234,
       usage: {
@@ -195,6 +199,9 @@ describe("campaign report", () => {
     expect(markdown).toContain("CWE-639");
     expect(markdown).toContain("Raw replay evidence:");
     expect(markdown).toContain('"owner@example.com"');
+    expect(markdown).toContain("## Authentication for reproduction");
+    expect(markdown).toContain("export QUIVER_TARGET='http://127.0.0.1:8888'");
+    expect(markdown).toContain("export QUIVER_TOKEN='example-token'");
     expect(markdown).toContain(
       "curl --silent --show-error --header 'Authorization: Bearer $QUIVER_TOKEN' 'http://127.0.0.1:8888/vehicles/vehicle-2/location'",
     );

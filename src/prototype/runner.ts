@@ -23,6 +23,7 @@ export interface RunCampaignOptions {
 
 export interface CampaignRun {
   profileId: string;
+  reproductionAuthentication?: TargetProfile["reproductionAuthentication"];
   model: string;
   durationMs: number;
   usage: PromptUsage;
@@ -226,6 +227,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
 
   return {
     profileId: options.profile.id,
+    reproductionAuthentication: options.profile.reproductionAuthentication,
     model: GLM_FLASH_MODEL,
     durationMs: Math.round(performance.now() - startedAt),
     usage,

@@ -9,9 +9,10 @@ export interface ReportedFinding extends Finding {
 }
 
 export interface RunReport {
-  schemaVersion: 4;
+  schemaVersion: 5;
   generatedAt: string;
   profileId: string;
+  reproductionAuthentication?: CampaignRun["reproductionAuthentication"];
   model: string;
   usage: CampaignRun["usage"];
   target: string;
@@ -54,9 +55,10 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
   ).length;
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: generatedAt.toISOString(),
     profileId: run.profileId,
+    reproductionAuthentication: run.reproductionAuthentication,
     model: run.model,
     usage: run.usage,
     target: run.state.target,
@@ -100,6 +102,25 @@ export function renderMarkdownReport(report: RunReport): string {
     `| Approximate model cost | $${report.usage.cost.total.toFixed(4)} |`,
     "",
   ];
+
+  if (
+    report.reproductionAuthentication &&
+    report.findings.some((finding) => finding.reproduction.some((request) => request.authenticated))
+  ) {
+    lines.push(
+      "## Authentication for reproduction",
+      "",
+      report.reproductionAuthentication.description,
+      "",
+      "Set the target and obtain `$QUIVER_TOKEN` before running authenticated reproduction commands:",
+      "",
+      "```sh",
+      `export QUIVER_TARGET=${shellQuote(new URL(report.target).origin)}`,
+      ...report.reproductionAuthentication.commands,
+      "```",
+      "",
+    );
+  }
 
   const sections = [
     { title: "Confirmed findings", status: "confirmed" },

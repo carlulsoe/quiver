@@ -36,4 +36,12 @@ export const crapiProfile: TargetProfile = {
     { method: "GET", path: "/workshop/api/mechanic/mechanic_report" },
   ],
   authenticate,
+  reproductionAuthentication: {
+    description:
+      "Log in as the same ordinary test user configured for the campaign. The command uses CRAPI_TEST_EMAIL and CRAPI_TEST_PASSWORD when set, otherwise the profile defaults.",
+    commands: [
+      `export QUIVER_TOKEN="$(curl --silent --show-error --fail-with-body --request POST --header 'content-type: application/json' --data '{"email":"'"\${CRAPI_TEST_EMAIL:-test@example.com}"'","password":"'"\${CRAPI_TEST_PASSWORD:-Test!123}"'"}' "$QUIVER_TARGET/identity/api/auth/login" | jq --raw-output '.token')"`,
+      `test -n "$QUIVER_TOKEN" && test "$QUIVER_TOKEN" != "null"`,
+    ],
+  },
 };
