@@ -204,6 +204,16 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       "validator",
     );
     let validationAuthentication: Promise<unknown> | undefined;
+    const authenticateValidationTarget = async () => {
+      if (!options.profile.authenticate) return;
+      validationAuthentication ??= options.profile.authenticate(validationTarget);
+      try {
+        await validationAuthentication;
+      } catch (error) {
+        validationAuthentication = undefined;
+        throw error;
+      }
+    };
     let validationMissionIndex = 0;
     let validationChain = Promise.resolve();
     const validateFinding = async (fingerprint: string) => {
@@ -219,8 +229,12 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         options.profile.authenticate &&
         finding.reproduction.some((request) => request.authenticated)
       ) {
-        validationAuthentication ??= options.profile.authenticate(validationTarget);
-        await validationAuthentication;
+        try {
+          await authenticateValidationTarget();
+        } catch (error) {
+          if (isRequestBudgetExhausted(error)) return;
+          throw error;
+        }
       }
       if (
         validationTarget.requestBudget - validationTarget.requestsUsed <
@@ -258,9 +272,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         });
       } catch (error) {
         coordinator.releaseValidation(fingerprint);
-        const budgetExhausted =
-          error instanceof RequestBudgetExceededError ||
-          String(error).includes("Request budget exhausted");
+        const budgetExhausted = isRequestBudgetExhausted(error);
         dispatch({
           type: "agent",
           id: validatorId,
@@ -380,5 +392,12 @@ function isPromptUsage(value: unknown): value is PromptUsage {
     typeof usage.cost.cacheRead === "number" &&
     typeof usage.cost.cacheWrite === "number" &&
     typeof usage.cost.total === "number"
+  );
+}
+
+function isRequestBudgetExhausted(error: unknown): boolean {
+  return (
+    error instanceof RequestBudgetExceededError ||
+    String(error).includes("Request budget exhausted")
   );
 }
