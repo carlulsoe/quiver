@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeEndpoint } from "./endpoint.ts";
+import { endpointMatchesRequest, normalizeEndpoint } from "./endpoint.ts";
 
 describe("endpoint normalization", () => {
   it.each([
@@ -9,5 +9,13 @@ describe("endpoint normalization", () => {
     ["/", "/"],
   ])("canonicalizes %s as %s", (endpoint, expected) => {
     expect(normalizeEndpoint(endpoint)).toBe(expected);
+  });
+
+  it.each([
+    ["/fetch/{name}", "/fetch/report"],
+    ["/fetch/<name>", "/fetch/report"],
+    ["/fetch/:name", "/fetch/report"],
+  ])("matches template %s to concrete slug %s", (endpoint, request) => {
+    expect(endpointMatchesRequest(endpoint, request)).toBe(true);
   });
 });

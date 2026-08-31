@@ -104,7 +104,7 @@ describe("finding replay", () => {
         probeId: "old-probe",
         marker: "old",
         requestIndex: 0,
-        pagePath: "/app?payload=old#/preview",
+        pagePath: "/app?payload=old#/admin",
         kind: "dialog",
         challenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
         pageAuthenticated: false,
@@ -113,7 +113,22 @@ describe("finding replay", () => {
       },
     };
 
-    const replay = await replayFinding(target, finding, artifacts);
+    const replay = await replayFinding(target, finding, artifacts, [
+      {
+        id: "preview-dialog",
+        kind: "browser-effect",
+        category: "cross-site-scripting",
+        description: "Reflected preview dialog.",
+        effect: "dialog",
+        markerPattern: "^QUIVER-BROWSER-",
+        pagePath: "/app?payload=old#/preview",
+        payloadTemplate: "{{challenge}}",
+        challenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
+        pageAuthenticated: false,
+        pageChallenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
+        requestBudget: 1,
+      },
+    ]);
 
     expect(replay.replayedFinding.reproduction[0]?.path).toMatch(/#\/preview$/);
     expect(
@@ -192,7 +207,7 @@ describe("finding replay", () => {
     const target = new ScopedTarget({
       target: new URL("http://127.0.0.1:8888"),
       requestBudget: 1,
-      allowedRequests: [{ method: "POST", path: "/preview" }],
+      allowedRequests: [{ method: "POST", path: "/preview/{name}" }],
       transport: async (_input, init) => {
         const body = JSON.parse(String(init?.body)) as { url: string };
         await fetch(body.url, { method: "POST" });
@@ -206,7 +221,7 @@ describe("finding replay", () => {
       category: "server-side-request-forgery",
       severity: "high",
       cwe: "CWE-918",
-      endpoint: "/preview",
+      endpoint: "/preview/{name}",
       method: "POST",
       resource: "preview URL",
       rationale: "The server fetched a supplied callback URL.",
@@ -214,7 +229,7 @@ describe("finding replay", () => {
       mitigation: "Allowlist preview destinations.",
       reproduction: [
         {
-          path: "/preview",
+          path: "/preview/report",
           method: "POST",
           authenticated: false,
           body: JSON.stringify({ url: original.url }),
@@ -231,7 +246,18 @@ describe("finding replay", () => {
       },
     };
 
-    const replay = await replayFinding(target, finding, artifacts);
+    const replay = await replayFinding(target, finding, artifacts, [
+      {
+        id: "preview-fetch",
+        kind: "oast",
+        category: "server-side-request-forgery",
+        description: "Preview callback.",
+        protocol: "http",
+        endpoint: "/preview/{name}",
+        method: "POST",
+        challenge: { location: "json-body", parameter: "url", template: "{{challenge}}" },
+      },
+    ]);
 
     expect(replay.replayedFinding.proof).toMatchObject({
       type: "oast-callback",

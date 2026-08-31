@@ -16,7 +16,7 @@ import {
   type FindingValidation,
   type ExploitChainInput,
 } from "./state.ts";
-import type { TargetProfile } from "./target-profile.ts";
+import { browserPolicyPath, type TargetProfile } from "./target-profile.ts";
 
 const categorySchema = v.picklist([
   "broken-object-authorization",
@@ -550,7 +550,7 @@ export function createValidatorAgent(
           await target.runProfileSetup(() => profile.prepareValidation!(target));
         }
       }
-      const result = await replayFinding(target, finding, artifacts);
+      const result = await replayFinding(target, finding, artifacts, profile.proofPolicies);
       replays.set(finding.fingerprint, result);
       const proof = evaluateProof(result.replayedFinding, result.observations, {
         policies: profile.proofPolicies,
@@ -701,26 +701,4 @@ function chainProofOutput(result: ReturnType<typeof evaluateExploitChain>) {
       actual: item.actual === undefined ? null : JSON.stringify(item.actual),
     })),
   };
-}
-
-function browserPolicyPath(
-  policy: Extract<NonNullable<TargetProfile["proofPolicies"]>[number], { kind: "browser-effect" }>,
-  marker: string,
-): string {
-  if (!policy.pageChallenge) return policy.pagePath;
-  if (
-    policy.pageChallenge.location !== "query" ||
-    policy.pageChallenge.template.split("{{challenge}}").length !== 2
-  ) {
-    throw new Error("Browser page challenge must be one query substitution");
-  }
-  const url = new URL(policy.pagePath, "http://browser-policy.invalid");
-  if (url.searchParams.getAll(policy.pageChallenge.parameter).length !== 1) {
-    throw new Error("Browser policy pagePath must contain its challenge query parameter once");
-  }
-  url.searchParams.set(
-    policy.pageChallenge.parameter,
-    policy.pageChallenge.template.replace("{{challenge}}", marker),
-  );
-  return `${url.pathname}${url.search}${url.hash}`;
 }

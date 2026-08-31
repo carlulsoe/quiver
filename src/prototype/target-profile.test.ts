@@ -56,11 +56,42 @@ describe("target profile proof policy validation", () => {
             markerPattern: "^QUIVER-BROWSER-",
             pagePath: "/preview",
             payloadTemplate: "<script>alert('{{challenge}}')</script>",
+            challenge: {
+              location: "json-body",
+              parameter: "payload",
+              template: "<script>alert('{{challenge}}')</script>",
+            },
             pageAuthenticated: false,
             requestBudget: 21,
           },
         ],
       }),
     ).toThrow("requestBudget must be from 1 to 20");
+  });
+
+  it("requires reflected browser request and page mutations to be identical", () => {
+    expect(() =>
+      assertValidTargetProfile({
+        id: "inconsistent-reflection",
+        displayName: "Inconsistent reflection",
+        objective: "Exercise reflected mutation validation.",
+        proofPolicies: [
+          {
+            id: "dialog",
+            kind: "browser-effect",
+            category: "cross-site-scripting",
+            description: "Synthetic reflected dialog.",
+            effect: "dialog",
+            markerPattern: "^QUIVER-BROWSER-",
+            pagePath: "/preview?payload=old#/result",
+            payloadTemplate: "{{challenge}}",
+            challenge: { location: "json-body", parameter: "payload", template: "{{challenge}}" },
+            pageAuthenticated: false,
+            pageChallenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
+            requestBudget: 1,
+          },
+        ],
+      }),
+    ).toThrow("pageChallenge must replace one declared query parameter");
   });
 });

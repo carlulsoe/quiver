@@ -9,9 +9,10 @@ import type {
   ValidationObservation,
 } from "./state.ts";
 import { hasPotentialAuthenticationHeaders } from "./scoped-target.ts";
-import type { ProofPolicy } from "./target-profile.ts";
+import { browserPolicyPath, type ProofPolicy } from "./target-profile.ts";
 import { impactSafetyChecks } from "./impact.ts";
 import type { ImpactLevel } from "./state.ts";
+import { endpointMatchesRequest } from "./endpoint.ts";
 
 /** Code-owned compatibility is the first vulnerability-specific validation boundary. */
 export const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["type"][]> = {
@@ -367,8 +368,9 @@ export function evaluateProof(
           "browser payload request matches the affected operation",
         ),
         check(
-          policy !== undefined && proof.challenge.template === policy.payloadTemplate,
-          "browser challenge uses the target-owned executable payload template",
+          policy !== undefined &&
+            canonicalJson(proof.challenge) === canonicalJson(policy.challenge),
+          "browser challenge uses the target-owned mutation and executable payload template",
         ),
         check(
           policy !== undefined && proof.pageAuthenticated === policy.pageAuthenticated,
@@ -405,8 +407,8 @@ export function evaluateProof(
             policy.effect === "dialog" &&
             proof.kind === policy.effect &&
             artifact.kind === policy.effect &&
-            endpointMatchesRequest(policy.pagePath, proof.pagePath) &&
-            endpointMatchesRequest(policy.pagePath, artifact.path),
+            browserPolicyPath(policy, proof.marker) === proof.pagePath &&
+            artifact.path === proof.pagePath,
           "fresh browser artifact matches the policy effect and page",
         ),
         check(
@@ -426,6 +428,11 @@ export function evaluateProof(
       const request = finding.reproduction[proof.requestIndex];
       checks.push(
         check(policy?.category === finding.category, "target policy authorizes this OAST proof"),
+        check(
+          policy !== undefined &&
+            canonicalJson(proof.challenge) === canonicalJson(policy.challenge),
+          "OAST challenge uses the target-owned request mutation",
+        ),
         check(
           policy !== undefined &&
             request !== undefined &&
@@ -866,21 +873,4 @@ function sameValue(left: unknown, right: unknown): boolean {
 
 function isSuccess(status: number): boolean {
   return status >= 200 && status < 300;
-}
-
-function endpointMatchesRequest(endpoint: string, requestPath: string): boolean {
-  try {
-    const endpointSegments = new URL(endpoint, "http://proof.invalid").pathname.split("/");
-    const requestSegments = new URL(requestPath, "http://proof.invalid").pathname.split("/");
-    return (
-      endpointSegments.length === requestSegments.length &&
-      endpointSegments.every(
-        (segment, index) =>
-          /^(?:<[^>]+>|\{[^}]+\}|:[A-Za-z_$][\w$]*)$/.test(decodeURIComponent(segment)) ||
-          segment === requestSegments[index],
-      )
-    );
-  } catch {
-    return false;
-  }
 }

@@ -276,6 +276,7 @@ describe("target-owned proof policies", () => {
       markerPattern: "^QUIVER-BROWSER-[A-Z0-9-]+$",
       pagePath: "/comments/latest",
       payloadTemplate,
+      challenge: { location: "json-body", parameter: "payload", template: payloadTemplate },
       pageAuthenticated: true,
       requestBudget: 3,
     };
@@ -362,6 +363,7 @@ describe("target-owned proof policies", () => {
       protocol: "http",
       endpoint: "/preview",
       method: "POST",
+      challenge: { location: "json-body", parameter: "url", template: "{{challenge}}" },
     };
     expect(
       evaluateWithPolicy(

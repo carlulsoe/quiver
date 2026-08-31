@@ -13,3 +13,20 @@ export function normalizeEndpoint(endpoint: string): string {
 
   return path === "/" ? path : path.replace(/\/+$/, "");
 }
+
+export function endpointMatchesRequest(endpoint: string, requestPath: string): boolean {
+  try {
+    const endpointSegments = new URL(endpoint, "http://scope.invalid").pathname.split("/");
+    const requestSegments = new URL(requestPath, "http://scope.invalid").pathname.split("/");
+    return (
+      endpointSegments.length === requestSegments.length &&
+      endpointSegments.every(
+        (segment, index) =>
+          /^(?:<[^>]+>|\{[^}]+\}|:[A-Za-z_$][\w$]*)$/.test(decodeURIComponent(segment)) ||
+          segment === requestSegments[index],
+      )
+    );
+  } catch {
+    return false;
+  }
+}

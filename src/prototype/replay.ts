@@ -2,6 +2,8 @@ import type { ScopedTarget } from "./scoped-target.ts";
 import type { ProofArtifactStore } from "./proof-artifacts.ts";
 import type { Finding, ProofArtifacts, ValidationObservation } from "./state.ts";
 import { requiredImpactLevel } from "./impact.ts";
+import { endpointMatchesRequest } from "./endpoint.ts";
+import { browserPolicyPath, type ProofPolicy } from "./target-profile.ts";
 
 export interface ReplayResult {
   fingerprint: string;
@@ -25,8 +27,9 @@ export async function replayFinding(
   target: ScopedTarget,
   finding: Finding,
   artifactStore?: ProofArtifactStore,
+  policies: readonly ProofPolicy[] = [],
 ): Promise<ReplayResult> {
-  const replayedFinding = prepareFreshChallenge(finding, artifactStore);
+  const replayedFinding = prepareFreshChallenge(finding, artifactStore, policies);
   target.assertImpactLevel(requiredImpactLevel(replayedFinding));
   const requiredRequests = replayRequestBudget(replayedFinding);
   if (target.remainingRequests < requiredRequests) {
@@ -84,45 +87,59 @@ export async function replayFinding(
   };
 }
 
-function prepareFreshChallenge(finding: Finding, store: ProofArtifactStore | undefined): Finding {
+function prepareFreshChallenge(
+  finding: Finding,
+  store: ProofArtifactStore | undefined,
+  policies: readonly ProofPolicy[],
+): Finding {
   if (!store || !["browser-visible-effect", "oast-callback"].includes(finding.proof.type)) {
     return finding;
   }
   if (finding.proof.type === "browser-visible-effect") {
     const proof = finding.proof;
+    const policy = policies.find(
+      (candidate) => candidate.kind === "browser-effect" && candidate.id === proof.policyId,
+    );
+    if (policy?.kind !== "browser-effect") throw new Error("Unknown browser-effect proof policy");
+    assertAffectedRequestIndex(finding, proof.requestIndex);
     const probe = store.issueBrowserProbe();
-    return replaceChallenge(finding, proof.requestIndex, proof.challenge, probe.marker, {
+    return replaceChallenge(finding, proof.requestIndex, policy.challenge, probe.marker, {
       ...proof,
       probeId: probe.probeId,
       marker: probe.marker,
-      pagePath: proof.pageChallenge
-        ? replacePathChallenge(proof.pagePath, proof.pageChallenge, probe.marker)
-        : proof.pagePath,
+      challenge: policy.challenge,
+      pagePath: browserPolicyPath(policy, probe.marker),
+      pageAuthenticated: policy.pageAuthenticated,
+      pageChallenge: policy.pageChallenge,
+      collectorRequestBudget: policy.requestBudget,
     });
   }
   if (finding.proof.type !== "oast-callback") return finding;
   const proof = finding.proof;
+  const policy = policies.find(
+    (candidate) => candidate.kind === "oast" && candidate.id === proof.policyId,
+  );
+  if (policy?.kind !== "oast") throw new Error("Unknown OAST proof policy");
+  assertAffectedRequestIndex(finding, proof.requestIndex);
   const probe = store.issueOastProbe();
-  return replaceChallenge(finding, proof.requestIndex, proof.challenge, probe.url, {
+  return replaceChallenge(finding, proof.requestIndex, policy.challenge, probe.url, {
     ...proof,
     probeId: probe.probeId,
     token: probe.token,
     callbackUrl: probe.url,
+    challenge: policy.challenge,
   });
 }
 
-function replacePathChallenge(
-  path: string,
-  challenge: { location: "query" | "json-body"; parameter: string; template: string },
-  value: string,
-): string {
-  if (challenge.location !== "query" || challenge.template.split("{{challenge}}").length !== 2) {
-    return path;
+function assertAffectedRequestIndex(finding: Finding, requestIndex: number): void {
+  const request = finding.reproduction[requestIndex];
+  if (
+    !request ||
+    (request.method ?? "GET") !== (finding.method ?? "GET") ||
+    !endpointMatchesRequest(finding.endpoint, request.path)
+  ) {
+    throw new Error("Proof challenge request is not the affected finding operation");
   }
-  const url = new URL(path, "http://proof.invalid");
-  if (url.searchParams.getAll(challenge.parameter).length !== 1) return path;
-  url.searchParams.set(challenge.parameter, challenge.template.replace("{{challenge}}", value));
-  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function replaceChallenge(

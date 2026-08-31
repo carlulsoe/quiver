@@ -40,6 +40,7 @@ export interface BrowserEffectProofPolicy extends ProofPolicyRule {
   markerPattern: string;
   pagePath: string;
   payloadTemplate: string;
+  challenge: ChallengeMutation;
   pageAuthenticated: boolean;
   pageChallenge?: ChallengeMutation;
   requestBudget: number;
@@ -50,6 +51,7 @@ export interface OastProofPolicy extends ProofPolicyRule {
   protocol: "http";
   endpoint: string;
   method: string;
+  challenge: ChallengeMutation;
 }
 
 export type ProofPolicy =
@@ -91,10 +93,23 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
     ) {
       throw new Error(`Browser-effect policy ${policy.id} requestBudget must be from 1 to 20`);
     }
+    if (policy.kind === "oast" && policy.challenge.template.split("{{challenge}}").length !== 2) {
+      throw new Error(`OAST policy ${policy.id} challenge must substitute the callback once`);
+    }
+    if (
+      policy.kind === "browser-effect" &&
+      (policy.challenge.template !== policy.payloadTemplate ||
+        policy.challenge.template.split("{{challenge}}").length !== 2)
+    ) {
+      throw new Error(
+        `Browser-effect policy ${policy.id} challenge must use its payloadTemplate once`,
+      );
+    }
     if (
       policy.kind === "browser-effect" &&
       policy.pageChallenge &&
       (policy.pageChallenge.location !== "query" ||
+        !sameChallenge(policy.challenge, policy.pageChallenge) ||
         policy.pageChallenge.template.split("{{challenge}}").length !== 2 ||
         new URL(policy.pagePath, "http://browser-policy.invalid").searchParams.getAll(
           policy.pageChallenge.parameter,
@@ -114,4 +129,31 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
       );
     }
   }
+}
+
+function sameChallenge(left: ChallengeMutation, right: ChallengeMutation): boolean {
+  return (
+    left.location === right.location &&
+    left.parameter === right.parameter &&
+    left.template === right.template
+  );
+}
+
+export function browserPolicyPath(policy: BrowserEffectProofPolicy, marker: string): string {
+  if (!policy.pageChallenge) return policy.pagePath;
+  if (
+    policy.pageChallenge.location !== "query" ||
+    policy.pageChallenge.template.split("{{challenge}}").length !== 2
+  ) {
+    throw new Error("Browser page challenge must be one query substitution");
+  }
+  const url = new URL(policy.pagePath, "http://browser-policy.invalid");
+  if (url.searchParams.getAll(policy.pageChallenge.parameter).length !== 1) {
+    throw new Error("Browser policy pagePath must contain its challenge query parameter once");
+  }
+  url.searchParams.set(
+    policy.pageChallenge.parameter,
+    policy.pageChallenge.template.replace("{{challenge}}", marker),
+  );
+  return `${url.pathname}${url.search}${url.hash}`;
 }
