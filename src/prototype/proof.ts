@@ -6,6 +6,7 @@ import type {
   ProofResult,
   ValidationObservation,
 } from "./state.ts";
+import { hasPotentialAuthenticationHeaders } from "./scoped-target.ts";
 
 const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["type"][]> = {
   "broken-object-authorization": ["cross-principal-access", "unauthenticated-success"],
@@ -17,7 +18,7 @@ const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["typ
 };
 
 export function evaluateProof(
-  finding: Pick<Finding, "category" | "endpoint" | "proof" | "reproduction">,
+  finding: Pick<Finding, "category" | "endpoint" | "method" | "proof" | "reproduction">,
   observations: readonly ValidationObservation[],
 ): ProofResult {
   const checks: ProofCheck[] = [
@@ -31,8 +32,12 @@ export function evaluateProof(
       `${observations.length}/${finding.reproduction.length}`,
     ),
     check(
-      finding.reproduction.some(({ path }) => endpointMatchesRequest(finding.endpoint, path)),
-      "affected endpoint matches a reproduction request",
+      finding.reproduction.some(
+        ({ path, method }) =>
+          endpointMatchesRequest(finding.endpoint, path) &&
+          (method ?? "GET") === (finding.method ?? "GET"),
+      ),
+      "affected operation matches a reproduction request",
     ),
     check(!observations.some(({ truncated }) => truncated), "proof responses were not truncated"),
   ];
@@ -74,8 +79,12 @@ export function evaluateProof(
       const request = finding.reproduction[finding.proof.requestIndex];
       checks.push(
         check(
-          request !== undefined && !request.authenticated,
-          "request was sent without authentication",
+          request !== undefined &&
+            !request.authenticated &&
+            ["GET", "HEAD"].includes(request.method ?? "GET") &&
+            request.body === undefined &&
+            !hasPotentialAuthenticationHeaders(request.headers),
+          "bodyless GET/HEAD request was sent without authentication",
         ),
         check(
           observation !== undefined && isSuccess(observation.status),

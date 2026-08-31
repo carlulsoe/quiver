@@ -1,4 +1,4 @@
-import { campaignRouteCoverage, type CampaignAction, type CampaignState } from "./state.ts";
+import { campaignOperationCoverage, type CampaignAction, type CampaignState } from "./state.ts";
 
 const bold = "\x1b[1m";
 const dim = "\x1b[2m";
@@ -12,7 +12,7 @@ export function render(state: CampaignState, action?: CampaignAction): void {
     (validation) => validation.status === "rejected",
   ).length;
   const unvalidated = state.findings.length - state.validations.length;
-  const routeCoverage = campaignRouteCoverage(state);
+  const operationCoverage = campaignOperationCoverage(state);
 
   if (!process.stdout.isTTY) {
     console.log(
@@ -22,7 +22,7 @@ export function render(state: CampaignState, action?: CampaignAction): void {
         budget: state.budget,
         agents: Object.fromEntries(state.agents.map((agent) => [agent.id, agent.status])),
         findings: { total: state.findings.length, confirmed, rejected, unvalidated },
-        routeCoverage,
+        operationCoverage,
         transition: action?.type,
         error: state.error,
       }),
@@ -31,10 +31,10 @@ export function render(state: CampaignState, action?: CampaignAction): void {
   }
 
   console.clear();
-  console.log(`${bold}Quiver — bounded read-only pentest campaign${reset}`);
+  console.log(`${bold}Quiver — bounded REST pentest campaign${reset}`);
   console.log(`${dim}Target-guided discovery and independent replay${reset}\n`);
   console.log(
-    `${bold}flow${reset}        ${flowStep("crawl", state.phase !== "starting")} → ${flowStep("hypothesize", state.findings.length > 0)} → ${flowStep("exploit", state.testedRequests.length > 0)} → ${flowStep("prove", state.validations.length > 0)}`,
+    `${bold}flow${reset}        ${flowStep("map", state.phase !== "starting")} → ${flowStep("hypothesize", state.findings.length > 0)} → ${flowStep("exploit", state.testedRequests.length > 0)} → ${flowStep("prove", state.validations.length > 0)}`,
   );
   console.log(`${bold}target${reset}      ${state.target}`);
   console.log(`${bold}phase${reset}       ${state.phase}`);
@@ -44,8 +44,8 @@ export function render(state: CampaignState, action?: CampaignAction): void {
       `validate ${state.requests.validation}/${state.budget.validation})`,
   );
   console.log(
-    `${bold}coverage${reset}    ${(routeCoverage.coverage * 100).toFixed(0)}% actionable routes ` +
-      `(${routeCoverage.tested}/${routeCoverage.discovered})`,
+    `${bold}coverage${reset}    ${(operationCoverage.coverage * 100).toFixed(0)}% actionable operations ` +
+      `(${operationCoverage.tested}/${operationCoverage.discovered})`,
   );
   console.log(
     `${bold}findings${reset}    ${state.findings.length} ` +
@@ -80,7 +80,7 @@ export function render(state: CampaignState, action?: CampaignAction): void {
     console.log(`\n${bold}recent requests${reset}`);
     for (const request of state.testedRequests.slice(-5)) {
       console.log(
-        `  ${String(request.status).padEnd(3)} ${request.authenticated ? "auth" : "anon"} GET ${request.path}`,
+        `  ${String(request.status).padEnd(3)} ${request.authenticated ? "auth" : "anon"} ${request.method ?? "GET"} ${request.path}`,
       );
     }
   }

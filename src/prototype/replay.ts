@@ -11,9 +11,13 @@ export async function replayFinding(target: ScopedTarget, finding: Finding): Pro
   for (const request of finding.reproduction) {
     const observation = await target.request({
       path: request.path,
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
       authenticated: request.authenticated,
     });
     observations.push({
+      method: observation.method ?? request.method ?? "GET",
       status: observation.status,
       path: observation.path,
       authenticated: request.authenticated,

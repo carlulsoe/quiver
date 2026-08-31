@@ -74,7 +74,7 @@ describe("campaign report", () => {
     const report = createRunReport(run, new Date("2026-08-31T00:00:00.000Z"));
 
     expect(report).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       generatedAt: "2026-08-31T00:00:00.000Z",
       profileId: "crapi",
       outcome: {
@@ -115,7 +115,22 @@ describe("campaign report", () => {
         mitigation: "Check vehicle ownership before returning location data.",
         reproduction: [
           { path: "/vehicles/mine", authenticated: true },
-          { path: "/vehicles/vehicle-2/location", authenticated: true },
+          {
+            path: "/vehicles/vehicle-2/location?token=url-secret&view=full",
+            authenticated: true,
+            headers: {
+              accept: "application/json",
+              authorization: "Bearer report-secret",
+              "x-api-key": "report-secret",
+              "`id`-auth": "report-secret",
+            },
+            body: JSON.stringify({
+              vehicle: "vehicle-2",
+              newPassword: "body-secret",
+              "access-token": "body-token",
+              private_key: "body-key",
+            }),
+          },
         ],
         proof: {
           type: "cross-principal-access",
@@ -185,7 +200,19 @@ describe("campaign report", () => {
         cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
       },
       state,
-      events: [],
+      events: [
+        {
+          sequence: 1,
+          elapsedMs: 10,
+          type: "tool-call",
+          data: {
+            input: {
+              headers: { "content-type": "application/json", authorization: "secret" },
+              body: "query=vehicle-2&access_token=event-secret",
+            },
+          },
+        },
+      ],
     });
 
     const markdown = renderMarkdownReport(report);
@@ -202,8 +229,23 @@ describe("campaign report", () => {
     expect(markdown).toContain("## Authentication for reproduction");
     expect(markdown).toContain("export QUIVER_TARGET='http://127.0.0.1:8888'");
     expect(markdown).toContain("export QUIVER_TOKEN='example-token'");
-    expect(markdown).toContain(
-      "curl --silent --show-error --header 'Authorization: Bearer $QUIVER_TOKEN' 'http://127.0.0.1:8888/vehicles/vehicle-2/location'",
-    );
+    expect(markdown).toContain("--header 'Authorization: Bearer $QUIVER_TOKEN'");
+    expect(markdown).toContain("--header 'accept: application/json'");
+    expect(markdown).toContain(`--header 'x-api-key: '"$QUIVER_HEADER_X_API_KEY"`);
+    expect(markdown).toContain(`--header '\`id\`-auth: '"$QUIVER_HEADER_ID_AUTH"`);
+    expect(markdown).toContain('--data-raw "$QUIVER_REQUEST_BODY"');
+    const customHeaderCommand = markdown
+      .split("\n")
+      .find((line) => line.startsWith("curl ") && line.includes("/vehicles/vehicle-2/location"))!;
+    expect(customHeaderCommand.match(/Authorization: Bearer \$QUIVER_TOKEN/g)).toHaveLength(1);
+    expect(markdown).not.toContain("authorization: [REDACTED]");
+    expect(JSON.stringify(report)).not.toContain("report-secret");
+    expect(JSON.stringify(report)).not.toContain("body-secret");
+    expect(JSON.stringify(report)).not.toContain("body-token");
+    expect(JSON.stringify(report)).not.toContain("body-key");
+    expect(JSON.stringify(report)).not.toContain("event-secret");
+    expect(JSON.stringify(report)).not.toContain("url-secret");
+    expect(JSON.stringify(report)).not.toContain("query=vehicle-2");
+    expect(JSON.stringify(report)).not.toContain('authorization":"secret');
   });
 });

@@ -1,4 +1,5 @@
 import { normalizeEndpoint } from "./endpoint.ts";
+import type { RestMethod } from "./scoped-target.ts";
 
 export { normalizeEndpoint } from "./endpoint.ts";
 
@@ -22,6 +23,9 @@ export interface CampaignAgent {
 
 export interface ReproductionRequest {
   path: string;
+  method?: RestMethod;
+  headers?: Record<string, string>;
+  body?: string;
   authenticated: boolean;
 }
 
@@ -63,6 +67,7 @@ export interface FindingInput {
   severity: FindingSeverity;
   cwe: string;
   endpoint: string;
+  method?: RestMethod;
   resource: string;
   rationale: string;
   impact: string;
@@ -101,6 +106,7 @@ export interface ProofResult {
 }
 
 export interface ValidationObservation {
+  method?: RestMethod;
   status: number;
   path: string;
   authenticated: boolean;
@@ -117,8 +123,14 @@ export interface CampaignBudget {
 export interface TestedRequest {
   agentId: string;
   path: string;
+  method?: RestMethod;
   authenticated: boolean;
   status: number;
+}
+
+export interface DiscoveredOperation {
+  method: string;
+  path: string;
 }
 
 export interface CampaignState {
@@ -129,6 +141,7 @@ export interface CampaignState {
   agents: CampaignAgent[];
   testedRequests: TestedRequest[];
   discoveredRoutes: string[];
+  discoveredOperations: DiscoveredOperation[];
   findings: Finding[];
   validations: FindingValidation[];
   error?: string;
@@ -149,6 +162,7 @@ export type CampaignAction =
   | { type: "reclaim-exploration-budget" }
   | { type: "request-tested"; request: TestedRequest }
   | { type: "routes-discovered"; routes: string[] }
+  | { type: "operations-discovered"; operations: DiscoveredOperation[] }
   | { type: "finding"; finding: FindingInput }
   | { type: "validation"; validation: FindingValidation }
   | { type: "failed"; error: string };
@@ -184,6 +198,7 @@ export function createCampaignState(
     ],
     testedRequests: [],
     discoveredRoutes: [],
+    discoveredOperations: [],
     findings: [],
     validations: [],
   };
@@ -238,6 +253,15 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
         ...state,
         discoveredRoutes: [...new Set([...state.discoveredRoutes, ...action.routes])],
       };
+    case "operations-discovered": {
+      const operations = new Map(
+        [...state.discoveredOperations, ...action.operations].map((operation) => [
+          operationKey(operation),
+          operation,
+        ]),
+      );
+      return { ...state, discoveredOperations: [...operations.values()] };
+    }
     case "finding": {
       const finding = { ...action.finding, fingerprint: fingerprintFinding(action.finding) };
       return state.findings.some((existing) => existing.fingerprint === finding.fingerprint)
@@ -255,24 +279,38 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
   }
 }
 
-export function fingerprintFinding(finding: Pick<FindingInput, "category" | "endpoint">): string {
-  return `${finding.category}:GET:${normalizeEndpoint(finding.endpoint)}`;
+export function fingerprintFinding(
+  finding: Pick<FindingInput, "category" | "endpoint" | "method">,
+): string {
+  const method = finding.method ?? "GET";
+  return `${finding.category}:${method}:${normalizeEndpoint(finding.endpoint)}`;
 }
 
-export function campaignRouteCoverage(state: CampaignState): {
+export function campaignOperationCoverage(state: CampaignState): {
   discovered: number;
   tested: number;
   coverage: number;
 } {
-  const discovered = new Set(state.discoveredRoutes.map(normalizeEndpoint));
+  const discovered = new Set(
+    state.discoveredOperations.length > 0
+      ? state.discoveredOperations.map(operationKey)
+      : state.discoveredRoutes.map((path) => operationKey({ method: "GET", path })),
+  );
   const tested = new Set(
     state.testedRequests
-      .map(({ path }) => normalizeEndpoint(path))
-      .filter((path) => discovered.has(path)),
+      .map(({ path, method }) => operationKey({ method: method ?? "GET", path }))
+      .filter((operation) => discovered.has(operation)),
   ).size;
   return {
     discovered: discovered.size,
     tested,
     coverage: discovered.size === 0 ? 0 : tested / discovered.size,
   };
+}
+
+/** @deprecated Use campaignOperationCoverage. */
+export const campaignRouteCoverage = campaignOperationCoverage;
+
+function operationKey(operation: Pick<DiscoveredOperation, "method" | "path">): string {
+  return `${operation.method} ${normalizeEndpoint(operation.path)}`;
 }

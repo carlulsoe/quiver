@@ -4,7 +4,7 @@ import { ScopedTarget } from "./scoped-target.ts";
 import type { Finding } from "./state.ts";
 
 describe("finding replay", () => {
-  it("independently repeats every read-only request in the submitted plan", async () => {
+  it("independently repeats every REST request in the submitted plan", async () => {
     const target = new ScopedTarget({
       target: new URL("http://127.0.0.1:8888"),
       requestBudget: 2,
@@ -45,6 +45,7 @@ describe("finding replay", () => {
       observations: [
         {
           status: 200,
+          method: "GET",
           path: "/items/mine",
           authenticated: true,
           body: { path: "/items/mine" },
@@ -52,6 +53,7 @@ describe("finding replay", () => {
         },
         {
           status: 200,
+          method: "GET",
           path: "/items/other",
           authenticated: true,
           body: { path: "/items/other" },

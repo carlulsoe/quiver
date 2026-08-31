@@ -7,6 +7,8 @@ export interface CliOptions {
   quiet: boolean;
   help: boolean;
   requestBudget: number;
+  openApiPath?: string;
+  contextPath?: string;
 }
 
 export function parseCliOptions(args: string[]): CliOptions {
@@ -17,6 +19,8 @@ export function parseCliOptions(args: string[]): CliOptions {
   let help = false;
   let targetProvided = false;
   let requestBudget = 30;
+  let openApiPath: string | undefined;
+  let contextPath: string | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -25,6 +29,12 @@ export function parseCliOptions(args: string[]): CliOptions {
       if (!reportPath || reportPath.startsWith("-")) {
         throw new Error("--report requires a file path");
       }
+      index += 1;
+    } else if (argument === "--openapi") {
+      openApiPath = requiredPath(args[index + 1], "--openapi");
+      index += 1;
+    } else if (argument === "--context") {
+      contextPath = requiredPath(args[index + 1], "--context");
       index += 1;
     } else if (argument === "--profile") {
       const value = args[index + 1];
@@ -54,7 +64,21 @@ export function parseCliOptions(args: string[]): CliOptions {
   }
 
   target ??= new URL(profileId === "held-out" ? "http://127.0.0.1:8899" : "http://127.0.0.1:8888");
-  return { target, profileId, reportPath, quiet, help, requestBudget };
+  return {
+    target,
+    profileId,
+    reportPath,
+    quiet,
+    help,
+    requestBudget,
+    ...(openApiPath ? { openApiPath } : {}),
+    ...(contextPath ? { contextPath } : {}),
+  };
+}
+
+function requiredPath(value: string | undefined, option: string): string {
+  if (!value || value.startsWith("-")) throw new Error(`${option} requires a file path`);
+  return value;
 }
 
 export const CLI_HELP = `Usage: bun run campaign -- [target] [options]
@@ -63,6 +87,8 @@ Options:
   --report <path>  Write a .json trace or polished .md report
   --profile <id>   Target profile: crapi or held-out (default: crapi)
   --budget <count> Total HTTP request budget (default: 30)
+  --openapi <path> Merge a supplied OpenAPI JSON or YAML document
+  --context <path> Supply target notes and assessment context to explorers
   --quiet          Suppress live state rendering
   -h, --help       Show this help
 `;

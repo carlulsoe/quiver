@@ -1,4 +1,5 @@
 import type { HttpObservation } from "./scoped-target.ts";
+import type { RestMethod } from "./scoped-target.ts";
 import {
   fingerprintFinding,
   type Finding,
@@ -11,6 +12,9 @@ import {
 export interface LedgerRequest {
   agentId: string;
   path: string;
+  method?: RestMethod;
+  headers?: Record<string, string>;
+  body?: string;
   authenticated: boolean;
 }
 
@@ -68,6 +72,7 @@ export class CampaignLedger {
       .then((observation) => {
         const tested: TestedRequest = {
           agentId: request.agentId,
+          method: observation.method ?? request.method ?? "GET",
           path: observation.path,
           authenticated: request.authenticated,
           status: observation.status,
@@ -103,6 +108,7 @@ export class CampaignLedger {
       const observation = this.#requests.get(requestKey(request))?.observation;
       if (!observation) return undefined;
       observations.push({
+        method: observation.method ?? request.method ?? "GET",
         status: observation.status,
         path: observation.path,
         authenticated: request.authenticated,
@@ -128,8 +134,19 @@ export class CampaignLedger {
   }
 }
 
-function requestKey(request: Pick<LedgerRequest, "path" | "authenticated">): string {
+function requestKey(
+  request: Pick<LedgerRequest, "path" | "method" | "headers" | "body" | "authenticated">,
+): string {
   const url = new URL(request.path, "http://scope.invalid");
   url.searchParams.sort();
-  return `${request.authenticated ? "authenticated" : "anonymous"}:${url.pathname}${url.search}`;
+  const headers = Object.entries(request.headers ?? {})
+    .map(([name, value]) => [name.toLowerCase(), value] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return JSON.stringify([
+    request.method ?? "GET",
+    request.authenticated ? "authenticated" : "anonymous",
+    `${url.pathname}${url.search}`,
+    headers,
+    request.body ?? "",
+  ]);
 }

@@ -53,6 +53,7 @@ describe("campaign ledger", () => {
     expect(ledger.snapshot().testedRequests).toEqual([
       {
         agentId: "explorer-1",
+        method: "GET",
         path: "/api/items/42",
         authenticated: true,
         status: 200,
@@ -76,6 +77,49 @@ describe("campaign ledger", () => {
     expect(ledger.snapshot().testedRequests).toHaveLength(2);
   });
 
+  it("distinguishes REST methods and request bodies", async () => {
+    const ledger = new CampaignLedger();
+    let executions = 0;
+    const execute = async () => ({
+      method: "POST" as const,
+      status: 200,
+      path: "/api/search",
+      body: { execution: ++executions },
+    });
+
+    await ledger.request(
+      {
+        agentId: "explorer-1",
+        path: "/api/search",
+        method: "POST",
+        body: '{"query":"one"}',
+        authenticated: true,
+      },
+      execute,
+    );
+    await ledger.request(
+      {
+        agentId: "explorer-1",
+        path: "/api/search",
+        method: "POST",
+        body: '{"query":"two"}',
+        authenticated: true,
+      },
+      execute,
+    );
+    await ledger.request(
+      {
+        agentId: "explorer-1",
+        path: "/api/search",
+        method: "GET",
+        authenticated: true,
+      },
+      execute,
+    );
+
+    expect(executions).toBe(3);
+  });
+
   it("reconstructs deterministic proof observations from completed requests", async () => {
     const ledger = new CampaignLedger();
     await ledger.request(
@@ -90,6 +134,7 @@ describe("campaign ledger", () => {
     expect(ledger.observationsFor([{ path: "/api/items/42", authenticated: true }])).toEqual([
       {
         status: 200,
+        method: "GET",
         path: "/api/items/42",
         authenticated: true,
         body: { viewer: "alice", owner: "bob", secret: "canary" },

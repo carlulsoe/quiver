@@ -1,15 +1,15 @@
 # Quiver
 
-Quiver is a bounded Bun CLI for running read-only Flue security campaigns against
+Quiver is a bounded Bun CLI for running Flue security campaigns against
 authorized local web targets. Given a loopback URL and an HTTP request budget,
-explorers crawl the live frontend, derive routes from links and compiled
-JavaScript, test concrete hypotheses, and submit every distinct vulnerability
-they can support. A fresh validator independently replays each finding, while
+Quiver exercises the live application in Chromium, records its REST traffic,
+merges any supplied OpenAPI definition, and gives explorers the resulting attack
+surface. A fresh validator independently replays each finding, while
 code-owned proof predicates—not an LLM decision—determine confirmation.
 
 The campaign engine is target-agnostic. A small `TargetProfile` supplies target
-setup such as authentication and narrowly allowed setup requests. The CLI ships
-OWASP crAPI and a randomized held-out target profile; campaign state, crawling,
+setup such as authentication, allowed setup operations, and explicitly denied operations. The CLI ships
+OWASP crAPI and a randomized held-out target profile; campaign state, mapping,
 deterministic validation, and reporting contain no target route inventory or
 vulnerability-specific proof code.
 
@@ -18,8 +18,8 @@ or are explicitly authorized to assess.
 
 ## Run a campaign
 
-This requires Bun, Docker Compose, and an `OPENROUTER_API_KEY`. The model is fixed
-to `openrouter/z-ai/glm-5.3-flash`.
+This requires Bun, Chromium, Docker Compose, and an `OPENROUTER_API_KEY`. The model
+is fixed to `openrouter/z-ai/glm-5.3-flash`.
 
 Start the pinned OWASP crAPI 1.1.5 checkout and run a campaign:
 
@@ -28,11 +28,25 @@ bun run target:up
 bun run campaign -- http://127.0.0.1:8888 --budget 36
 ```
 
-The URL is the crawl start and may include a path. `--budget` is the total HTTP
-request budget. Quiver reserves one third for independent validation and gives
+The URL is the browser mapping start and may include a path. `--budget` is the
+total HTTP request budget. Quiver reserves one third for independent validation and gives
 the remainder to exploration. Explorers share their portion; the validator gets
 a fresh scoped target and authenticated session. Any exploration allowance left
 unused is reclaimed for validation.
+
+Supply an OpenAPI JSON or YAML document and assessment notes when the application
+does not exercise its complete API during the initial browser session:
+
+```sh
+bun run campaign -- http://127.0.0.1:8888 \
+  --openapi ./openapi.yaml \
+  --context ./assessment-context.md \
+  --budget 36
+```
+
+OpenAPI operations are merged with browser-observed methods and paths. Context is
+shown to explorers as target data, not treated as tool instructions. Set
+`QUIVER_BROWSER_PATH` when Chromium is not installed in a standard location.
 
 Write the complete finding set, outcomes, budget usage, HTTP activity, and Flue
 tool trace to JSON without the live terminal view:
@@ -45,7 +59,7 @@ bun run campaign -- http://127.0.0.1:8888 \
 ```
 
 Use a `.md` path for an evidence-first handoff with campaign metrics,
-independent validation evidence, and copyable read-only `curl` reproductions:
+independent validation evidence, and copyable REST `curl` reproductions:
 
 ```sh
 bun run campaign -- http://127.0.0.1:8888 \
@@ -59,21 +73,22 @@ database volumes with `bun run target:down`.
 
 ## Campaign behavior
 
-Explorers begin with `crawl_target`; there is no supplied endpoint list. Static
-frontend analysis associates routes with observed GET call sites, likely
-authentication, and collection routes that may supply dynamic identifiers.
+Explorers begin with `map_attack_surface`. A headless Chromium session records
+same-origin runtime requests, including methods and likely authentication, while
+following same-origin links. Supplied OpenAPI operations are merged with that
+runtime evidence, including summaries and templated paths.
 Explorers may submit multiple findings and continue after each submission.
 Findings carry severity, CWE, impact, mitigation, an ordered reproduction plan
-containing only anonymous or authenticated GET requests, and one structured
-proof predicate. The predicates prove cross-principal access, unauthenticated
+containing exact REST methods, bodies, headers, and authentication mode, and one
+structured proof predicate. The predicates prove cross-principal access, unauthenticated
 successful access, or specifically declared exposed fields. BOLA proofs require
 different actor and resource-owner identities plus concrete impact fields in a
 successful access response.
 
 A shared campaign ledger coalesces duplicate concurrent requests, distinguishes
-anonymous from authenticated observations, and exposes tested routes and
+anonymous from authenticated observations, and exposes tested operations and
 accepted findings to every explorer. A small adaptive coordinator claims
-uncovered routes for individual explorers and uses incoming status evidence to
+uncovered operations for individual explorers and uses incoming status evidence to
 assign the opposite authentication boundary next. Duplicate work therefore
 reuses the first observation instead of consuming more request budget.
 
@@ -88,13 +103,14 @@ findings explicitly unvalidated.
 Current hard boundaries:
 
 - Loopback HTTP(S) targets only
-- Agent traffic is GET-only; a profile may whitelist exact setup POSTs
-- Profiles may deny GET routes known to have side effects; the crAPI profile
+- Browser and agent REST traffic may use GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS
+- Agent state-changing requests must come from the browser/OpenAPI map or profile setup allowlist
+- Profiles may deny operations known to have unwanted side effects; the crAPI profile
   blocks its database- and filesystem-mutating mechanic report handlers
 - Exact-origin enforcement with redirects disabled
 - Shared campaign budget with a reserved validation portion
 - 12 KB cap for agent-visible responses
-- No shell, browser, filesystem, or arbitrary network tools exposed to agents
+- No shell, browser, filesystem, or arbitrary network tools exposed directly to agents
 
 ## Evals
 
@@ -171,7 +187,7 @@ an anchored chronological trace.
 ## Developer loop
 
 ```sh
-bun run test              # fast campaign, benchmark, crawler, CLI, and report tests
+bun run test              # fast campaign, benchmark, mapper, CLI, and report tests
 bun run test:integration  # live crawl and authentication checks against crAPI
 bun run test:all          # fast and live HTTP suites
 bun run evals             # isolated live GLM trial (set XBOW_EVAL_TRIALS to repeat)

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createCampaignBudget, createCampaignState, reduceCampaign } from "./state.ts";
+import {
+  campaignOperationCoverage,
+  createCampaignBudget,
+  createCampaignState,
+  reduceCampaign,
+} from "./state.ts";
 
 const firstFinding = {
   agentId: "explorer-1",
@@ -57,7 +62,7 @@ describe("campaign state", () => {
     });
   });
 
-  it("canonicalizes route-template placeholders from the live crawler", () => {
+  it("canonicalizes route-template placeholders from the live mapper", () => {
     const initial = createCampaignState("http://127.0.0.1:8888", {
       total: 30,
       exploration: 20,
@@ -89,6 +94,38 @@ describe("campaign state", () => {
     });
 
     expect(withTrailingSlash.findings).toHaveLength(1);
+  });
+
+  it("keeps findings and coverage distinct by REST method", () => {
+    let state = createCampaignState("http://127.0.0.1:8888", {
+      total: 30,
+      exploration: 20,
+      validation: 10,
+    });
+    state = reduceCampaign(state, {
+      type: "operations-discovered",
+      operations: [
+        { method: "GET", path: "/api/items/{id}" },
+        { method: "PATCH", path: "/api/items/{id}" },
+      ],
+    });
+    state = reduceCampaign(state, {
+      type: "request-tested",
+      request: {
+        agentId: "explorer-1",
+        method: "PATCH",
+        path: "/api/items/42",
+        authenticated: true,
+        status: 200,
+      },
+    });
+    state = reduceCampaign(state, {
+      type: "finding",
+      finding: { ...firstFinding, method: "PATCH" },
+    });
+
+    expect(campaignOperationCoverage(state)).toEqual({ discovered: 2, tested: 1, coverage: 0.5 });
+    expect(state.findings[0]!.fingerprint).toContain(":PATCH:");
   });
 
   it("records outcomes for multiple findings before campaign completion", () => {

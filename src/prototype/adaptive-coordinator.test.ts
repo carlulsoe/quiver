@@ -133,6 +133,28 @@ describe("adaptive coordinator", () => {
     );
   });
 
+  it("coordinates methods on the same route as distinct operations", () => {
+    const coordinator = new AdaptiveCoordinator();
+    coordinator.discoverOperations([
+      { method: "GET", path: "/api/items/{id}" },
+      { method: "PATCH", path: "/api/items/{id}" },
+    ]);
+    coordinator.observeRequest({
+      agentId: "explorer-1",
+      method: "PATCH",
+      path: "/api/items/42",
+      authenticated: true,
+      status: 200,
+    });
+
+    expect(coordinator.assign("explorer-2").tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ method: "GET", authenticated: true }),
+        expect.objectContaining({ method: "PATCH", authenticated: false }),
+      ]),
+    );
+  });
+
   it("matches templated query values to concrete evidence", () => {
     const coordinator = new AdaptiveCoordinator();
     coordinator.discoverRoutes(["/api/items?owner={username}"]);

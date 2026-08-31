@@ -3,6 +3,7 @@ import type { FindingInput, TestedRequest } from "./state.ts";
 
 export interface CoordinatedTask {
   route: string;
+  method: string;
   authenticated: boolean;
   source: "uncovered-surface" | "incoming-evidence";
   reason: string;
@@ -26,7 +27,7 @@ interface Candidate extends CoordinatedTask {
 
 /** Keeps concurrent explorers pointed at distinct gaps as campaign evidence arrives. */
 export class AdaptiveCoordinator {
-  readonly #routes = new Map<string, string>();
+  readonly #operations = new Map<string, { method: string; route: string }>();
   readonly #tested = new Map<string, TestedRequest[]>();
   readonly #claims = new Map<string, string>();
   readonly #findings = new Set<string>();
@@ -37,25 +38,30 @@ export class AdaptiveCoordinator {
   }
 
   discoverRoutes(routes: readonly string[]): void {
-    for (const route of routes) {
+    this.discoverOperations(routes.map((path) => ({ method: "GET", path })));
+  }
+
+  discoverOperations(operations: readonly { method: string; path: string }[]): void {
+    for (const { method, path: route } of operations) {
       const normalized = safeCoordinatorKey(route);
       if (!normalized) continue;
-      if (!this.#routes.has(normalized)) this.#routes.set(normalized, route);
+      const key = operationKey(method, normalized);
+      if (!this.#operations.has(key)) this.#operations.set(key, { method, route });
     }
   }
 
   observeRequest(request: TestedRequest): void {
-    const route = this.#routeForRequest(request.path);
-    if (!route) return;
-    const requests = this.#tested.get(route) ?? [];
+    const operation = this.#operationForRequest(request.method ?? "GET", request.path);
+    if (!operation) return;
+    const requests = this.#tested.get(operation) ?? [];
     requests.push({ ...request });
-    this.#tested.set(route, requests);
-    this.#claims.delete(taskKey(route, request.authenticated));
+    this.#tested.set(operation, requests);
+    this.#claims.delete(taskKey(operation, request.authenticated));
   }
 
   observeFinding(finding: FindingInput): void {
     const route = safeNormalizeEndpoint(finding.endpoint);
-    if (route) this.#findings.add(route);
+    if (route) this.#findings.add(operationKey(finding.method ?? "GET", route));
   }
 
   release(agentId: string): void {
@@ -73,15 +79,15 @@ export class AdaptiveCoordinator {
     const selected = [...retained, ...available].slice(0, limit);
     for (const candidate of selected) this.#claims.set(candidate.key, agentId);
 
-    const uncoveredRouteCount = [...this.#routes].filter(
-      ([route]) => !this.#tested.has(route),
+    const uncoveredRouteCount = [...this.#operations].filter(
+      ([operation]) => !this.#tested.has(operation),
     ).length;
-    const evidenceSignals = [...this.#tested.entries()].flatMap(([route, requests]) => {
+    const evidenceSignals = [...this.#tested.entries()].flatMap(([operation, requests]) => {
       const modes = new Set(requests.map(({ authenticated }) => authenticated));
       if (modes.size > 1) return [];
       const latest = requests.at(-1)!;
       return [
-        `${route} returned ${latest.status} as ${latest.authenticated ? "authenticated" : "anonymous"}; the opposite access mode is untested`,
+        `${operation} returned ${latest.status} as ${latest.authenticated ? "authenticated" : "anonymous"}; the opposite access mode is untested`,
       ];
     });
 
@@ -95,14 +101,15 @@ export class AdaptiveCoordinator {
 
   #candidates(): Candidate[] {
     const candidates: Candidate[] = [];
-    for (const [normalized, route] of this.#routes) {
-      const requests = this.#tested.get(normalized) ?? [];
+    for (const [operation, { method, route }] of this.#operations) {
+      const requests = this.#tested.get(operation) ?? [];
       const testedModes = new Set(requests.map(({ authenticated }) => authenticated));
       if (requests.length === 0) {
         const authenticated = this.#supportsAuthentication;
         candidates.push({
-          key: taskKey(normalized, authenticated),
+          key: taskKey(operation, authenticated),
           route,
+          method,
           authenticated,
           source: "uncovered-surface",
           priority: 80,
@@ -117,8 +124,9 @@ export class AdaptiveCoordinator {
         if (authenticated && !this.#supportsAuthentication) continue;
         const success = latest.status >= 200 && latest.status < 300;
         candidates.push({
-          key: taskKey(normalized, authenticated),
+          key: taskKey(operation, authenticated),
           route,
+          method,
           authenticated,
           source: "incoming-evidence",
           priority: success ? 100 : 90,
@@ -130,8 +138,8 @@ export class AdaptiveCoordinator {
     }
 
     return candidates.sort((left, right) => {
-      const leftFinding = this.#findings.has(normalizeEndpoint(left.route)) ? 1 : 0;
-      const rightFinding = this.#findings.has(normalizeEndpoint(right.route)) ? 1 : 0;
+      const leftFinding = this.#findings.has(operationKey(left.method, left.route)) ? 1 : 0;
+      const rightFinding = this.#findings.has(operationKey(right.method, right.route)) ? 1 : 0;
       return (
         leftFinding - rightFinding ||
         right.priority - left.priority ||
@@ -140,20 +148,27 @@ export class AdaptiveCoordinator {
     });
   }
 
-  #routeForRequest(path: string): string | undefined {
+  #operationForRequest(method: string, path: string): string | undefined {
     const normalized = safeCoordinatorKey(path);
     if (!normalized) return undefined;
-    if (this.#routes.has(normalized)) return normalized;
+    const exact = operationKey(method, normalized);
+    if (this.#operations.has(exact)) return exact;
 
-    for (const route of this.#routes.keys()) {
-      if (routeMatches(route, normalized)) return route;
+    for (const [operation, candidate] of this.#operations) {
+      const template = safeCoordinatorKey(candidate.route);
+      if (candidate.method === method && template && routeMatches(template, normalized))
+        return operation;
     }
-    return normalized;
+    return exact;
   }
 }
 
-function taskKey(route: string, authenticated: boolean): string {
-  return `${route}:${authenticated ? "authenticated" : "anonymous"}`;
+function taskKey(operation: string, authenticated: boolean): string {
+  return `${operation}:${authenticated ? "authenticated" : "anonymous"}`;
+}
+
+function operationKey(method: string, route: string): string {
+  return `${method.toUpperCase()} ${route}`;
 }
 
 function safeNormalizeEndpoint(endpoint: string): string | undefined {

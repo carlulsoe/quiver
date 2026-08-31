@@ -29,6 +29,20 @@ describe("prototype CLI options", () => {
     });
   });
 
+  it("accepts supplied OpenAPI and context files", () => {
+    expect(parseCliOptions(["--openapi", "api.yaml", "--context", "target.md"])).toMatchObject({
+      openApiPath: "api.yaml",
+      contextPath: "target.md",
+    });
+  });
+
+  it("rejects missing supplied-input paths", () => {
+    expect(() => parseCliOptions(["--openapi", "--quiet"])).toThrow(
+      "--openapi requires a file path",
+    );
+    expect(() => parseCliOptions(["--context"])).toThrow("--context requires a file path");
+  });
+
   it("rejects unknown profiles", () => {
     expect(() => parseCliOptions(["--profile", "unknown"])).toThrow(
       "--profile must be one of: crapi, held-out",

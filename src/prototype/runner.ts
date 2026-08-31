@@ -20,6 +20,8 @@ export interface RunCampaignOptions {
   requestBudget?: number;
   explorerCount?: number;
   onState?: (state: CampaignState, action?: CampaignAction) => void;
+  openApi?: unknown;
+  context?: string;
 }
 
 export interface CampaignRun {
@@ -120,6 +122,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         record("request", { phase: "exploration", ...request });
         dispatch({ type: "request", phase: "exploration" });
       },
+      openApi: options.openApi,
     });
     const coordinator = new AdaptiveCoordinator({
       supportsAuthentication: options.profile.authenticate !== undefined,
@@ -144,12 +147,13 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     const explorers = Array.from({ length: explorerCount }, (_, index) =>
       createExplorerAgent(
         `explorer-${index + 1}`,
-        focuses[index] ?? "the remaining read-only attack surface not covered by other explorers",
+        focuses[index] ?? "the remaining REST attack surface not covered by other explorers",
         explorationTarget,
         options.profile,
         ledger,
         coordinator,
         dispatch,
+        options.context,
       ),
     );
     let validationTarget: ScopedTarget | undefined;
@@ -170,7 +174,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
           dispatch({ type: "agent", id, status: "running" });
           try {
             const agent = init(Explorer);
-            const receipt = await agent.dispatch("Begin the bounded read-only campaign.");
+            const receipt = await agent.dispatch("Begin the bounded REST security campaign.");
             const reply = await agent.read(receipt, {
               onEvent: (chunk) => captureAgentEvent(id, chunk),
             });
@@ -196,7 +200,12 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       validationTarget = new ScopedTarget({
         target: options.target,
         requestBudget: state.budget.validation,
-        allowedRequests: options.profile.allowedRequests,
+        allowedRequests: [
+          ...(options.profile.allowedRequests ?? []),
+          ...state.findings.flatMap((finding) =>
+            finding.reproduction.map(({ method = "GET", path }) => ({ method, path })),
+          ),
+        ],
         deniedRequests: options.profile.deniedRequests,
         onRequest: (request) => {
           record("request", { phase: "validation", ...request });

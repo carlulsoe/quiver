@@ -47,7 +47,7 @@ describeEval("crAPI read-only vulnerability campaign", { harness: securityHarnes
     expect(result.output.requestsUsed).toBeLessThanOrEqual(result.output.requestBudget);
     expect(toolCalls(result).map((call) => call.name)).toEqual(
       expect.arrayContaining([
-        "crawl_target",
+        "map_attack_surface",
         "review_campaign",
         "submit_finding",
         "finish_exploration",

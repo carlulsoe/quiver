@@ -35,18 +35,18 @@ export function createHeldOutFixture(seed: string): HeldOutFixture {
       if (request.method !== "GET") return json({ error: "method-not-allowed" }, 405);
       if (url.pathname === "/") {
         return new Response(
-          `<!doctype html><html><head><title>Ledgerly</title></head><body><main>Ledgerly workspace</main><script src="/assets/${asset}"></script></body></html>`,
+          `<!doctype html><html><head><title>Ledgerly</title></head><body><main>Ledgerly workspace</main><button id="audit">Load audit</button><script src="/assets/${asset}"></script></body></html>`,
           { headers: { "content-type": "text/html" } },
         );
       }
       if (url.pathname === `/assets/${asset}`) {
         return new Response(
           [
+            `const token="quiver-showcase-user";`,
             `fetch("${api}/session",{method:"GET",headers:{Authorization:"Bearer "+token}});`,
-            `fetch("${api}/vaults",{method:"GET",headers:{Authorization:"Bearer "+token}});`,
-            `fetch("${api}/directory",{method:"GET",headers:{Authorization:"Bearer "+token}});`,
-            `fetch(\`${api}/vaults/\${vaultId}\`,{method:"GET",headers:{Authorization:"Bearer "+token}});`,
-            `fetch(\`${api}/profiles/\${principalId}\`,{method:"GET",headers:{Authorization:"Bearer "+token}});`,
+            `fetch("${api}/vaults",{headers:{Authorization:"Bearer "+token}}).then(response=>response.json()).then(data=>fetch(\`${api}/vaults/\${data.vaults[0].id}\`,{headers:{Authorization:"Bearer "+token}}));`,
+            `fetch("${api}/directory",{headers:{Authorization:"Bearer "+token}}).then(response=>response.json()).then(data=>{const colleague=data.colleagues[0];fetch(\`${api}/vaults/\${colleague.featuredVaultId}\`,{headers:{Authorization:"Bearer "+token}});fetch(\`${api}/profiles/\${colleague.principalId}\`,{headers:{Authorization:"Bearer "+token}})});`,
+            `document.querySelector("#audit").addEventListener("click",()=>fetch("${api}/audit",{method:"POST",headers:{"content-type":"application/json",Authorization:"Bearer "+token},body:"{}"}));`,
           ].join("\n"),
           { headers: { "content-type": "application/javascript" } },
         );

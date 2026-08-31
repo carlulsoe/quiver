@@ -62,7 +62,7 @@ describe("crAPI read-only benchmark", () => {
     });
   });
 
-  it("matches route-template placeholders emitted by the live crawler", () => {
+  it("matches route-template placeholders emitted by the live mapper", () => {
     const score = scoreCrapiReadOnlyBenchmark({
       confirmedFindings: [
         {

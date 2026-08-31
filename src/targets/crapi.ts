@@ -22,6 +22,27 @@ async function authenticate(target: ScopedTarget): Promise<{ authContext: string
     throw new Error(`crAPI test-user login failed with status ${result.status}`);
   }
   target.setAuthentication({ authorization: `Bearer ${body.token}` });
+  target.setBrowserLocalStorage({
+    "persist:reducers": JSON.stringify({
+      userReducer: JSON.stringify({
+        fetchingData: false,
+        isLoggedIn: true,
+        accessToken: body.token,
+        id: "",
+        name: "",
+        email: process.env.CRAPI_TEST_EMAIL ?? "test@example.com",
+        number: "",
+        role: "ROLE_USER",
+        available_credit: 0,
+        picture_url: "",
+        video_url: "",
+        video_id: "",
+        video_name: "",
+      }),
+      profileReducer: JSON.stringify({ videoId: "", videoName: "", profilePicData: "" }),
+      _persist: JSON.stringify({ version: -1, rehydrated: true }),
+    }),
+  });
   return { authContext: "ordinary-test-user" };
 }
 
@@ -30,7 +51,10 @@ export const crapiProfile: TargetProfile = {
   displayName: "OWASP crAPI",
   objective:
     "Find as many distinct read-only vulnerabilities as the request budget supports. Prioritize broken authorization, excessive data exposure, sensitive data exposure, and security misconfiguration. Treat multiple affected resources at the same endpoint as one vulnerability.",
-  allowedRequests: [{ method: "POST", path: "/identity/api/auth/login" }],
+  allowedRequests: [
+    { method: "POST", path: "/identity/api/auth/login" },
+    { method: "POST", path: "/identity/api/auth/verify" },
+  ],
   deniedRequests: [
     { method: "GET", path: "/workshop/api/mechanic/receive_report" },
     { method: "GET", path: "/workshop/api/mechanic/mechanic_report" },

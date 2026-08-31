@@ -38,22 +38,58 @@ describe("randomized held-out target", () => {
     expect(protectedProfile.status).toBe(403);
   });
 
-  it("publishes only live randomized route intelligence to the crawler", async () => {
+  it("publishes only live randomized route intelligence to the mapper", async () => {
     const fixture = createHeldOutFixture("crawl-seed");
-    const target = new ScopedTarget({
-      target: new URL("http://127.0.0.1:8899"),
-      requestBudget: 2,
-      transport: (input, init) => fixture.fetch(new Request(input, init)),
-    });
+    const server = Bun.serve({ port: 0, fetch: fixture.fetch });
+    try {
+      const requested: string[] = [];
+      const target = new ScopedTarget({
+        target: new URL(`http://127.0.0.1:${server.port}`),
+        requestBudget: 10,
+        timeoutMs: 3_000,
+        onRequest: ({ method, path }) => requested.push(`${method} ${path}`),
+        openApi: {
+          openapi: "3.1.0",
+          paths: {
+            [`/api/${fixture.namespace}/audit`]: {
+              post: { summary: "Load the audit trail" },
+            },
+            [`/api/${fixture.namespace}/vaults/{vaultId}`]: {
+              patch: { summary: "Update a vault record" },
+            },
+          },
+        },
+      });
 
-    const map = await target.crawl();
+      const map = await target.mapAttackSurface();
 
-    expect(map.routeDetails).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: `/api/${fixture.namespace}/session` }),
-        expect.objectContaining({ path: `/api/${fixture.namespace}/vaults/{vaultId}` }),
-      ]),
-    );
-    expect(JSON.stringify(map)).not.toContain(fixture.canary);
-  });
+      expect(map.routeDetails).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: `/api/${fixture.namespace}/session` }),
+          expect.objectContaining({ path: `/api/${fixture.namespace}/vaults` }),
+          expect.objectContaining({
+            path: `/api/${fixture.namespace}/audit`,
+            methods: ["POST"],
+            callSites: [expect.objectContaining({ method: "POST" })],
+          }),
+          expect.objectContaining({
+            path: `/api/${fixture.namespace}/vaults/{vaultId}`,
+            methods: ["PATCH"],
+            summary: "Update a vault record",
+          }),
+          expect.objectContaining({
+            path: `/api/${fixture.namespace}/vaults/{id}`,
+            examples: expect.arrayContaining([
+              `/api/${fixture.namespace}/vaults/${fixture.foreignVaultId}`,
+            ]),
+          }),
+        ]),
+      );
+      expect(JSON.stringify(map)).not.toContain(fixture.canary);
+      expect(requested.some((request) => request.includes("/assets/"))).toBe(true);
+      expect(requested).not.toContain(`POST /api/${fixture.namespace}/audit`);
+    } finally {
+      server.stop(true);
+    }
+  }, 20_000);
 });

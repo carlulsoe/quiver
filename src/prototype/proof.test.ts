@@ -103,6 +103,47 @@ describe("deterministic finding proof", () => {
         observation("/orders/7", { order: { id: 7 } }, { authenticated: false }),
       ]).passed,
     ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...anonymousFinding,
+          reproduction: [
+            { path: "/orders/7", authenticated: false, headers: { "x-api-key": "secret" } },
+          ],
+        },
+        [
+          observation(
+            "/orders/7",
+            { order: { id: 7 }, payment: { card_number: "XXXX1234" } },
+            { authenticated: false },
+          ),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...anonymousFinding,
+          method: "POST",
+          reproduction: [
+            {
+              path: "/orders/7",
+              method: "POST",
+              authenticated: false,
+              headers: { "content-type": "application/json" },
+              body: '{"apiKey":"secret"}',
+            },
+          ],
+        },
+        [
+          observation(
+            "/orders/7",
+            { order: { id: 7 }, payment: { card_number: "XXXX1234" } },
+            { authenticated: false },
+          ),
+        ],
+      ).passed,
+    ).toBe(false);
   });
 
   it("requires a different subject for cross-principal data exposure", () => {
@@ -140,7 +181,7 @@ describe("deterministic finding proof", () => {
     ).toBe(false);
   });
 
-  it("rejects an affected endpoint that was not reproduced", () => {
+  it("rejects an affected operation that was not reproduced", () => {
     const result = evaluateProof(finding({ endpoint: "/orders/{id}/audit" }), [
       observation("/me", { email: "actor@example.com" }),
       observation("/orders/7", { order: { id: 7, user: { email: "owner@example.com" } } }),
@@ -148,7 +189,7 @@ describe("deterministic finding proof", () => {
 
     expect(result.passed).toBe(false);
     expect(result.checks).toContainEqual({
-      description: "affected endpoint matches a reproduction request",
+      description: "affected operation matches a reproduction request",
       passed: false,
     });
   });
