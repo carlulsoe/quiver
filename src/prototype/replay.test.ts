@@ -50,6 +50,7 @@ describe("finding replay", () => {
           authenticated: true,
           body: { path: "/items/mine" },
           truncated: false,
+          durationMs: expect.any(Number),
         },
         {
           status: 200,
@@ -58,6 +59,7 @@ describe("finding replay", () => {
           authenticated: true,
           body: { path: "/items/other" },
           truncated: false,
+          durationMs: expect.any(Number),
         },
       ],
     });

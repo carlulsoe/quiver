@@ -7,8 +7,17 @@ export type AgentStatus = "queued" | "running" | "finished" | "failed";
 export type FindingCategory =
   | "broken-object-authorization"
   | "broken-function-authorization"
+  | "authentication-bypass"
   | "excessive-data-exposure"
   | "sensitive-data-exposure"
+  | "cross-site-scripting"
+  | "sql-injection"
+  | "command-injection"
+  | "server-side-request-forgery"
+  | "path-traversal"
+  | "open-redirect"
+  | "cross-site-request-forgery"
+  | "business-logic"
   | "security-misconfiguration"
   | "other";
 
@@ -27,11 +36,20 @@ export interface ReproductionRequest {
   headers?: Record<string, string>;
   body?: string;
   authenticated: boolean;
+  /** Distinguishes intentional repeated samples from ledger-deduplicated requests. */
+  sampleId?: string;
 }
 
 export interface JsonEvidenceSelector {
   requestIndex: number;
   jsonPointer: string;
+}
+
+export interface RequestMutation {
+  location: "query" | "json-body";
+  parameter: string;
+  controlValue: string;
+  probeValue: string;
 }
 
 export type ProofPredicate =
@@ -58,6 +76,24 @@ export type ProofPredicate =
       type: "internal-field-exposure";
       requestIndex: number;
       evidencePointers: string[];
+    }
+  | {
+      /** Supporting-only evidence; no category may use this as authoritative proof. */
+      type: "response-differential";
+      controlRequestIndex: number;
+      probeRequestIndex: number;
+      comparison: "status" | "body" | "json-value";
+      expectation: "equal" | "different";
+      jsonPointer?: string;
+      mutation: RequestMutation;
+    }
+  | {
+      /** Supporting-only evidence; no category may use this as authoritative proof. */
+      type: "timing-differential";
+      controlRequestIndexes: number[];
+      probeRequestIndexes: number[];
+      minimumDeltaMs: number;
+      mutation: RequestMutation;
     };
 
 export interface FindingInput {
@@ -112,6 +148,8 @@ export interface ValidationObservation {
   authenticated: boolean;
   body: unknown;
   truncated: boolean;
+  durationMs?: number;
+  sampleId?: string;
 }
 
 export interface CampaignBudget {

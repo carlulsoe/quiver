@@ -23,6 +23,7 @@ export interface HttpObservation {
   body: unknown;
   truncated?: boolean;
   contentType?: string;
+  durationMs?: number;
 }
 
 export interface TargetRequestEvent {
@@ -85,6 +86,7 @@ export interface ScopedRequest {
   headers?: Record<string, string>;
   body?: string;
   authenticated?: boolean;
+  sampleId?: string;
 }
 
 export type RestMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
@@ -224,6 +226,7 @@ export class ScopedTarget {
       method,
       path: `${url.pathname}${url.search}`,
     });
+    const startedAt = performance.now();
     const response = await this.#transport(url, {
       method,
       headers: {
@@ -251,6 +254,7 @@ export class ScopedTarget {
       body,
       truncated,
       contentType: response.headers.get("content-type") ?? "",
+      durationMs: Math.round(performance.now() - startedAt),
     };
   }
 

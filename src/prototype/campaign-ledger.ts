@@ -16,6 +16,7 @@ export interface LedgerRequest {
   headers?: Record<string, string>;
   body?: string;
   authenticated: boolean;
+  sampleId?: string;
 }
 
 export interface LedgerRequestResult {
@@ -114,6 +115,8 @@ export class CampaignLedger {
         authenticated: request.authenticated,
         body: observation.body,
         truncated: observation.truncated ?? false,
+        durationMs: observation.durationMs,
+        sampleId: request.sampleId,
       });
     }
     return observations;
@@ -135,7 +138,10 @@ export class CampaignLedger {
 }
 
 function requestKey(
-  request: Pick<LedgerRequest, "path" | "method" | "headers" | "body" | "authenticated">,
+  request: Pick<
+    LedgerRequest,
+    "path" | "method" | "headers" | "body" | "authenticated" | "sampleId"
+  >,
 ): string {
   const url = new URL(request.path, "http://scope.invalid");
   url.searchParams.sort();
@@ -148,5 +154,6 @@ function requestKey(
     `${url.pathname}${url.search}`,
     headers,
     request.body ?? "",
+    request.sampleId ?? "",
   ]);
 }

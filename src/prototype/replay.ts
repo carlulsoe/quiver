@@ -23,6 +23,8 @@ export async function replayFinding(target: ScopedTarget, finding: Finding): Pro
       authenticated: request.authenticated,
       body: observation.body,
       truncated: observation.truncated ?? false,
+      durationMs: observation.durationMs,
+      sampleId: request.sampleId,
     });
   }
   return { fingerprint: finding.fingerprint, observations };

@@ -215,4 +215,438 @@ describe("deterministic finding proof", () => {
     expect(result.passed).toBe(false);
     expect(result.checks[0]).toMatchObject({ passed: false });
   });
+
+  it("uses a response differential for injection-specific validation", () => {
+    const differential = finding({
+      category: "sql-injection",
+      endpoint: "/search",
+      reproduction: [
+        { path: "/search?q=control", authenticated: false },
+        { path: "/search?q=%27", authenticated: false },
+      ],
+      proof: {
+        type: "response-differential",
+        controlRequestIndex: 0,
+        probeRequestIndex: 1,
+        comparison: "json-value",
+        expectation: "different",
+        jsonPointer: "/error/code",
+        mutation: {
+          location: "query",
+          parameter: "q",
+          controlValue: "control",
+          probeValue: "'",
+        },
+      },
+    });
+
+    expect(
+      evaluateProof(differential, [
+        observation("/search?q=control", { error: { code: "none" } }, { authenticated: false }),
+        observation(
+          "/search?q=%27",
+          { error: { code: "You have an error in your SQL syntax" } },
+          { authenticated: false },
+        ),
+      ]).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(differential, [
+        observation("/search?q=control", { error: { code: "none" } }, { authenticated: false }),
+        observation("/search?q=%27", { error: {} }, { authenticated: false }),
+      ]).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          reproduction: [
+            { path: "/search?q=control&mode=fast", authenticated: false },
+            { path: "/search?q=%27&mode=slow", authenticated: false },
+          ],
+        },
+        [
+          observation("/search?q=control&mode=fast", { error: { code: "none" } }),
+          observation("/search?q=%27&mode=slow", {
+            error: { code: "You have an error in your SQL syntax" },
+          }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          proof: {
+            type: "response-differential",
+            controlRequestIndex: 0,
+            probeRequestIndex: 1,
+            comparison: "body",
+            expectation: "different",
+            mutation: {
+              location: "query",
+              parameter: "q",
+              controlValue: "control",
+              probeValue: "' SQLSTATE 42000",
+            },
+          },
+          reproduction: [
+            { path: "/search?q=control", authenticated: false },
+            { path: "/search?q=%27+SQLSTATE+42000", authenticated: false },
+          ],
+        },
+        [
+          observation("/search?q=control", { value: "control" }),
+          observation("/search?q=%27+SQLSTATE+42000", { value: "' SQLSTATE 42000" }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          category: "authentication-bypass",
+          proof: {
+            type: "response-differential",
+            controlRequestIndex: 0,
+            probeRequestIndex: 1,
+            comparison: "body",
+            expectation: "equal",
+            mutation: {
+              location: "query",
+              parameter: "q",
+              controlValue: "control",
+              probeValue: "control",
+            },
+          },
+        },
+        [
+          observation("/search?q=control", { error: "unauthorized" }, { status: 401 }),
+          observation("/search?q=control", { error: "unauthorized" }, { status: 401 }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          endpoint: "/victim",
+          reproduction: [...differential.reproduction, { path: "/victim", authenticated: false }],
+        },
+        [
+          observation("/search?q=control", { error: { code: "none" } }),
+          observation("/search?q=%27", {
+            error: { code: "You have an error in your SQL syntax" },
+          }),
+          observation("/victim", { ok: true }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          proof: {
+            type: "response-differential",
+            controlRequestIndex: 0,
+            probeRequestIndex: 2,
+            comparison: "json-value",
+            expectation: "different",
+            jsonPointer: "/error/code",
+            mutation: {
+              location: "query",
+              parameter: "q",
+              controlValue: "control",
+              probeValue: "'",
+            },
+          },
+          reproduction: [
+            differential.reproduction[0]!,
+            { path: "/search/reset", method: "POST", authenticated: false },
+            differential.reproduction[1]!,
+          ],
+        },
+        [
+          observation("/search?q=control", { error: { code: "none" } }),
+          observation("/search/reset", { reset: true }),
+          observation("/search?q=%27", {
+            error: { code: "You have an error in your SQL syntax" },
+          }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          reproduction: differential.reproduction.map((request) => ({
+            ...request,
+            headers: { "X-Mode": "a", "x-mode": "b" },
+          })),
+        },
+        [
+          observation("/search?q=control", { error: { code: "none" } }),
+          observation("/search?q=%27", {
+            error: { code: "You have an error in your SQL syntax" },
+          }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          reproduction: [
+            { path: "/search?q=control&message=SQLSTATE%2042000", authenticated: false },
+            { path: "/search?q=%27&message=SQLSTATE%2042000", authenticated: false },
+          ],
+        },
+        [
+          observation("/search?q=control&message=SQLSTATE%2042000", {
+            error: { code: "none" },
+          }),
+          observation("/search?q=%27&message=SQLSTATE%2042000", {
+            error: { code: "SQLSTATE 42000" },
+          }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          method: "POST",
+          reproduction: [
+            {
+              path: "/search",
+              method: "POST",
+              authenticated: false,
+              body: '{"q":"control"}',
+            },
+            {
+              path: "/search",
+              method: "POST",
+              authenticated: false,
+              body: '{"q":"\' \\u0053QLSTATE 42000"}',
+            },
+          ],
+          proof: {
+            type: "response-differential",
+            controlRequestIndex: 0,
+            probeRequestIndex: 1,
+            comparison: "body",
+            expectation: "different",
+            mutation: {
+              location: "json-body",
+              parameter: "q",
+              controlValue: "control",
+              probeValue: "' SQLSTATE 42000",
+            },
+          },
+        },
+        [
+          observation("/search", { value: "control" }),
+          observation("/search", { value: "' SQLSTATE 42000" }),
+        ],
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...differential,
+          method: "POST",
+          reproduction: [
+            {
+              path: "/search",
+              method: "POST",
+              authenticated: false,
+              body: '{"q":"control"}',
+            },
+            {
+              path: "/search",
+              method: "POST",
+              authenticated: false,
+              body: '{"q":"%53QLSTATE%2042000\'"}',
+            },
+          ],
+          proof: {
+            type: "response-differential",
+            controlRequestIndex: 0,
+            probeRequestIndex: 1,
+            comparison: "body",
+            expectation: "different",
+            mutation: {
+              location: "json-body",
+              parameter: "q",
+              controlValue: "control",
+              probeValue: "%53QLSTATE%2042000'",
+            },
+          },
+        },
+        [
+          observation("/search", { value: "control" }),
+          observation("/search", { value: "SQLSTATE 42000'" }),
+        ],
+      ).passed,
+    ).toBe(false);
+  });
+
+  it("requires repeated median timing evidence for time-based injection", () => {
+    const timing = finding({
+      category: "sql-injection",
+      endpoint: "/search",
+      reproduction: Array.from({ length: 3 }, (_, index) => [
+        {
+          path: "/search?q=control",
+          authenticated: false,
+          sampleId: `control-${index + 1}`,
+        },
+        {
+          path: "/search?q=%27%3BSELECT+pg_sleep%281%29--",
+          authenticated: false,
+          sampleId: `probe-${index + 1}`,
+        },
+      ]).flat(),
+      proof: {
+        type: "timing-differential",
+        controlRequestIndexes: [0, 2, 4],
+        probeRequestIndexes: [1, 3, 5],
+        minimumDeltaMs: 500,
+        mutation: {
+          location: "query",
+          parameter: "q",
+          controlValue: "control",
+          probeValue: "';SELECT pg_sleep(1)--",
+        },
+      },
+    });
+    const timings = [95, 760, 110, 720, 100, 740];
+    const observations = timing.reproduction.map((request, index) =>
+      observation(request.path, { ok: true }, { authenticated: false, durationMs: timings[index] }),
+    );
+
+    const supportingTiming = evaluateProof(timing, observations);
+    expect(supportingTiming.passed).toBe(false);
+    expect(supportingTiming.checks.filter(({ passed }) => !passed)).toEqual([
+      expect.objectContaining({ description: expect.stringContaining("compatible with") }),
+    ]);
+    expect(
+      evaluateProof(
+        timing,
+        observations.map((item) => ({ ...item, durationMs: undefined })),
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...timing,
+          reproduction: timing.reproduction.map((request) => ({
+            ...request,
+            path: "/search?q=ordinary",
+          })),
+        },
+        observations,
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...timing,
+          proof: {
+            type: "timing-differential",
+            controlRequestIndexes: [0, 2, 4],
+            probeRequestIndexes: [1, 3, 5],
+            minimumDeltaMs: 500,
+            mutation: {
+              location: "query",
+              parameter: "q",
+              controlValue: "control",
+              probeValue: "';SELECT pg_sleep(0)--",
+            },
+          },
+          reproduction: timing.reproduction.map((request) => ({
+            ...request,
+            path: request.path.includes("pg_sleep")
+              ? "/search?q=%27%3BSELECT+pg_sleep%280%29--"
+              : request.path,
+          })),
+        },
+        observations,
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...timing,
+          proof: {
+            type: "timing-differential",
+            controlRequestIndexes: [0, 2, 4],
+            probeRequestIndexes: [1, 3, 5],
+            minimumDeltaMs: 500,
+            mutation: {
+              location: "query",
+              parameter: "q",
+              controlValue: "';SELECT pg_sleep(1)--",
+              probeValue: "';SELECT pg_sleep(1)--",
+            },
+          },
+          reproduction: timing.reproduction.map((request) => ({
+            ...request,
+            path: "/search?q=%27%3BSELECT+pg_sleep%281%29--",
+          })),
+        },
+        observations,
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(
+        {
+          ...timing,
+          proof: {
+            type: "timing-differential",
+            controlRequestIndexes: [0, 2, 4],
+            probeRequestIndexes: [3, 5, 1],
+            minimumDeltaMs: 500,
+            mutation: {
+              location: "query",
+              parameter: "q",
+              controlValue: "control",
+              probeValue: "';SELECT pg_sleep(1)--",
+            },
+          },
+        },
+        timing.reproduction.map((request, index) =>
+          observation(
+            request.path,
+            { ok: true },
+            { durationMs: [900, 800, 0, 1_300, 400, 500][index] },
+          ),
+        ),
+      ).passed,
+    ).toBe(false);
+  });
+
+  it("does not classify an ordinary anonymous success as authentication bypass", () => {
+    const publicEndpoint = finding({
+      category: "authentication-bypass",
+      endpoint: "/health",
+      reproduction: [{ path: "/health", authenticated: false }],
+      proof: {
+        type: "unauthenticated-success",
+        requestIndex: 0,
+        evidencePointers: ["/ok"],
+      },
+    });
+
+    expect(
+      evaluateProof(publicEndpoint, [
+        observation("/health", { ok: true }, { authenticated: false }),
+      ]).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof({ ...publicEndpoint, category: "other" }, [
+        observation("/health", { ok: true }, { authenticated: false }),
+      ]).passed,
+    ).toBe(false);
+  });
 });
