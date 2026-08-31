@@ -72,8 +72,10 @@ successful access response.
 
 A shared campaign ledger coalesces duplicate concurrent requests, distinguishes
 anonymous from authenticated observations, and exposes tested routes and
-accepted findings to every explorer. Duplicate work therefore reuses the first
-observation instead of consuming more request budget.
+accepted findings to every explorer. A small adaptive coordinator claims
+uncovered routes for individual explorers and uses incoming status evidence to
+assign the opposite authentication boundary next. Duplicate work therefore
+reuses the first observation instead of consuming more request budget.
 
 Quiver deduplicates findings by vulnerability category and normalized endpoint.
 For example, two different vehicle UUIDs affected by the same object-level

@@ -1,5 +1,6 @@
 import { defineTool, useModel, useResponseFinish, useTool } from "@flue/runtime";
 import * as v from "valibot";
+import type { AdaptiveCoordinator } from "./adaptive-coordinator.ts";
 import type { CampaignLedger } from "./campaign-ledger.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import { evaluateProof } from "./proof.ts";
@@ -66,6 +67,7 @@ function explorationTools(
   agentId: string,
   target: ScopedTarget,
   ledger: CampaignLedger,
+  coordinator: AdaptiveCoordinator,
   dispatch: (action: CampaignAction) => void,
 ) {
   const crawl = defineTool({
@@ -74,6 +76,7 @@ function explorationTools(
       "Crawl the start page and same-origin frontend documents, deriving route candidates from links and JavaScript composition. Use this first.",
     async run() {
       const map = await target.crawl();
+      coordinator.discoverRoutes(map.routeDetails.map(({ path }) => path));
       dispatch({ type: "routes-discovered", routes: map.routeDetails.map(({ path }) => path) });
       return {
         output: {
@@ -118,13 +121,19 @@ function explorationTools(
   const review = defineTool({
     name: "review_campaign",
     description:
-      "Read the shared ledger of exact requests already tested and distinct findings already submitted by all explorers.",
+      "Read the shared ledger and receive a fresh, non-overlapping assignment based on uncovered routes and incoming request evidence.",
     run() {
       const snapshot = ledger.snapshot();
+      const assignment = coordinator.assign(agentId);
       return {
         output: {
           testedRequests: snapshot.testedRequests.map((request) => ({ ...request })),
           findings: snapshot.findings.map((finding) => ({ ...finding })),
+          assignment: {
+            ...assignment,
+            tasks: assignment.tasks.map((task) => ({ ...task })),
+            evidenceSignals: [...assignment.evidenceSignals],
+          },
         },
       };
     },
@@ -138,9 +147,10 @@ export function createExplorerAgent(
   target: ScopedTarget,
   profile: TargetProfile,
   ledger: CampaignLedger,
+  coordinator: AdaptiveCoordinator,
   dispatch: (action: CampaignAction) => void,
 ) {
-  const tools = explorationTools(agentId, target, ledger, dispatch);
+  const tools = explorationTools(agentId, target, ledger, coordinator, dispatch);
   const submit = defineTool({
     name: "submit_finding",
     description:
@@ -223,7 +233,7 @@ Target: ${profile.displayName} at ${target.origin}${target.startPath}
 Campaign objective: ${profile.objective}
 Your complementary campaign focus: ${focus}
 
-Start with crawl_target, then review_campaign; no API inventory is supplied. Use only the provided tools. The target profile has already prepared any available ordinary-user session. Use routeDetails to prioritize observed GET call sites, likely authentication requirements, and identifier-source relationships. Derive paths from live target material, correlate identifiers and identities across anonymous and authenticated responses, and test concrete hypotheses with GET requests. Prioritize your assigned focus before broadening into other read-only vulnerability classes. Consult review_campaign again only when choosing between hypotheses that another explorer may already have tested. http_get safely reuses an existing exact observation when another explorer has already made the same authenticated or anonymous request.
+Start with crawl_target, then review_campaign; no API inventory is supplied. Use only the provided tools. The target profile has already prepared any available ordinary-user session. Treat review_campaign.assignment as your current work queue: prioritize its routes and access modes, deriving concrete identifiers from routeDetails where needed. The coordinator updates this queue as other explorers' request results and findings arrive, so call review_campaign again after a useful response, a submitted finding, or when the assigned tasks are exhausted. Use routeDetails to prioritize observed GET call sites, likely authentication requirements, and identifier-source relationships. Derive paths from live target material, correlate identifiers and identities across anonymous and authenticated responses, and test concrete hypotheses with GET requests. Use your complementary focus to choose the vulnerability hypothesis within the assigned surface, then broaden if the queue is empty. http_get safely reuses an existing exact observation when another explorer has already made the same authenticated or anonymous request.
 
 Submit every distinct evidence-backed vulnerability you find. A distinct vulnerability is one category at one endpoint pattern; multiple affected object IDs are the same finding. Include severity, a precise CWE identifier, impact, and actionable mitigation. The endpoint field must be the affected request path or discovered route template.
 

@@ -1,5 +1,6 @@
 import { init, type ConversationStreamChunk, type PromptUsage } from "@flue/runtime";
 import { start } from "@flue/runtime/node";
+import { AdaptiveCoordinator } from "./adaptive-coordinator.ts";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
@@ -120,9 +121,18 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         dispatch({ type: "request", phase: "exploration" });
       },
     });
+    const coordinator = new AdaptiveCoordinator({
+      supportsAuthentication: options.profile.authenticate !== undefined,
+    });
     const ledger = new CampaignLedger({
-      onTestedRequest: (request) => dispatch({ type: "request-tested", request }),
-      onFinding: (finding) => dispatch({ type: "finding", finding }),
+      onTestedRequest: (request) => {
+        coordinator.observeRequest(request);
+        dispatch({ type: "request-tested", request });
+      },
+      onFinding: (finding) => {
+        coordinator.observeFinding(finding);
+        dispatch({ type: "finding", finding });
+      },
     });
     if (options.profile.authenticate) await options.profile.authenticate(explorationTarget);
     dispatch({ type: "phase", phase: "exploring" });
@@ -138,6 +148,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         explorationTarget,
         options.profile,
         ledger,
+        coordinator,
         dispatch,
       ),
     );
@@ -172,6 +183,8 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
             });
           } catch (error) {
             dispatch({ type: "agent", id, status: "failed", summary: String(error) });
+          } finally {
+            coordinator.release(id);
           }
         }),
       );
