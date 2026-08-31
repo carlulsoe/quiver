@@ -104,7 +104,7 @@ export class TargetScopeError extends Error {
 export class ScopedTarget {
   readonly #origin: string;
   readonly #startPath: string;
-  readonly #requestBudget: number;
+  #requestBudget: number;
   readonly #allowedRequests: Set<string>;
   readonly #browserAllowedOperations: Set<string>;
   readonly #mappedOperations = new Set<string>();
@@ -162,6 +162,31 @@ export class ScopedTarget {
 
   get isAuthenticated(): boolean {
     return this.#authenticationHeaders !== undefined;
+  }
+
+  get requestsUsed(): number {
+    return this.#requestsUsed;
+  }
+
+  get requestBudget(): number {
+    return this.#requestBudget;
+  }
+
+  /** Adds coordinator-reclaimed capacity without resetting the target session. */
+  extendRequestBudget(additionalRequests: number): void {
+    if (!Number.isInteger(additionalRequests) || additionalRequests < 0) {
+      throw new Error("Additional request budget must be a non-negative integer");
+    }
+    this.#requestBudget += additionalRequests;
+  }
+
+  /** Allows newly submitted reproduction operations on the long-lived validation target. */
+  allowRequests(requests: readonly AllowedRequest[]): void {
+    for (const { method, path } of requests) {
+      const key = operationKey(method, path);
+      this.#allowedRequests.add(key);
+      this.#browserAllowedOperations.add(key);
+    }
   }
 
   setAuthentication(headers: Record<string, string>): void {

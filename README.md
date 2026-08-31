@@ -3,8 +3,9 @@
 Quiver is a bounded Bun CLI for running Flue security campaigns against
 authorized local web targets. Given a loopback URL and an HTTP request budget,
 Quiver exercises the live application in Chromium, records its REST traffic,
-merges any supplied OpenAPI definition, and gives explorers the resulting attack
-surface. A fresh validator independently replays each finding, while
+merges any supplied OpenAPI definition, and gives a coordinated worker fleet the resulting attack
+surface. A persistent decision engine retains campaign memory while short-lived generalists and
+specialists turn over. Fresh validators independently replay findings as exploration continues, while
 code-owned proof predicates—not an LLM decision—determine confirmation.
 
 The campaign engine is target-agnostic. A small `TargetProfile` supplies target
@@ -30,9 +31,10 @@ bun run campaign -- http://127.0.0.1:8888 --budget 36
 
 The URL is the browser mapping start and may include a path. `--budget` is the
 total HTTP request budget. Quiver reserves one third for independent validation and gives
-the remainder to exploration. Explorers share their portion; the validator gets
-a fresh scoped target and authenticated session. Any exploration allowance left
-unused is reclaimed for validation.
+the remainder to exploration. The coordinator allocates that exploration pool across workers based
+on current coverage and returns unused allocations when a worker retires. Validators share a fresh,
+long-lived scoped target and authenticated session. Any exploration allowance left unused is
+reclaimed for pending validation.
 
 Supply an OpenAPI JSON or YAML document and assessment notes when the application
 does not exercise its complete API during the initial browser session:
@@ -87,12 +89,17 @@ successful access response.
 
 A shared campaign ledger coalesces duplicate concurrent requests, distinguishes
 anonymous from authenticated observations, and exposes tested operations and
-accepted findings to every explorer. A small adaptive coordinator claims
-uncovered operations for individual explorers and uses incoming status evidence to
-assign the opposite authentication boundary next. Duplicate work therefore
-reuses the first observation instead of consuming more request budget.
+accepted findings to every worker. A persistent coordinator owns the live operation/access-mode
+coverage model, testable hypotheses, per-worker request allocations, and validation queue. It claims
+non-overlapping work, turns incoming status evidence into follow-up hypotheses, and receives a
+structured debrief before each worker retires. High-confidence unfinished hypotheses are grouped by
+specialty and handed to fresh specialist agents with focused budgets. Duplicate work therefore reuses
+the first observation instead of consuming more request budget.
 
-Quiver deduplicates findings by vulnerability category and normalized endpoint.
+Quiver deduplicates findings by vulnerability category and normalized endpoint. Each accepted
+finding enters independent validation immediately; validation is serialized against a separate
+scoped target while the exploration fleet continues, then any budget-deferred replay is retried after
+unused exploration capacity is reclaimed.
 For example, two different vehicle UUIDs affected by the same object-level
 authorization flaw become one finding. The validator replays every unique
 finding. Its LLM supplies an informational review, but cannot set the outcome:

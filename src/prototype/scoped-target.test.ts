@@ -6,6 +6,26 @@ function response(body: string, contentType: string): Response {
 }
 
 describe("scoped target", () => {
+  it("extends a persistent validation session and admits new reproduction operations", async () => {
+    const target = new ScopedTarget({
+      target: new URL("http://127.0.0.1:8888"),
+      requestBudget: 1,
+      transport: async () => new Response("{}", { status: 200 }),
+    });
+    target.allowRequests([{ method: "POST", path: "/api/replay" }]);
+
+    await target.request({ path: "/api/replay", method: "POST", body: "{}" });
+    await expect(
+      target.request({ path: "/api/replay", method: "POST", body: "{}" }),
+    ).rejects.toThrow("Request budget exhausted");
+    target.extendRequestBudget(1);
+    await expect(
+      target.request({ path: "/api/replay", method: "POST", body: '{"retry":true}' }),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(target.requestsUsed).toBe(2);
+    expect(target.requestBudget).toBe(2);
+  });
+
   it("delegates to a budgeted REST attack-surface mapper", async () => {
     const requested: string[] = [];
     const target = new ScopedTarget({

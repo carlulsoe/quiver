@@ -10,13 +10,14 @@ export interface ReportedFinding extends Finding {
 }
 
 export interface RunReport {
-  schemaVersion: 6;
+  schemaVersion: 7;
   generatedAt: string;
   profileId: string;
   reproductionAuthentication?: CampaignRun["reproductionAuthentication"];
   model: string;
   usage: CampaignRun["usage"];
   target: string;
+  coordination: CampaignRun["state"]["coordination"];
   outcome: {
     phase: CampaignRun["state"]["phase"];
     budget: CampaignRun["state"]["budget"];
@@ -43,7 +44,8 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
       traceEventSequences: run.events
         .filter(
           (event) =>
-            event.data.agentId === "validator" &&
+            typeof event.data.agentId === "string" &&
+            event.data.agentId.startsWith("validator") &&
             (event.data.input as { fingerprint?: unknown } | undefined)?.fingerprint ===
               finding.fingerprint,
         )
@@ -59,13 +61,14 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
   ).length;
 
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt: generatedAt.toISOString(),
     profileId: run.profileId,
     reproductionAuthentication: run.reproductionAuthentication,
     model: run.model,
     usage: run.usage,
     target: run.state.target,
+    coordination: run.state.coordination,
     outcome: {
       phase: run.state.phase,
       budget: run.state.budget,
@@ -178,11 +181,26 @@ export function renderMarkdownReport(report: RunReport): string {
     `| Unvalidated | ${report.outcome.unvalidatedCount} |`,
     `| Requests | ${report.outcome.requests.total}/${report.outcome.budget.total} |`,
     `| Actionable operation coverage | ${(report.outcome.operationCoverage.coverage * 100).toFixed(1)}% (${report.outcome.operationCoverage.tested}/${report.outcome.operationCoverage.discovered}) |`,
+    `| Access-mode coverage | ${(report.coordination.coverage.accessModeCoverage * 100).toFixed(1)}% (${report.coordination.coverage.testedAccessModes}/${report.coordination.coverage.totalAccessModes}) |`,
+    `| Retained hypotheses | ${report.coordination.hypotheses.length} |`,
+    `| Spawned specialists | ${report.coordination.specialists.length} |`,
     `| Duration | ${(report.outcome.durationMs / 1_000).toFixed(1)}s |`,
     `| Model tokens | ${report.usage.totalTokens} |`,
     `| Approximate model cost | $${report.usage.cost.total.toFixed(4)} |`,
     "",
   ];
+
+  if (report.coordination.hypotheses.length > 0) {
+    lines.push(
+      "## Coordinator decision record",
+      "",
+      ...report.coordination.hypotheses.flatMap((hypothesis) => [
+        `- **${hypothesis.status}** \`${hypothesis.method} ${hypothesis.route}\` — ${hypothesis.title} (${hypothesis.specialty}, ${(hypothesis.confidence * 100).toFixed(0)}%)`,
+        `  ${hypothesis.nextStep}`,
+      ]),
+      "",
+    );
+  }
 
   if (
     report.reproductionAuthentication &&

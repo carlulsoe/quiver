@@ -210,4 +210,42 @@ describe("campaign state", () => {
       },
     ]);
   });
+
+  it("persists coordinator decisions and dynamically spawned specialists", () => {
+    let state = createCampaignState("http://127.0.0.1:8888", {
+      total: 30,
+      exploration: 20,
+      validation: 10,
+    });
+    state = reduceCampaign(state, {
+      type: "agent-spawned",
+      id: "specialist-1",
+      role: "specialist",
+    });
+    state = reduceCampaign(state, {
+      type: "coordinator-snapshot",
+      snapshot: {
+        ...state.coordination,
+        revision: 1,
+        coverage: {
+          discoveredOperations: 4,
+          testedOperations: 2,
+          operationCoverage: 0.5,
+          testedAccessModes: 3,
+          totalAccessModes: 8,
+          accessModeCoverage: 0.375,
+        },
+      },
+    });
+
+    expect(state.agents).toContainEqual({
+      id: "specialist-1",
+      role: "specialist",
+      status: "queued",
+    });
+    expect(state.coordination).toMatchObject({
+      revision: 1,
+      coverage: { operationCoverage: 0.5, accessModeCoverage: 0.375 },
+    });
+  });
 });

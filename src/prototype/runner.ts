@@ -1,10 +1,10 @@
 import { init, type ConversationStreamChunk, type PromptUsage } from "@flue/runtime";
 import { start } from "@flue/runtime/node";
-import { AdaptiveCoordinator } from "./adaptive-coordinator.ts";
+import { PersistentCoordinator } from "./adaptive-coordinator.ts";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
-import { ScopedTarget } from "./scoped-target.ts";
+import { RequestBudgetExceededError, ScopedTarget } from "./scoped-target.ts";
 import {
   createCampaignBudget,
   createCampaignState,
@@ -113,28 +113,35 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
   options.onState?.(state);
 
   try {
+    const coordinator = new PersistentCoordinator({
+      supportsAuthentication: options.profile.authenticate !== undefined,
+      requestBudget: budget.exploration,
+      expectedWorkers: explorerCount,
+      onChange: (snapshot) => dispatch({ type: "coordinator-snapshot", snapshot }),
+    });
+    dispatch({ type: "coordinator-snapshot", snapshot: coordinator.snapshot() });
     const explorationTarget = new ScopedTarget({
       target: options.target,
       requestBudget: budget.exploration,
       allowedRequests: options.profile.allowedRequests,
       deniedRequests: options.profile.deniedRequests,
       onRequest: (request) => {
+        coordinator.observeBudgetUse();
         record("request", { phase: "exploration", ...request });
         dispatch({ type: "request", phase: "exploration" });
       },
       openApi: options.openApi,
     });
-    const coordinator = new AdaptiveCoordinator({
-      supportsAuthentication: options.profile.authenticate !== undefined,
-    });
+    let enqueueValidation = (_fingerprint: string) => {};
     const ledger = new CampaignLedger({
       onTestedRequest: (request) => {
         coordinator.observeRequest(request);
         dispatch({ type: "request-tested", request });
       },
       onFinding: (finding) => {
-        coordinator.observeFinding(finding);
+        const fingerprint = coordinator.observeFinding(finding);
         dispatch({ type: "finding", finding });
+        enqueueValidation(fingerprint);
       },
     });
     if (options.profile.authenticate) await options.profile.authenticate(explorationTarget);
@@ -156,85 +163,175 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         options.context,
       ),
     );
-    let validationTarget: ScopedTarget | undefined;
+    const specialistLimit = Math.min(2, explorerCount);
+    const specialistDefinitions = Array.from({ length: specialistLimit }, (_, index) => {
+      const id = `specialist-${index + 1}`;
+      return createExplorerAgent(
+        id,
+        () => coordinator.focusFor(id) ?? "high-confidence hypotheses retained by the coordinator",
+        explorationTarget,
+        options.profile,
+        ledger,
+        coordinator,
+        dispatch,
+        options.context,
+      );
+    });
+    const validationTarget = new ScopedTarget({
+      target: options.target,
+      requestBudget: budget.validation,
+      allowedRequests: options.profile.allowedRequests,
+      deniedRequests: options.profile.deniedRequests,
+      onRequest: (request) => {
+        record("request", { phase: "validation", ...request });
+        dispatch({ type: "request", phase: "validation" });
+      },
+    });
+    let currentValidatorId = "validator";
     const Validator = createValidatorAgent(
       () => state.findings,
-      () => {
-        if (!validationTarget) throw new Error("Validation target is not ready");
-        return validationTarget;
-      },
+      () => validationTarget,
       options.profile,
-      dispatch,
+      (action) => {
+        if (action.type === "validation") {
+          coordinator.recordValidation(
+            action.validation.fingerprint,
+            action.validation.status,
+            currentValidatorId,
+          );
+        }
+        dispatch(action);
+      },
+      "validator",
     );
-    await using _campaignRuntime = await start({ agents: [...explorers, Validator] });
-    {
-      await Promise.all(
-        explorers.map(async (Explorer, index) => {
-          const id = `explorer-${index + 1}`;
-          dispatch({ type: "agent", id, status: "running" });
-          try {
-            const agent = init(Explorer);
-            const receipt = await agent.dispatch("Begin the bounded REST security campaign.");
-            const reply = await agent.read(receipt, {
-              onEvent: (chunk) => captureAgentEvent(id, chunk),
-            });
-            captureUsage(reply.metadata);
-            dispatch({
-              type: "agent",
-              id,
-              status: "finished",
-              summary: reply.text.slice(0, 100),
-            });
-          } catch (error) {
-            dispatch({ type: "agent", id, status: "failed", summary: String(error) });
-          } finally {
-            coordinator.release(id);
-          }
-        }),
+    let validationAuthentication: Promise<unknown> | undefined;
+    let validationMissionIndex = 0;
+    let validationChain = Promise.resolve();
+    const validateFinding = async (fingerprint: string) => {
+      if (state.validations.some((validation) => validation.fingerprint === fingerprint)) {
+        return;
+      }
+      const finding = state.findings.find((item) => item.fingerprint === fingerprint);
+      if (!finding) return;
+      validationTarget.allowRequests(
+        finding.reproduction.map(({ method = "GET", path }) => ({ method, path })),
       );
-    }
-
-    dispatch({ type: "reclaim-exploration-budget" });
-    dispatch({ type: "phase", phase: "validating" });
-    if (state.findings.length > 0) {
-      validationTarget = new ScopedTarget({
-        target: options.target,
-        requestBudget: state.budget.validation,
-        allowedRequests: [
-          ...(options.profile.allowedRequests ?? []),
-          ...state.findings.flatMap((finding) =>
-            finding.reproduction.map(({ method = "GET", path }) => ({ method, path })),
-          ),
-        ],
-        deniedRequests: options.profile.deniedRequests,
-        onRequest: (request) => {
-          record("request", { phase: "validation", ...request });
-          dispatch({ type: "request", phase: "validation" });
-        },
-      });
       if (
         options.profile.authenticate &&
-        state.findings.some((finding) =>
-          finding.reproduction.some((request) => request.authenticated),
-        )
+        finding.reproduction.some((request) => request.authenticated)
       ) {
-        await options.profile.authenticate(validationTarget);
+        validationAuthentication ??= options.profile.authenticate(validationTarget);
+        await validationAuthentication;
       }
+      if (
+        validationTarget.requestBudget - validationTarget.requestsUsed <
+        finding.reproduction.length
+      ) {
+        return;
+      }
+      const validatorId =
+        validationMissionIndex === 0 ? "validator" : `validator-${validationMissionIndex + 1}`;
+      validationMissionIndex += 1;
+      if (!coordinator.claimValidation(validatorId, fingerprint)) return;
+      if (validatorId !== "validator") {
+        dispatch({ type: "agent-spawned", id: validatorId, role: "validator" });
+      }
+      dispatch({ type: "agent", id: validatorId, status: "running" });
+      try {
+        currentValidatorId = validatorId;
+        const validator = init(Validator, { id: `mission-${validationMissionIndex}` });
+        const receipt = await validator.dispatch(
+          `Validate only finding ${fingerprint}, submit its outcome, then finish validation.`,
+        );
+        const reply = await validator.read(receipt, {
+          onEvent: (chunk) => captureAgentEvent(validatorId, chunk),
+        });
+        captureUsage(reply.metadata);
+        const completed = state.validations.some(
+          (validation) => validation.fingerprint === fingerprint,
+        );
+        if (!completed) coordinator.releaseValidation(fingerprint);
+        dispatch({
+          type: "agent",
+          id: validatorId,
+          status: "finished",
+          summary: completed ? reply.text.slice(0, 100) : "Replay produced no submitted outcome.",
+        });
+      } catch (error) {
+        coordinator.releaseValidation(fingerprint);
+        const budgetExhausted =
+          error instanceof RequestBudgetExceededError ||
+          String(error).includes("Request budget exhausted");
+        dispatch({
+          type: "agent",
+          id: validatorId,
+          status: budgetExhausted ? "finished" : "failed",
+          summary: budgetExhausted
+            ? "Deferred until validation budget is reclaimed."
+            : String(error),
+        });
+      }
+    };
+    enqueueValidation = (fingerprint) => {
+      validationChain = validationChain.then(() => validateFinding(fingerprint));
+    };
 
-      dispatch({ type: "agent", id: "validator", status: "running" });
-      const validator = init(Validator);
-      const receipt = await validator.dispatch("Validate every submitted campaign finding.");
-      const reply = await validator.read(receipt, {
-        onEvent: (chunk) => captureAgentEvent("validator", chunk),
-      });
-      captureUsage(reply.metadata);
-      dispatch({
-        type: "agent",
-        id: "validator",
-        status: "finished",
-        summary: reply.text.slice(0, 100),
-      });
-    } else {
+    await using _campaignRuntime = await start({
+      agents: [...explorers, ...specialistDefinitions, Validator],
+    });
+    const runWorker = async (
+      Explorer: (typeof explorers)[number],
+      id: string,
+      instruction: string,
+    ) => {
+      dispatch({ type: "agent", id, status: "running" });
+      let summary = "Worker exited without a model summary.";
+      try {
+        const agent = init(Explorer);
+        const receipt = await agent.dispatch(instruction);
+        const reply = await agent.read(receipt, {
+          onEvent: (chunk) => captureAgentEvent(id, chunk),
+        });
+        captureUsage(reply.metadata);
+        summary = reply.text.slice(0, 100);
+        dispatch({ type: "agent", id, status: "finished", summary });
+      } catch (error) {
+        summary = String(error);
+        dispatch({ type: "agent", id, status: "failed", summary });
+      } finally {
+        if (!coordinator.snapshot().debriefs.some((debrief) => debrief.agentId === id)) {
+          coordinator.debrief(id, { summary, exhausted: true });
+        }
+        coordinator.release(id);
+      }
+    };
+    await Promise.all(
+      explorers.map((Explorer, index) =>
+        runWorker(Explorer, `explorer-${index + 1}`, "Begin the bounded REST security campaign."),
+      ),
+    );
+
+    const specialistPlans = coordinator.planSpecialists(specialistLimit);
+    await Promise.all(
+      specialistPlans.map((plan, index) => {
+        dispatch({ type: "agent-spawned", id: plan.agentId, role: "specialist" });
+        return runWorker(
+          specialistDefinitions[index]!,
+          plan.agentId,
+          `Investigate the coordinator's assigned ${plan.specialty} hypotheses with a fresh perspective.`,
+        );
+      }),
+    );
+
+    await validationChain;
+    dispatch({ type: "reclaim-exploration-budget" });
+    dispatch({ type: "phase", phase: "validating" });
+    validationTarget.extendRequestBudget(state.budget.validation - validationTarget.requestBudget);
+    for (const item of coordinator.snapshot().validationQueue) {
+      if (item.status === "queued") enqueueValidation(item.fingerprint);
+    }
+    await validationChain;
+    if (state.findings.length === 0) {
       dispatch({
         type: "agent",
         id: "validator",

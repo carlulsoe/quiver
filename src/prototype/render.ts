@@ -23,6 +23,14 @@ export function render(state: CampaignState, action?: CampaignAction): void {
         agents: Object.fromEntries(state.agents.map((agent) => [agent.id, agent.status])),
         findings: { total: state.findings.length, confirmed, rejected, unvalidated },
         operationCoverage,
+        coordination: {
+          accessModeCoverage: state.coordination.coverage.accessModeCoverage,
+          hypotheses: state.coordination.hypotheses.length,
+          specialists: state.coordination.specialists.length,
+          pendingValidation: state.coordination.validationQueue.filter(
+            ({ status }) => status !== "complete",
+          ).length,
+        },
         transition: action?.type,
         error: state.error,
       }),
@@ -45,7 +53,8 @@ export function render(state: CampaignState, action?: CampaignAction): void {
   );
   console.log(
     `${bold}coverage${reset}    ${(operationCoverage.coverage * 100).toFixed(0)}% actionable operations ` +
-      `(${operationCoverage.tested}/${operationCoverage.discovered})`,
+      `(${operationCoverage.tested}/${operationCoverage.discovered}), ` +
+      `${(state.coordination.coverage.accessModeCoverage * 100).toFixed(0)}% access modes`,
   );
   console.log(
     `${bold}findings${reset}    ${state.findings.length} ` +
@@ -58,6 +67,12 @@ export function render(state: CampaignState, action?: CampaignAction): void {
       `  ${agent.id.padEnd(12)} ${agent.status}${agent.summary ? ` — ${agent.summary}` : ""}`,
     );
   }
+
+  console.log(
+    `\n${bold}coordinator${reset} ${state.coordination.hypotheses.length} hypotheses, ` +
+      `${state.coordination.specialists.length} specialists, ` +
+      `${state.coordination.validationQueue.filter(({ status }) => status !== "complete").length} validations pending`,
+  );
 
   if (state.findings.length > 0) {
     console.log(`\n${bold}findings${reset}`);

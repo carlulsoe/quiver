@@ -1,5 +1,6 @@
 import { normalizeEndpoint } from "./endpoint.ts";
 import type { RestMethod } from "./scoped-target.ts";
+import type { CoordinatorSnapshot } from "./adaptive-coordinator.ts";
 
 export { normalizeEndpoint } from "./endpoint.ts";
 
@@ -16,7 +17,7 @@ export type FindingSeverity = "low" | "medium" | "high" | "critical";
 
 export interface CampaignAgent {
   id: string;
-  role: "explorer" | "validator";
+  role: "explorer" | "specialist" | "validator";
   status: AgentStatus;
   summary?: string;
 }
@@ -144,6 +145,7 @@ export interface CampaignState {
   discoveredOperations: DiscoveredOperation[];
   findings: Finding[];
   validations: FindingValidation[];
+  coordination: CoordinatorSnapshot;
   error?: string;
 }
 
@@ -158,6 +160,8 @@ export function createCampaignBudget(total: number): CampaignBudget {
 export type CampaignAction =
   | { type: "phase"; phase: CampaignState["phase"] }
   | { type: "agent"; id: string; status: AgentStatus; summary?: string }
+  | { type: "agent-spawned"; id: string; role: CampaignAgent["role"] }
+  | { type: "coordinator-snapshot"; snapshot: CoordinatorSnapshot }
   | { type: "request"; phase: "exploration" | "validation" }
   | { type: "reclaim-exploration-budget" }
   | { type: "request-tested"; request: TestedRequest }
@@ -201,6 +205,7 @@ export function createCampaignState(
     discoveredOperations: [],
     findings: [],
     validations: [],
+    coordination: emptyCoordinatorSnapshot(budget.exploration),
   };
 }
 
@@ -243,6 +248,15 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
             : agent,
         ),
       };
+    case "agent-spawned":
+      return state.agents.some(({ id }) => id === action.id)
+        ? state
+        : {
+            ...state,
+            agents: [...state.agents, { id: action.id, role: action.role, status: "queued" }],
+          };
+    case "coordinator-snapshot":
+      return { ...state, coordination: action.snapshot };
     case "request-tested":
       return {
         ...state,
@@ -277,6 +291,31 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
     case "failed":
       return { ...state, phase: "failed", error: action.error };
   }
+}
+
+function emptyCoordinatorSnapshot(requestBudget: number): CoordinatorSnapshot {
+  return {
+    revision: 0,
+    coverage: {
+      discoveredOperations: 0,
+      testedOperations: 0,
+      operationCoverage: 0,
+      testedAccessModes: 0,
+      totalAccessModes: 0,
+      accessModeCoverage: 0,
+    },
+    hypotheses: [],
+    debriefs: [],
+    specialists: [],
+    validationQueue: [],
+    budget: {
+      total: requestBudget,
+      consumed: 0,
+      allocated: 0,
+      available: requestBudget,
+      workers: {},
+    },
+  };
 }
 
 export function fingerprintFinding(
