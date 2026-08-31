@@ -1,3 +1,7 @@
+import { normalizeEndpoint } from "./endpoint.ts";
+
+export { normalizeEndpoint } from "./endpoint.ts";
+
 export type AgentStatus = "queued" | "running" | "finished" | "failed";
 export type FindingCategory =
   | "broken-object-authorization"
@@ -253,24 +257,6 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
 
 export function fingerprintFinding(finding: Pick<FindingInput, "category" | "endpoint">): string {
   return `${finding.category}:GET:${normalizeEndpoint(finding.endpoint)}`;
-}
-
-export function normalizeEndpoint(endpoint: string): string {
-  const url = new URL(endpoint, "http://scope.invalid");
-  const normalizedPath = url.pathname
-    .split("/")
-    .map((encodedSegment) => {
-      const segment = decodeURIComponent(encodedSegment);
-      return /^\d+$/.test(segment) ||
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-          segment,
-        ) ||
-        /^(?:<[^>]+>|\{[^}]+\})$/.test(segment)
-        ? "{id}"
-        : segment;
-    })
-    .join("/");
-  return normalizedPath;
 }
 
 export function campaignRouteCoverage(state: CampaignState): {

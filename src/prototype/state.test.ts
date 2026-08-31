@@ -76,6 +76,21 @@ describe("campaign state", () => {
     );
   });
 
+  it("deduplicates findings whose endpoints differ only by a trailing slash", () => {
+    const initial = createCampaignState("http://127.0.0.1:8888", {
+      total: 30,
+      exploration: 20,
+      validation: 10,
+    });
+    const withFirst = reduceCampaign(initial, { type: "finding", finding: firstFinding });
+    const withTrailingSlash = reduceCampaign(withFirst, {
+      type: "finding",
+      finding: { ...firstFinding, endpoint: `${firstFinding.endpoint}/` },
+    });
+
+    expect(withTrailingSlash.findings).toHaveLength(1);
+  });
+
   it("records outcomes for multiple findings before campaign completion", () => {
     const initial = createCampaignState("http://127.0.0.1:8888", {
       total: 30,

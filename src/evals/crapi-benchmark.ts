@@ -1,3 +1,5 @@
+import { normalizeEndpoint } from "../prototype/endpoint.ts";
+
 export interface BenchmarkFinding {
   category: string;
   endpoint: string;
@@ -149,14 +151,14 @@ export function scoreCrapiReadOnlyBenchmark(input: CrapiBenchmarkInput): CrapiBe
 function matches(testCase: BenchmarkCase, finding: BenchmarkFinding): boolean {
   return (
     [testCase.endpoint, ...(testCase.endpointAliases ?? [])].some((endpoint) =>
-      routePatternMatches(endpoint, normalizeEndpoint(finding.endpoint)),
+      routePatternMatches(endpoint, finding.endpoint),
     ) && testCase.categories.includes(finding.category)
   );
 }
 
 function routePatternMatches(pattern: string, endpoint: string): boolean {
   const patternSegments = normalizeEndpoint(pattern).split("/");
-  const endpointSegments = endpoint.split("/");
+  const endpointSegments = normalizeEndpoint(endpoint).split("/");
   return (
     patternSegments.length === endpointSegments.length &&
     patternSegments.every(
@@ -173,22 +175,4 @@ function uniqueFindings(findings: readonly BenchmarkFinding[]): BenchmarkFinding
 
 function fingerprint(finding: BenchmarkFinding): string {
   return `${finding.category}:GET:${normalizeEndpoint(finding.endpoint)}`;
-}
-
-function normalizeEndpoint(endpoint: string): string {
-  const url = new URL(endpoint, "http://benchmark.invalid");
-  const path = url.pathname
-    .split("/")
-    .map((encodedSegment) => {
-      const segment = decodeURIComponent(encodedSegment);
-      return /^\d+$/.test(segment) ||
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-          segment,
-        ) ||
-        /^(?:<[^>]+>|\{[^}]+\})$/.test(segment)
-        ? "{id}"
-        : segment;
-    })
-    .join("/");
-  return path.length > 1 ? path.replace(/\/$/, "") : path;
 }

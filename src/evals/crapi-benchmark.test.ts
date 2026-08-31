@@ -76,6 +76,20 @@ describe("crAPI read-only benchmark", () => {
     expect(score.matchedBenchmarkIds).toEqual(["vehicle-location-bola"]);
   });
 
+  it("matches a discovered endpoint with a trailing slash", () => {
+    const score = scoreCrapiReadOnlyBenchmark({
+      confirmedFindings: [
+        {
+          category: "broken-object-authorization",
+          endpoint: "/identity/api/v2/vehicle/48ad1f93-4eb8-4f8f-a5bc-8f780e142bf9/location/",
+        },
+      ],
+      requestsUsed: 5,
+    });
+
+    expect(score.matchedBenchmarkIds).toEqual(["vehicle-location-bola"]);
+  });
+
   it("scores single-post and recent-feed author exposure as one benchmark case", () => {
     const score = scoreCrapiReadOnlyBenchmark({
       confirmedFindings: [
