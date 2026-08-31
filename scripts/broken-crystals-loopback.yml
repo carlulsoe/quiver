@@ -1,0 +1,21 @@
+services:
+  db:
+    ports: !override
+      - "127.0.0.1:5432:5432"
+  keycloak:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+  nodejs:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:5000:5000"
+  grpcwebproxy:
+    ports: !override
+      - "127.0.0.1:8081:8081"
+  mailcatcher:
+    ports: !override
+      - "127.0.0.1:1080:1080"
+      - "127.0.0.1:1025:1025"
+  ollama:
+    ports: !override
+      - "127.0.0.1:11434:11434"

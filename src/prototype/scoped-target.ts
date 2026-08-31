@@ -25,6 +25,10 @@ export interface HttpObservation {
   contentType?: string;
 }
 
+export interface SetupHttpObservation extends HttpObservation {
+  headers: Record<string, string>;
+}
+
 export interface TargetRequestEvent {
   number: number;
   method: string;
@@ -183,13 +187,29 @@ export class ScopedTarget {
   }
 
   async request(request: ScopedRequest): Promise<HttpObservation> {
-    return this.#request(request, this.#maxResponseChars);
+    return (await this.#request(request, this.#maxResponseChars)) as HttpObservation;
   }
 
-  async #request(request: ScopedRequest, responseLimit: number): Promise<HttpObservation> {
+  async setupRequest(request: ScopedRequest): Promise<SetupHttpObservation> {
     const method = request.method ?? "GET";
     const url = this.#resolvePath(request.path);
-    if (this.#isDenied(method, url.pathname)) {
+    if (!operationAllowed(this.#allowedRequests, method, url.pathname)) {
+      throw new TargetScopeError(
+        `${method} ${url.pathname} is not an allowed profile setup request`,
+      );
+    }
+    const observation = await this.#request(request, this.#maxResponseChars, true);
+    return observation as SetupHttpObservation;
+  }
+
+  async #request(
+    request: ScopedRequest,
+    responseLimit: number,
+    includeResponseHeaders = false,
+  ): Promise<HttpObservation | SetupHttpObservation> {
+    const method = request.method ?? "GET";
+    const url = this.#resolvePath(request.path);
+    if (!includeResponseHeaders && this.#isDenied(method, url.pathname)) {
       throw new TargetScopeError(`${method} ${url.pathname} is denied by the target profile`);
     }
     if (isStateChanging(method) && !this.#isAuthorizedOperation(method, url.pathname)) {
@@ -244,7 +264,7 @@ export class ScopedTarget {
       // Text is a valid target response body.
     }
 
-    return {
+    const observation: HttpObservation = {
       method,
       status: response.status,
       path: `${url.pathname}${url.search}`,
@@ -252,6 +272,9 @@ export class ScopedTarget {
       truncated,
       contentType: response.headers.get("content-type") ?? "",
     };
+    return includeResponseHeaders
+      ? { ...observation, headers: Object.fromEntries(response.headers.entries()) }
+      : observation;
   }
 
   mapAttackSurface(options: { maxDocuments?: number } = {}): Promise<AttackSurfaceMap> {

@@ -9,7 +9,8 @@ code-owned proof predicates—not an LLM decision—determine confirmation.
 
 The campaign engine is target-agnostic. A small `TargetProfile` supplies target
 setup such as authentication, allowed setup operations, and explicitly denied operations. The CLI ships
-OWASP crAPI and a randomized held-out target profile; campaign state, mapping,
+profiles for OWASP crAPI, Broken Crystals, OWASP VulnerableApp, VAmPI's vulnerable
+and secure modes, and a randomized held-out target; campaign state, mapping,
 deterministic validation, and reporting contain no target route inventory or
 vulnerability-specific proof code.
 
@@ -70,6 +71,42 @@ bun run campaign -- http://127.0.0.1:8888 \
 
 Run `bun run campaign -- --help` for all options. Stop crAPI without deleting its
 database volumes with `bun run target:down`.
+
+## Additional test targets
+
+All launchers pin an upstream source revision, and the campaign still enforces
+its loopback-only target boundary. Broken Crystals is the larger end-to-end target:
+
+```sh
+bun run target:broken-crystals:up
+bun run campaign -- --profile broken-crystals --budget 60
+bun run target:broken-crystals:down
+```
+
+OWASP VulnerableApp is built locally so its native DAST comparator is available.
+The `scoreVulnerableAppBenchmark` adapter in
+`src/evals/vulnerableapp-benchmark.ts` submits confirmed endpoints, methods, and
+CWEs and reports native coverage, precision, misses, and unmatched findings as
+false positives.
+
+```sh
+bun run target:vulnerableapp:up
+bun run campaign -- --profile vulnerableapp --budget 60
+bun run target:vulnerableapp:down
+```
+
+VAmPI starts secure and vulnerable configurations together. Run identical
+campaign settings against each, then pass the confirmed finding sets to
+`compareVampiPair` in `src/evals/vampi-oracle.ts`. Vulnerable-only confirmations
+are differential true positives; secure-instance confirmations reveal persistent
+vulnerabilities or false positives.
+
+```sh
+bun run target:vampi:up
+bun run campaign -- --profile vampi-vulnerable --budget 42
+bun run campaign -- --profile vampi-secure --budget 42
+bun run target:vampi:down
+```
 
 ## Campaign behavior
 
