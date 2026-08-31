@@ -120,6 +120,7 @@ function useUsageMetadata() {
 function explorationTools(
   agentId: string,
   target: ScopedTarget,
+  profile: TargetProfile,
   ledger: CampaignLedger,
   coordinator: AdaptiveCoordinator,
   artifacts: ProofArtifactStore,
@@ -267,17 +268,29 @@ function explorationTools(
   const observeBrowserEffect = defineTool({
     name: "observe_browser_effect",
     description:
-      "Open one same-origin page in a constrained browser and record an issued marker only when it is visibly observed.",
+      "Open one same-origin page with a target-policy-owned request cap and record an issued marker only when it is visibly observed.",
     input: v.object({
+      policyId: v.string(),
       probeId: v.string(),
-      marker: v.string(),
-      path: v.string(),
-      kind: v.literal("dialog"),
-      authenticated: v.boolean(),
-      requestBudget: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(20)),
     }),
     async run({ data }) {
-      const evidence = await target.observeBrowserEffect(data);
+      const policy = profile.proofPolicies?.find(
+        (candidate) => candidate.kind === "browser-effect" && candidate.id === data.policyId,
+      );
+      if (policy?.kind !== "browser-effect") {
+        throw new Error("Unknown browser-effect proof policy");
+      }
+      const probe = artifacts.browserProbe(data.probeId);
+      if (!probe) throw new Error("Unknown browser proof probe");
+      const path = browserPolicyPath(policy, probe.marker);
+      const evidence = await target.observeBrowserEffect({
+        probeId: data.probeId,
+        marker: probe.marker,
+        path,
+        kind: policy.effect,
+        authenticated: policy.pageAuthenticated,
+        requestBudget: policy.requestBudget,
+      });
       if (evidence) artifacts.recordBrowserEffect(evidence);
       return {
         output: {
@@ -316,7 +329,15 @@ export function createExplorerAgent(
   dispatch: (action: CampaignAction) => void,
   suppliedContext?: string,
 ) {
-  const tools = explorationTools(agentId, target, ledger, coordinator, artifacts, dispatch);
+  const tools = explorationTools(
+    agentId,
+    target,
+    profile,
+    ledger,
+    coordinator,
+    artifacts,
+    dispatch,
+  );
   const submit = defineTool({
     name: "submit_finding",
     description:
@@ -680,4 +701,26 @@ function chainProofOutput(result: ReturnType<typeof evaluateExploitChain>) {
       actual: item.actual === undefined ? null : JSON.stringify(item.actual),
     })),
   };
+}
+
+function browserPolicyPath(
+  policy: Extract<NonNullable<TargetProfile["proofPolicies"]>[number], { kind: "browser-effect" }>,
+  marker: string,
+): string {
+  if (!policy.pageChallenge) return policy.pagePath;
+  if (
+    policy.pageChallenge.location !== "query" ||
+    policy.pageChallenge.template.split("{{challenge}}").length !== 2
+  ) {
+    throw new Error("Browser page challenge must be one query substitution");
+  }
+  const url = new URL(policy.pagePath, "http://browser-policy.invalid");
+  if (url.searchParams.getAll(policy.pageChallenge.parameter).length !== 1) {
+    throw new Error("Browser policy pagePath must contain its challenge query parameter once");
+  }
+  url.searchParams.set(
+    policy.pageChallenge.parameter,
+    policy.pageChallenge.template.replace("{{challenge}}", marker),
+  );
+  return `${url.pathname}${url.search}${url.hash}`;
 }

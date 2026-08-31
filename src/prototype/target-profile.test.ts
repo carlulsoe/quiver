@@ -39,4 +39,28 @@ describe("target profile proof policy validation", () => {
       }),
     ).toThrow("must declare validationResetRequestBudget");
   });
+
+  it("bounds target-owned browser collector budgets", () => {
+    expect(() =>
+      assertValidTargetProfile({
+        id: "invalid-browser-budget",
+        displayName: "Invalid browser budget",
+        objective: "Exercise browser budget validation.",
+        proofPolicies: [
+          {
+            id: "dialog",
+            kind: "browser-effect",
+            category: "cross-site-scripting",
+            description: "Synthetic dialog.",
+            effect: "dialog",
+            markerPattern: "^QUIVER-BROWSER-",
+            pagePath: "/preview",
+            payloadTemplate: "<script>alert('{{challenge}}')</script>",
+            pageAuthenticated: false,
+            requestBudget: 21,
+          },
+        ],
+      }),
+    ).toThrow("requestBudget must be from 1 to 20");
+  });
 });

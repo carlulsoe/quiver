@@ -72,6 +72,11 @@ export class ProofArtifactStore implements AsyncDisposable {
     return { probeId, marker };
   }
 
+  browserProbe(probeId: string): BrowserProbe | undefined {
+    const marker = this.#issuedBrowserMarkers.get(probeId);
+    return marker ? { probeId, marker } : undefined;
+  }
+
   async waitForOastCallback(
     probeId: string,
     token: string,

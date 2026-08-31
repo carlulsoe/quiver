@@ -33,6 +33,8 @@ describe("proof artifact store", () => {
   it("records browser effects only for a marker issued by the store", async () => {
     await using store = new ProofArtifactStore();
     const probe = store.issueBrowserProbe();
+    expect(store.browserProbe(probe.probeId)).toEqual(probe);
+    expect(store.browserProbe("not-issued")).toBeUndefined();
     store.recordBrowserEffect({
       probeId: probe.probeId,
       path: "/result",

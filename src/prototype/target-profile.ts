@@ -84,6 +84,27 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
   }
   for (const policy of profile.proofPolicies ?? []) {
     if (
+      policy.kind === "browser-effect" &&
+      (!Number.isInteger(policy.requestBudget) ||
+        policy.requestBudget < 1 ||
+        policy.requestBudget > 20)
+    ) {
+      throw new Error(`Browser-effect policy ${policy.id} requestBudget must be from 1 to 20`);
+    }
+    if (
+      policy.kind === "browser-effect" &&
+      policy.pageChallenge &&
+      (policy.pageChallenge.location !== "query" ||
+        policy.pageChallenge.template.split("{{challenge}}").length !== 2 ||
+        new URL(policy.pagePath, "http://browser-policy.invalid").searchParams.getAll(
+          policy.pageChallenge.parameter,
+        ).length !== 1)
+    ) {
+      throw new Error(
+        `Browser-effect policy ${policy.id} pageChallenge must replace one declared query parameter`,
+      );
+    }
+    if (
       policy.kind === "state-transition" &&
       (!["POST", "PUT", "PATCH"].includes(policy.method) ||
         !["GET", "HEAD"].includes(policy.readMethod))
