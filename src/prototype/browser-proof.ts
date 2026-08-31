@@ -42,11 +42,36 @@ export async function collectBrowserEffect(
         { local: probe.localStorage ?? {}, session: probe.sessionStorage ?? {} },
       );
     }
+    const page = await context.newPage();
+    context.on("page", (candidate) => {
+      if (candidate !== page) void candidate.close();
+    });
+    const expectedUrl = new URL(probe.path, probe.origin).href;
     await context.route("**/*", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
       const path = `${url.pathname}${url.search}`;
-      if (url.origin !== probe.origin || !probe.decideRequest(request.method(), path)) {
+      const expected = new URL(probe.path, probe.origin);
+      const isNavigationRequest = request.isNavigationRequest();
+      let isMainFrame = false;
+      if (isNavigationRequest) {
+        try {
+          isMainFrame = request.frame() === page.mainFrame();
+        } catch {
+          // Unframed popup/service-worker navigation is never the policy document.
+        }
+      }
+      const isUnexpectedNavigation = !isExpectedDocumentNavigation(
+        isNavigationRequest,
+        isMainFrame,
+        url,
+        expected,
+      );
+      if (
+        isUnexpectedNavigation ||
+        url.origin !== probe.origin ||
+        !probe.decideRequest(request.method(), path)
+      ) {
         await route.abort("blockedbyclient");
         return;
       }
@@ -55,24 +80,39 @@ export async function collectBrowserEffect(
     await context.routeWebSocket("**/*", (route) =>
       route.close({ code: 1008, reason: "Quiver browser proof blocks WebSockets" }),
     );
-    const page = await context.newPage();
-    context.on("page", (candidate) => {
-      if (candidate !== page) void candidate.close();
-    });
     let markerObserved = false;
     page.on("dialog", (dialog) => {
-      if (dialog.message() === probe.marker) markerObserved = true;
+      if (dialog.message() === probe.marker && page.url() === expectedUrl) markerObserved = true;
       void dialog.dismiss();
     });
-    await page.goto(new URL(probe.path, probe.origin).href, {
-      waitUntil: "networkidle",
-      timeout: probe.timeoutMs,
-    });
+    try {
+      const response = await page.goto(expectedUrl, {
+        waitUntil: "networkidle",
+        timeout: probe.timeoutMs,
+      });
+      if (response?.request().redirectedFrom() || page.url() !== expectedUrl) return undefined;
+    } catch {
+      return undefined;
+    }
     await page.waitForTimeout(50);
-    return markerObserved
+    return markerObserved && page.url() === expectedUrl
       ? { probeId: probe.probeId, path: probe.path, kind: probe.kind, value: probe.marker }
       : undefined;
   } finally {
     await browser.close();
   }
+}
+
+export function isExpectedDocumentNavigation(
+  isNavigationRequest: boolean,
+  isMainFrame: boolean,
+  url: URL,
+  expected: URL,
+): boolean {
+  return (
+    !isNavigationRequest ||
+    (isMainFrame &&
+      url.origin === expected.origin &&
+      `${url.pathname}${url.search}` === `${expected.pathname}${expected.search}`)
+  );
 }

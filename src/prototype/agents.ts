@@ -8,6 +8,7 @@ import type { ProofArtifactStore } from "./proof-artifacts.ts";
 import { evaluateProof } from "./proof.ts";
 import { ReplayBudgetExceededError, replayFinding, replayRequestBudget } from "./replay.ts";
 import type { ScopedTarget } from "./scoped-target.ts";
+import { createSerialExecutor } from "./serial-executor.ts";
 import {
   fingerprintFinding,
   type CampaignAction,
@@ -519,60 +520,65 @@ export function createValidatorAgent(
   dispatch: (action: CampaignAction) => void,
 ) {
   const replays = new Map<string, Awaited<ReturnType<typeof replayFinding>>>();
+  const serializeReplay = createSerialExecutor();
   const replay = defineTool({
     name: "replay_finding",
     description:
       "Replay every REST request submitted for a finding on a fresh scoped target session.",
     input: v.object({ fingerprint: v.string() }),
     async run({ data }) {
-      const findings = getFindings();
-      const finding = findings.find((item) => item.fingerprint === data.fingerprint);
-      if (!finding) {
+      return serializeReplay(async () => {
+        const findings = getFindings();
+        const finding = findings.find((item) => item.fingerprint === data.fingerprint);
+        if (!finding) {
+          return {
+            output: {
+              error: "unknown-finding",
+              fingerprint: data.fingerprint,
+              observations: [],
+              deterministicProof: null,
+            },
+          };
+        }
+        const target = getTarget();
+        if (finding.proof.type === "state-transition") {
+          const requiredRequests =
+            replayRequestBudget(finding) + (profile.validationResetRequestBudget ?? 0);
+          if (target.remainingRequests < requiredRequests) {
+            throw new ReplayBudgetExceededError(
+              `Validation requires ${requiredRequests} requests but only ${target.remainingRequests} remain`,
+            );
+          }
+          if (profile.prepareValidation) {
+            await target.runProfileSetup(() => profile.prepareValidation!(target));
+          }
+        }
+        const result = await replayFinding(target, finding, artifacts, profile.proofPolicies);
+        replays.set(finding.fingerprint, result);
+        const proof = evaluateProof(result.replayedFinding, result.observations, {
+          policies: profile.proofPolicies,
+          artifacts: result.artifacts,
+          stateResetAvailable: profile.prepareValidation !== undefined,
+          maximumImpactLevel: profile.maximumImpactLevel ?? "observation",
+        });
         return {
           output: {
-            error: "unknown-finding",
-            fingerprint: data.fingerprint,
-            observations: [],
-            deterministicProof: null,
+            error: null,
+            fingerprint: result.fingerprint,
+            observations: result.observations.map((observation) => ({
+              method: observation.method ?? "GET",
+              status: observation.status,
+              path: observation.path,
+              body: JSON.stringify(observation.body),
+              truncated: observation.truncated,
+              ...(observation.durationMs === undefined
+                ? {}
+                : { durationMs: observation.durationMs }),
+            })),
+            deterministicProof: proofOutput(proof),
           },
         };
-      }
-      const target = getTarget();
-      if (finding.proof.type === "state-transition") {
-        const requiredRequests =
-          replayRequestBudget(finding) + (profile.validationResetRequestBudget ?? 0);
-        if (target.remainingRequests < requiredRequests) {
-          throw new ReplayBudgetExceededError(
-            `Validation requires ${requiredRequests} requests but only ${target.remainingRequests} remain`,
-          );
-        }
-        if (profile.prepareValidation) {
-          await target.runProfileSetup(() => profile.prepareValidation!(target));
-        }
-      }
-      const result = await replayFinding(target, finding, artifacts, profile.proofPolicies);
-      replays.set(finding.fingerprint, result);
-      const proof = evaluateProof(result.replayedFinding, result.observations, {
-        policies: profile.proofPolicies,
-        artifacts: result.artifacts,
-        stateResetAvailable: profile.prepareValidation !== undefined,
-        maximumImpactLevel: profile.maximumImpactLevel ?? "observation",
       });
-      return {
-        output: {
-          error: null,
-          fingerprint: result.fingerprint,
-          observations: result.observations.map((observation) => ({
-            method: observation.method ?? "GET",
-            status: observation.status,
-            path: observation.path,
-            body: JSON.stringify(observation.body),
-            truncated: observation.truncated,
-            ...(observation.durationMs === undefined ? {} : { durationMs: observation.durationMs }),
-          })),
-          deterministicProof: proofOutput(proof),
-        },
-      };
     },
   });
   const submit = defineTool({
