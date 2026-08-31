@@ -7,15 +7,16 @@ const CampaignContractJudge = createJudge<SecurityEvalInput, SecurityEvalOutput>
   async ({ output }) => {
     const passed =
       output.phase === "complete" &&
-      output.confirmedCount > 0 &&
+      output.benchmarkTruePositiveCount > 0 &&
+      output.benchmarkFalsePositiveCount === 0 &&
       output.unvalidatedCount === 0 &&
       output.requestsUsed <= output.requestBudget;
     return {
       score: passed ? 1 : 0,
       metadata: {
         rationale: passed
-          ? `Campaign confirmed ${output.confirmedCount} of ${output.findingCount} unique findings within budget.`
-          : `Campaign ended phase=${output.phase}, confirmed=${output.confirmedCount}, unvalidated=${output.unvalidatedCount}, requests=${output.requestsUsed}/${output.requestBudget}.`,
+          ? `Campaign found ${output.benchmarkTruePositiveCount} benchmark vulnerabilities with no safe-control false positives in ${output.requestsUsed} requests.`
+          : `Campaign ended phase=${output.phase}, benchmark true positives=${output.benchmarkTruePositiveCount}, safe-control false positives=${output.benchmarkFalsePositiveCount}, unvalidated=${output.unvalidatedCount}, requests=${output.requestsUsed}/${output.requestBudget}.`,
       },
     };
   },
@@ -37,7 +38,10 @@ describeEval("crAPI read-only vulnerability campaign", { harness: securityHarnes
       const result = await run({ target, requestBudget: 36, explorerCount: 2 });
 
       expect(result.output).toMatchObject({ phase: "complete", unvalidatedCount: 0 });
-      expect(result.output.confirmedCount).toBeGreaterThan(0);
+      expect(result.output.benchmarkTruePositiveCount).toBeGreaterThan(0);
+      expect(result.output.benchmarkFalsePositiveCount).toBe(0);
+      expect(result.output.benchmarkCoverage).toBeGreaterThan(0);
+      expect(result.output.benchmarkPrecision).toBe(1);
       expect(new Set(result.output.confirmedFingerprints).size).toBe(
         result.output.confirmedFingerprints.length,
       );
@@ -45,6 +49,7 @@ describeEval("crAPI read-only vulnerability campaign", { harness: securityHarnes
       expect(toolCalls(result).map((call) => call.name)).toEqual(
         expect.arrayContaining([
           "crawl_target",
+          "review_campaign",
           "submit_finding",
           "finish_exploration",
           "replay_finding",

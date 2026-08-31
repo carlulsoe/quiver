@@ -48,7 +48,7 @@ export function parseCliOptions(args: string[]): CliOptions {
 export const CLI_HELP = `Usage: bun run campaign -- [target] [options]
 
 Options:
-  --report <path>  Write a structured JSON run report
+  --report <path>  Write a .json trace or polished .md report
   --budget <count> Total HTTP request budget (default: 30)
   --quiet          Suppress live state rendering
   -h, --help       Show this help

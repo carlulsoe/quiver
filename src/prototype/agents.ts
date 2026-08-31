@@ -1,10 +1,10 @@
 import { defineTool, useModel, useTool } from "@flue/runtime";
 import * as v from "valibot";
+import type { CampaignLedger } from "./campaign-ledger.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import { replayFinding } from "./replay.ts";
 import type { ScopedTarget } from "./scoped-target.ts";
 import {
-  fingerprintFinding,
   type CampaignAction,
   type Finding,
   type FindingInput,
@@ -21,7 +21,7 @@ const categorySchema = v.picklist([
   "other",
 ]);
 
-function explorationTools(target: ScopedTarget, profile: TargetProfile) {
+function explorationTools(agentId: string, target: ScopedTarget, ledger: CampaignLedger) {
   const crawl = defineTool({
     name: "crawl_target",
     description:
@@ -33,20 +33,16 @@ function explorationTools(target: ScopedTarget, profile: TargetProfile) {
           startPath: map.startPath,
           documents: map.documents.map((document) => ({ ...document })),
           routes: [...map.routes],
+          routeDetails: map.routeDetails.map((detail) => ({
+            path: detail.path,
+            sources: [...detail.sources],
+            getCallSites: detail.getCallSites.map((callSite) => ({ ...callSite })),
+            identifierSources: detail.identifierSources.map((source) => ({ ...source })),
+          })),
         },
       };
     },
   });
-  const authenticate = profile.authenticate
-    ? defineTool({
-        name: "authenticate",
-        description:
-          "Establish the profile's ordinary test-user session. Returns an opaque context, never credentials or tokens.",
-        async run() {
-          return { output: await profile.authenticate!(target) };
-        },
-      })
-    : undefined;
   const get = defineTool({
     name: "http_get",
     description:
@@ -56,21 +52,37 @@ function explorationTools(target: ScopedTarget, profile: TargetProfile) {
       auth: v.picklist(["anonymous", "authenticated"]),
     }),
     async run({ data }) {
-      const result = await target.request({
-        path: data.path,
-        authenticated: data.auth === "authenticated",
-      });
+      const authenticated = data.auth === "authenticated";
+      const { observation: result, reused } = await ledger.request(
+        { agentId, path: data.path, authenticated },
+        () => target.request({ path: data.path, authenticated }),
+      );
       return {
         output: {
           status: result.status,
           path: result.path,
           body: JSON.stringify(result.body),
           truncated: result.truncated ?? false,
+          reused,
         },
       };
     },
   });
-  return { crawl, authenticate, get };
+  const review = defineTool({
+    name: "review_campaign",
+    description:
+      "Read the shared ledger of exact requests already tested and distinct findings already submitted by all explorers.",
+    run() {
+      const snapshot = ledger.snapshot();
+      return {
+        output: {
+          testedRequests: snapshot.testedRequests.map((request) => ({ ...request })),
+          findings: snapshot.findings.map((finding) => ({ ...finding })),
+        },
+      };
+    },
+  });
+  return { crawl, get, review };
 }
 
 export function createExplorerAgent(
@@ -78,9 +90,9 @@ export function createExplorerAgent(
   focus: string,
   target: ScopedTarget,
   profile: TargetProfile,
-  dispatch: (action: CampaignAction) => void,
+  ledger: CampaignLedger,
 ) {
-  const tools = explorationTools(target, profile);
+  const tools = explorationTools(agentId, target, ledger);
   const submit = defineTool({
     name: "submit_finding",
     description:
@@ -100,9 +112,7 @@ export function createExplorerAgent(
     }),
     run({ data }) {
       const finding: FindingInput = { agentId, ...data };
-      const fingerprint = fingerprintFinding(finding);
-      dispatch({ type: "finding", finding });
-      return { output: { accepted: true, fingerprint } };
+      return { output: ledger.recordFinding(finding) };
     },
   });
   const finish = defineTool({
@@ -118,8 +128,8 @@ export function createExplorerAgent(
     function Explorer() {
       useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
       useTool(tools.crawl);
-      if (tools.authenticate) useTool(tools.authenticate);
       useTool(tools.get);
+      useTool(tools.review);
       useTool(submit);
       useTool(finish);
       return `
@@ -129,9 +139,9 @@ Target: ${profile.displayName} at ${target.origin}${target.startPath}
 Campaign objective: ${profile.objective}
 Your complementary campaign focus: ${focus}
 
-Start with crawl_target; no API inventory is supplied. Use only the provided tools. Derive paths from live target material, authenticate if available, correlate identifiers and identities across responses, and test concrete hypotheses with GET requests. Prioritize your assigned focus before broadening into other read-only vulnerability classes.
+Start with crawl_target, then review_campaign; no API inventory is supplied. Use only the provided tools. The target profile has already prepared any available ordinary-user session. Use routeDetails to prioritize observed GET call sites, likely authentication requirements, and identifier-source relationships. Derive paths from live target material, correlate identifiers and identities across anonymous and authenticated responses, and test concrete hypotheses with GET requests. Prioritize your assigned focus before broadening into other read-only vulnerability classes. Consult review_campaign again only when choosing between hypotheses that another explorer may already have tested. http_get safely reuses an existing exact observation when another explorer has already made the same authenticated or anonymous request.
 
-Submit every distinct evidence-backed vulnerability you find. A distinct vulnerability is one category at one endpoint pattern; multiple affected object IDs are the same finding. The endpoint field must be the affected request path or discovered route template. The reproduction list must contain the ordered GET requests an independent validator needs, including any baseline or identity request required to prove the claim. submit_finding does not end the campaign: continue testing other routes and vulnerability classes. Never submit guesses. Call finish_exploration only when further read-only testing is not useful or the request budget is exhausted.
+Submit every distinct evidence-backed vulnerability you find. A distinct vulnerability is one category at one endpoint pattern; multiple affected object IDs are the same finding. The endpoint field must be the affected request path or discovered route template. The reproduction list must contain the ordered GET requests an independent validator needs, including any baseline or identity request required to prove the claim. submit_finding reports whether the shared campaign accepted or had already recorded the fingerprint; it does not end the campaign. Continue testing other routes and vulnerability classes. Never submit guesses. Call finish_exploration only when further read-only testing is not useful or the request budget is exhausted.
 `;
     },
     { agentName: agentId },

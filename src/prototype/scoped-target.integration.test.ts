@@ -17,5 +17,24 @@ describe("live target discovery", () => {
         "/community/api/v2/community/posts/recent",
       ]),
     );
+    expect(map.routeDetails).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "/identity/api/v2/vehicle/vehicles",
+          getCallSites: [
+            expect.objectContaining({
+              documentPath: expect.stringMatching(/^\/static\/js\/main\..+\.js$/),
+              authentication: "likely",
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          path: "/identity/api/v2/vehicle/<carId>/location",
+          identifierSources: [
+            { parameter: "carId", sourcePath: "/identity/api/v2/vehicle/vehicles" },
+          ],
+        }),
+      ]),
+    );
   });
 });

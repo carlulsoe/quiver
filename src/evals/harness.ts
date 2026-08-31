@@ -1,6 +1,7 @@
 import { createHarness, toJsonValue, type JsonValue, type TranscriptEvent } from "vitest-evals";
 import { runCampaign } from "../prototype/runner.ts";
 import { crapiProfile } from "../targets/crapi.ts";
+import { scoreCrapiReadOnlyBenchmark } from "./crapi-benchmark.ts";
 
 export interface SecurityEvalInput {
   target: string;
@@ -16,6 +17,15 @@ export interface SecurityEvalOutput extends Record<string, JsonValue> {
   rejectedCount: number;
   unvalidatedCount: number;
   confirmedFingerprints: string[];
+  benchmarkTruePositiveCount: number;
+  benchmarkFalsePositiveCount: number;
+  benchmarkMissedCount: number;
+  benchmarkUnscoredCount: number;
+  benchmarkCoverage: number;
+  benchmarkPrecision: number;
+  requestsPerTruePositive: number | null;
+  matchedBenchmarkIds: string[];
+  missedBenchmarkIds: string[];
   requestsUsed: number;
   requestBudget: number;
   explorationRequests: number;
@@ -44,6 +54,13 @@ export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutp
     const rejectedCount = run.state.validations.filter(
       (validation) => validation.status === "rejected",
     ).length;
+    const confirmedSet = new Set(confirmedFingerprints);
+    const benchmark = scoreCrapiReadOnlyBenchmark({
+      confirmedFindings: run.state.findings.filter((finding) =>
+        confirmedSet.has(finding.fingerprint),
+      ),
+      requestsUsed: run.state.requests.total,
+    });
     const output: SecurityEvalOutput = {
       model: run.model,
       phase: run.state.phase,
@@ -52,6 +69,15 @@ export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutp
       rejectedCount,
       unvalidatedCount: run.state.findings.length - run.state.validations.length,
       confirmedFingerprints,
+      benchmarkTruePositiveCount: benchmark.truePositiveCount,
+      benchmarkFalsePositiveCount: benchmark.falsePositiveCount,
+      benchmarkMissedCount: benchmark.missedCount,
+      benchmarkUnscoredCount: benchmark.unscoredCount,
+      benchmarkCoverage: benchmark.coverage,
+      benchmarkPrecision: benchmark.precision,
+      requestsPerTruePositive: benchmark.requestsPerTruePositive,
+      matchedBenchmarkIds: benchmark.matchedBenchmarkIds,
+      missedBenchmarkIds: benchmark.missedBenchmarkIds,
       requestsUsed: run.state.requests.total,
       requestBudget: run.state.budget.total,
       explorationRequests: run.state.requests.exploration,

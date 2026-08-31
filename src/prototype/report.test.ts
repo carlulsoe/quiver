@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRunReport } from "./report.ts";
+import { createRunReport, renderMarkdownReport } from "./report.ts";
 import type { CampaignRun } from "./runner.ts";
 import { createCampaignState, reduceCampaign } from "./state.ts";
 
@@ -61,5 +61,57 @@ describe("campaign report", () => {
       title: "Cross-owner vehicle location",
       validation: { status: "confirmed" },
     });
+  });
+
+  it("renders an evidence-first Markdown handoff with reproducible requests", () => {
+    let state = createCampaignState(
+      "http://127.0.0.1:8888",
+      { total: 30, exploration: 20, validation: 10 },
+      1,
+    );
+    state = reduceCampaign(state, { type: "phase", phase: "exploring" });
+    state = reduceCampaign(state, {
+      type: "finding",
+      finding: {
+        agentId: "explorer-1",
+        title: "Cross-owner vehicle location",
+        category: "broken-object-authorization",
+        endpoint: "/vehicles/{id}/location",
+        resource: "vehicle-2",
+        rationale: "An ordinary user received another owner's location.",
+        reproduction: [
+          { path: "/vehicles/mine", authenticated: true },
+          { path: "/vehicles/vehicle-2/location", authenticated: true },
+        ],
+      },
+    });
+    state = reduceCampaign(state, { type: "phase", phase: "validating" });
+    state = reduceCampaign(state, {
+      type: "validation",
+      validation: {
+        fingerprint: state.findings[0]!.fingerprint,
+        status: "confirmed",
+        evidence: "Fresh replay returned another owner's coordinates.",
+      },
+    });
+    state = reduceCampaign(state, { type: "phase", phase: "complete" });
+    const report = createRunReport({
+      profileId: "crapi",
+      model: "openrouter/z-ai/glm-5.3-flash",
+      durationMs: 1234,
+      state,
+      events: [],
+    });
+
+    const markdown = renderMarkdownReport(report);
+
+    expect(markdown).toContain("# Quiver security campaign report");
+    expect(markdown).toContain("| Confirmed | 1 |");
+    expect(markdown).toContain("## Confirmed findings");
+    expect(markdown).toContain("### Cross-owner vehicle location");
+    expect(markdown).toContain("Fresh replay returned another owner's coordinates.");
+    expect(markdown).toContain(
+      "curl --silent --show-error --header 'Authorization: Bearer $QUIVER_TOKEN' 'http://127.0.0.1:8888/vehicles/vehicle-2/location'",
+    );
   });
 });

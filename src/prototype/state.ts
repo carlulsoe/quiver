@@ -45,12 +45,20 @@ export interface CampaignBudget {
   validation: number;
 }
 
+export interface TestedRequest {
+  agentId: string;
+  path: string;
+  authenticated: boolean;
+  status: number;
+}
+
 export interface CampaignState {
   target: string;
   phase: "starting" | "exploring" | "validating" | "complete" | "failed";
   budget: CampaignBudget;
   requests: { total: number; exploration: number; validation: number };
   agents: CampaignAgent[];
+  testedRequests: TestedRequest[];
   findings: Finding[];
   validations: FindingValidation[];
   error?: string;
@@ -68,6 +76,8 @@ export type CampaignAction =
   | { type: "phase"; phase: CampaignState["phase"] }
   | { type: "agent"; id: string; status: AgentStatus; summary?: string }
   | { type: "request"; phase: "exploration" | "validation" }
+  | { type: "reclaim-exploration-budget" }
+  | { type: "request-tested"; request: TestedRequest }
   | { type: "finding"; finding: FindingInput }
   | { type: "validation"; validation: FindingValidation }
   | { type: "failed"; error: string };
@@ -101,6 +111,7 @@ export function createCampaignState(
       })),
       { id: "validator", role: "validator", status: "queued" },
     ],
+    testedRequests: [],
     findings: [],
     validations: [],
   };
@@ -123,6 +134,19 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
           validation: state.requests.validation + (action.phase === "validation" ? 1 : 0),
         },
       };
+    case "reclaim-exploration-budget": {
+      const unused = Math.max(0, state.budget.exploration - state.requests.exploration);
+      return unused === 0
+        ? state
+        : {
+            ...state,
+            budget: {
+              total: state.budget.total,
+              exploration: state.budget.exploration - unused,
+              validation: state.budget.validation + unused,
+            },
+          };
+    }
     case "agent":
       return {
         ...state,
@@ -131,6 +155,11 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
             ? { ...agent, status: action.status, summary: action.summary ?? agent.summary }
             : agent,
         ),
+      };
+    case "request-tested":
+      return {
+        ...state,
+        testedRequests: [...state.testedRequests, action.request],
       };
     case "finding": {
       const finding = { ...action.finding, fingerprint: fingerprintFinding(action.finding) };

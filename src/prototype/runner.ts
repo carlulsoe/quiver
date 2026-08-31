@@ -1,6 +1,7 @@
 import { init, type ConversationStreamChunk } from "@flue/runtime";
 import { start } from "@flue/runtime/node";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
+import { CampaignLedger } from "./campaign-ledger.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import { ScopedTarget } from "./scoped-target.ts";
 import {
@@ -83,6 +84,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       action: action.type,
       phase: state.phase,
       requestsUsed: state.requests.total,
+      testedRequestCount: state.testedRequests.length,
       findingCount: state.findings.length,
       validationCount: state.validations.length,
     });
@@ -95,11 +97,17 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       target: options.target,
       requestBudget: budget.exploration,
       allowedRequests: options.profile.allowedRequests,
+      deniedRequests: options.profile.deniedRequests,
       onRequest: (request) => {
         record("request", { phase: "exploration", ...request });
         dispatch({ type: "request", phase: "exploration" });
       },
     });
+    const ledger = new CampaignLedger({
+      onTestedRequest: (request) => dispatch({ type: "request-tested", request }),
+      onFinding: (finding) => dispatch({ type: "finding", finding }),
+    });
+    if (options.profile.authenticate) await options.profile.authenticate(explorationTarget);
     dispatch({ type: "phase", phase: "exploring" });
     const focuses = [
       "broken authorization and cross-object access, using identifiers discovered in one response against other GET endpoints",
@@ -111,7 +119,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         focuses[index] ?? "the remaining read-only attack surface not covered by other explorers",
         explorationTarget,
         options.profile,
-        dispatch,
+        ledger,
       ),
     );
     {
@@ -139,12 +147,14 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       );
     }
 
+    dispatch({ type: "reclaim-exploration-budget" });
     dispatch({ type: "phase", phase: "validating" });
     if (state.findings.length > 0) {
       const validationTarget = new ScopedTarget({
         target: options.target,
-        requestBudget: budget.validation,
+        requestBudget: state.budget.validation,
         allowedRequests: options.profile.allowedRequests,
+        deniedRequests: options.profile.deniedRequests,
         onRequest: (request) => {
           record("request", { phase: "validation", ...request });
           dispatch({ type: "request", phase: "validation" });

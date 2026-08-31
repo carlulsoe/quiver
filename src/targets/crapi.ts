@@ -31,5 +31,9 @@ export const crapiProfile: TargetProfile = {
   objective:
     "Find as many distinct read-only vulnerabilities as the request budget supports. Prioritize broken authorization, excessive data exposure, sensitive data exposure, and security misconfiguration. Treat multiple affected resources at the same endpoint as one vulnerability.",
   allowedRequests: [{ method: "POST", path: "/identity/api/auth/login" }],
+  deniedRequests: [
+    { method: "GET", path: "/workshop/api/mechanic/receive_report" },
+    { method: "GET", path: "/workshop/api/mechanic/mechanic_report" },
+  ],
   authenticate,
 };

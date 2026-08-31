@@ -99,4 +99,44 @@ describe("campaign state", () => {
 
     expect(validated.requests).toEqual({ total: 2, exploration: 1, validation: 1 });
   });
+
+  it("reclaims unused exploration requests for validation", () => {
+    let state = createCampaignState("http://127.0.0.1:8888", {
+      total: 30,
+      exploration: 20,
+      validation: 10,
+    });
+    state = reduceCampaign(state, { type: "request", phase: "exploration" });
+    state = reduceCampaign(state, { type: "request", phase: "exploration" });
+
+    const rebalanced = reduceCampaign(state, { type: "reclaim-exploration-budget" });
+
+    expect(rebalanced.budget).toEqual({ total: 30, exploration: 2, validation: 28 });
+  });
+
+  it("exposes completed exploration tests to campaign observers", () => {
+    const initial = createCampaignState("http://127.0.0.1:8888", {
+      total: 30,
+      exploration: 20,
+      validation: 10,
+    });
+    const tested = reduceCampaign(initial, {
+      type: "request-tested",
+      request: {
+        agentId: "explorer-1",
+        path: "/api/items/42",
+        authenticated: true,
+        status: 200,
+      },
+    });
+
+    expect(tested.testedRequests).toEqual([
+      {
+        agentId: "explorer-1",
+        path: "/api/items/42",
+        authenticated: true,
+        status: 200,
+      },
+    ]);
+  });
 });
