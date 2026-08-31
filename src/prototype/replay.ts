@@ -1,6 +1,7 @@
 import type { ScopedTarget } from "./scoped-target.ts";
 import type { ProofArtifactStore } from "./proof-artifacts.ts";
 import type { Finding, ProofArtifacts, ValidationObservation } from "./state.ts";
+import { requiredImpactLevel } from "./impact.ts";
 
 export interface ReplayResult {
   fingerprint: string;
@@ -9,19 +10,27 @@ export interface ReplayResult {
   artifacts: ProofArtifacts;
 }
 
+export class ReplayBudgetExceededError extends Error {
+  override readonly name = "ReplayBudgetExceededError";
+}
+
+export function replayRequestBudget(finding: Pick<Finding, "proof" | "reproduction">): number {
+  return (
+    finding.reproduction.length +
+    (finding.proof.type === "browser-visible-effect" ? finding.proof.collectorRequestBudget : 0)
+  );
+}
+
 export async function replayFinding(
   target: ScopedTarget,
   finding: Finding,
   artifactStore?: ProofArtifactStore,
 ): Promise<ReplayResult> {
   const replayedFinding = prepareFreshChallenge(finding, artifactStore);
-  const requiredRequests =
-    replayedFinding.reproduction.length +
-    (replayedFinding.proof.type === "browser-visible-effect"
-      ? replayedFinding.proof.collectorRequestBudget
-      : 0);
+  target.assertImpactLevel(requiredImpactLevel(replayedFinding));
+  const requiredRequests = replayRequestBudget(replayedFinding);
   if (target.remainingRequests < requiredRequests) {
-    throw new Error(
+    throw new ReplayBudgetExceededError(
       `Validation requires ${requiredRequests} requests but only ${target.remainingRequests} remain`,
     );
   }

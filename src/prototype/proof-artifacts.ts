@@ -117,6 +117,17 @@ export class ProofArtifactStore implements AsyncDisposable {
     return this.artifactsSince({ browserEffects: 0, oastCallbacks: 0 });
   }
 
+  hasIssuedChallenge(value: string): boolean {
+    return (
+      [...this.#issuedOastTokens.values(), ...this.#issuedBrowserMarkers.values()].some((issued) =>
+        value.includes(issued),
+      ) ||
+      [...this.#issuedOastTokens.entries()].some(([probeId, token]) =>
+        value.includes(`/callback/${probeId}/${token}`),
+      )
+    );
+  }
+
   async [Symbol.asyncDispose](): Promise<void> {
     await this.#server?.stop(true);
     this.#server = undefined;

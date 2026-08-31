@@ -2,15 +2,25 @@ import { dirname, extname, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import type { CampaignRun, RunEvent } from "./runner.ts";
 import { isCredentialCapableHeader } from "./scoped-target.ts";
-import { campaignOperationCoverage, type Finding, type FindingValidation } from "./state.ts";
+import {
+  campaignOperationCoverage,
+  type ExploitChain,
+  type ExploitChainValidation,
+  type Finding,
+  type FindingValidation,
+} from "./state.ts";
 
 export interface ReportedFinding extends Finding {
   validation?: FindingValidation;
   traceEventSequences: number[];
 }
 
+export interface ReportedExploitChain extends ExploitChain {
+  validation?: ExploitChainValidation;
+}
+
 export interface RunReport {
-  schemaVersion: 7;
+  schemaVersion: 8;
   generatedAt: string;
   profileId: string;
   reproductionAuthentication?: CampaignRun["reproductionAuthentication"];
@@ -28,8 +38,11 @@ export interface RunReport {
     agentFailures: number;
     durationMs: number;
     operationCoverage: ReturnType<typeof campaignOperationCoverage>;
+    confirmedChainCount: number;
+    rejectedChainCount: number;
   };
   findings: ReportedFinding[];
+  exploitChains: ReportedExploitChain[];
   events: CampaignRun["events"];
 }
 
@@ -57,9 +70,15 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
   const rejectedCount = run.state.validations.filter(
     (validation) => validation.status === "rejected",
   ).length;
+  const exploitChains = run.state.exploitChains.map((chain) => ({
+    ...chain,
+    validation: run.state.exploitChainValidations.find(
+      ({ fingerprint }) => fingerprint === chain.fingerprint,
+    ),
+  }));
 
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     generatedAt: generatedAt.toISOString(),
     profileId: run.profileId,
     reproductionAuthentication: run.reproductionAuthentication,
@@ -77,8 +96,15 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
       agentFailures: run.state.agents.filter((agent) => agent.status === "failed").length,
       durationMs: run.durationMs,
       operationCoverage: campaignOperationCoverage(run.state),
+      confirmedChainCount: run.state.exploitChainValidations.filter(
+        ({ status }) => status === "confirmed",
+      ).length,
+      rejectedChainCount: run.state.exploitChainValidations.filter(
+        ({ status }) => status === "rejected",
+      ).length,
     },
     findings,
+    exploitChains: redactCredentials(exploitChains) as ReportedExploitChain[],
     events: redactCredentials(run.events) as RunEvent[],
   };
 }
@@ -176,6 +202,8 @@ export function renderMarkdownReport(report: RunReport): string {
     `| Confirmed | ${report.outcome.confirmedCount} |`,
     `| Rejected | ${report.outcome.rejectedCount} |`,
     `| Unvalidated | ${report.outcome.unvalidatedCount} |`,
+    `| Confirmed exploit chains | ${report.outcome.confirmedChainCount} |`,
+    `| Rejected exploit chains | ${report.outcome.rejectedChainCount} |`,
     `| Requests | ${report.outcome.requests.total}/${report.outcome.budget.total} |`,
     `| Actionable operation coverage | ${(report.outcome.operationCoverage.coverage * 100).toFixed(1)}% (${report.outcome.operationCoverage.tested}/${report.outcome.operationCoverage.discovered}) |`,
     `| Duration | ${(report.outcome.durationMs / 1_000).toFixed(1)}s |`,
@@ -228,6 +256,7 @@ export function renderMarkdownReport(report: RunReport): string {
         "",
         `- Category: \`${finding.category}\``,
         `- Severity: **${finding.severity}**`,
+        `- Impact level: \`${finding.impactLevel}\``,
         `- CWE: \`${finding.cwe}\``,
         `- Operation: \`${finding.method ?? "GET"} ${finding.endpoint}\``,
         `- Fingerprint: \`${finding.fingerprint}\``,
@@ -335,6 +364,31 @@ export function renderMarkdownReport(report: RunReport): string {
           "",
         );
       }
+    }
+  }
+
+  lines.push("## Exploit-chain proofs", "");
+  if (report.exploitChains.length === 0) {
+    lines.push("_None._", "");
+  } else {
+    for (const chain of report.exploitChains) {
+      lines.push(
+        `### ${chain.title}`,
+        "",
+        `- Outcome: **${chain.validation?.status ?? "unvalidated"}**`,
+        `- Impact level: \`${chain.impactLevel}\``,
+        `- Steps: ${chain.steps.map((step) => `\`${step}\``).join(" → ")}`,
+        `- Result: ${chain.validation?.summary ?? "No fresh chain validation was recorded."}`,
+        "",
+      );
+      for (const item of chain.validation?.checks ?? []) {
+        lines.push(
+          `- ${item.passed ? "PASS" : "FAIL"}: ${item.description}${
+            item.actual === undefined ? "" : ` (observed: \`${inlineValue(item.actual)}\`)`
+          }`,
+        );
+      }
+      lines.push("");
     }
   }
 

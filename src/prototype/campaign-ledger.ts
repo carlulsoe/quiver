@@ -1,7 +1,11 @@
 import type { HttpObservation } from "./scoped-target.ts";
 import type { RestMethod } from "./scoped-target.ts";
 import {
+  fingerprintExploitChain,
   fingerprintFinding,
+  normalizeFindingInput,
+  type ExploitChain,
+  type ExploitChainInput,
   type Finding,
   type FindingInput,
   type ReproductionRequest,
@@ -34,11 +38,13 @@ export interface LedgerFinding {
 export interface CampaignLedgerSnapshot {
   testedRequests: TestedRequest[];
   findings: LedgerFinding[];
+  exploitChains: Array<{ fingerprint: string; title: string; steps: string[] }>;
 }
 
 export interface CampaignLedgerOptions {
   onTestedRequest?: (request: TestedRequest) => void;
   onFinding?: (finding: FindingInput) => void;
+  onExploitChain?: (chain: ExploitChainInput) => void;
 }
 
 interface RequestEntry {
@@ -51,12 +57,15 @@ interface RequestEntry {
 export class CampaignLedger {
   readonly #requests = new Map<string, RequestEntry>();
   readonly #findings = new Map<string, Finding>();
+  readonly #exploitChains = new Map<string, ExploitChain>();
   readonly #onTestedRequest?: (request: TestedRequest) => void;
   readonly #onFinding?: (finding: FindingInput) => void;
+  readonly #onExploitChain?: (chain: ExploitChainInput) => void;
 
   constructor(options: CampaignLedgerOptions = {}) {
     this.#onTestedRequest = options.onTestedRequest;
     this.#onFinding = options.onFinding;
+    this.#onExploitChain = options.onExploitChain;
   }
 
   async request(
@@ -93,12 +102,50 @@ export class CampaignLedger {
   }
 
   recordFinding(input: FindingInput): { accepted: boolean; fingerprint: string } {
-    const fingerprint = fingerprintFinding(input);
+    const normalized = normalizeFindingInput(input);
+    const fingerprint = fingerprintFinding(normalized);
     if (this.#findings.has(fingerprint)) return { accepted: false, fingerprint };
 
-    this.#findings.set(fingerprint, { ...input, fingerprint });
-    this.#onFinding?.(input);
+    this.#findings.set(fingerprint, { ...normalized, fingerprint });
+    this.#onFinding?.(normalized);
     return { accepted: true, fingerprint };
+  }
+
+  recordExploitChain(input: ExploitChainInput): { accepted: boolean; fingerprint: string } {
+    const fingerprint = fingerprintExploitChain(input);
+    if (this.#exploitChains.has(fingerprint)) return { accepted: false, fingerprint };
+    this.#exploitChains.set(fingerprint, { ...input, fingerprint });
+    this.#onExploitChain?.(input);
+    return { accepted: true, fingerprint };
+  }
+
+  findingEvidence(): Map<
+    string,
+    {
+      finding: Finding;
+      observations: ValidationObservation[];
+      reproduction: ReproductionRequest[];
+      confirmed: boolean;
+    }
+  > {
+    return new Map(
+      [...this.#findings.values()].flatMap((finding) => {
+        const observations = this.observationsFor(finding.reproduction);
+        return observations
+          ? [
+              [
+                finding.fingerprint,
+                {
+                  finding,
+                  observations,
+                  reproduction: finding.reproduction,
+                  confirmed: true,
+                },
+              ] as const,
+            ]
+          : [];
+      }),
+    );
   }
 
   observationsFor(
@@ -132,6 +179,11 @@ export class CampaignLedger {
         fingerprint,
         title,
         endpoint,
+      })),
+      exploitChains: [...this.#exploitChains.values()].map(({ fingerprint, title, steps }) => ({
+        fingerprint,
+        title,
+        steps: [...steps],
       })),
     };
   }

@@ -74,7 +74,7 @@ describe("campaign report", () => {
     const report = createRunReport(run, new Date("2026-08-31T00:00:00.000Z"));
 
     expect(report).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 8,
       generatedAt: "2026-08-31T00:00:00.000Z",
       profileId: "crapi",
       outcome: {
@@ -223,6 +223,7 @@ describe("campaign report", () => {
     expect(markdown).toContain("### Cross-owner vehicle location");
     expect(markdown).toContain("Fresh replay returned another owner's coordinates.");
     expect(markdown).toContain("Severity: **high**");
+    expect(markdown).toContain("Impact level: `observation`");
     expect(markdown).toContain("CWE-639");
     expect(markdown).toContain("Raw replay evidence:");
     expect(markdown).toContain('"owner@example.com"');

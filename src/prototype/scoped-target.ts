@@ -5,7 +5,8 @@ import {
   type BrowserCookie,
 } from "./attack-surface.ts";
 import { collectBrowserEffect, type BrowserProofProbe } from "./browser-proof.ts";
-import type { BrowserEffectEvidence } from "./state.ts";
+import { impactAtMost } from "./impact.ts";
+import type { BrowserEffectEvidence, ImpactLevel } from "./state.ts";
 
 export type {
   AttackSurfaceCallSite as CrawlGetCallSite,
@@ -57,6 +58,7 @@ export interface ScopedTargetOptions {
   browserExecutablePath?: string;
   attackSurfaceMapper?: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
   browserEffectCollector?: (probe: BrowserProofProbe) => Promise<BrowserEffectEvidence | undefined>;
+  maximumImpactLevel?: ImpactLevel;
 }
 
 export interface AttackSurfaceMapperOptions {
@@ -133,6 +135,8 @@ export class ScopedTarget {
   readonly #browserEffectCollector: (
     probe: BrowserProofProbe,
   ) => Promise<BrowserEffectEvidence | undefined>;
+  readonly #maximumImpactLevel: ImpactLevel;
+  #setupAccess = false;
   #requestsUsed = 0;
   #authenticationHeaders?: Record<string, string>;
   #browserLocalStorage?: Record<string, string>;
@@ -168,6 +172,7 @@ export class ScopedTarget {
       options.attackSurfaceMapper ??
       ((mapperOptions) => new BrowserAttackSurfaceMapper(mapperOptions).map());
     this.#browserEffectCollector = options.browserEffectCollector ?? collectBrowserEffect;
+    this.#maximumImpactLevel = options.maximumImpactLevel ?? "state-change";
   }
 
   get origin(): string {
@@ -184,6 +189,23 @@ export class ScopedTarget {
 
   get remainingRequests(): number {
     return Math.max(0, this.#requestBudget - this.#requestsUsed);
+  }
+
+  assertImpactLevel(level: ImpactLevel): void {
+    if (!impactAtMost(level, this.#maximumImpactLevel)) {
+      throw new TargetScopeError(
+        `${level} impact exceeds the target's ${this.#maximumImpactLevel} ceiling`,
+      );
+    }
+  }
+
+  async runProfileSetup<T>(setup: () => Promise<T>): Promise<T> {
+    this.#setupAccess = true;
+    try {
+      return await setup();
+    } finally {
+      this.#setupAccess = false;
+    }
   }
 
   setAuthentication(headers: Record<string, string>): void {
@@ -211,6 +233,7 @@ export class ScopedTarget {
   async observeBrowserEffect(
     request: BrowserEffectRequest,
   ): Promise<BrowserEffectEvidence | undefined> {
+    this.assertImpactLevel("bounded");
     this.#resolvePath(request.path);
     if (request.authenticated && !this.#hasBrowserAuthentication()) {
       throw new Error("This target has no authenticated browser session");
@@ -248,6 +271,18 @@ export class ScopedTarget {
   async #request(request: ScopedRequest, responseLimit: number): Promise<HttpObservation> {
     const method = request.method ?? "GET";
     const url = this.#resolvePath(request.path);
+    if (this.#setupAccess) {
+      if (!operationAllowed(this.#allowedRequests, method, url.pathname)) {
+        throw new TargetScopeError(`${method} ${url.pathname} is not a profile setup operation`);
+      }
+    } else {
+      if (method === "DELETE") {
+        throw new TargetScopeError("DELETE is never allowed for proof demonstration");
+      }
+      if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+        this.assertImpactLevel("state-change");
+      }
+    }
     if (this.#isDenied(method, url.pathname)) {
       throw new TargetScopeError(`${method} ${url.pathname} is denied by the target profile`);
     }
@@ -361,6 +396,16 @@ export class ScopedTarget {
     automaticInteraction: boolean,
   ): { allowed: boolean; reason?: string } {
     const url = this.#resolvePath(path);
+    if (method === "DELETE") {
+      return { allowed: false, reason: "DELETE is never allowed for proof demonstration" };
+    }
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      try {
+        this.assertImpactLevel("state-change");
+      } catch (error) {
+        return { allowed: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
     if (this.#isDenied(method, url.pathname)) {
       return { allowed: false, reason: "denied by target profile" };
     }

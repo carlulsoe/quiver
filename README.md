@@ -9,9 +9,9 @@ code-owned proof predicates—not an LLM decision—determine confirmation.
 
 The campaign engine is target-agnostic. A small `TargetProfile` supplies target
 setup such as authentication, allowed setup operations, and explicitly denied operations. The CLI ships
-OWASP crAPI and a randomized held-out target profile; campaign state, mapping,
-deterministic validation, and reporting contain no target route inventory or
-vulnerability-specific proof code.
+OWASP crAPI and a randomized held-out target profile. Target-owned policies
+bind higher-impact validators to specific operations and synthetic fixtures;
+the shared engine contains the vulnerability-specific validation logic.
 
 This is not a general-purpose vulnerability scanner. Only test systems you own
 or are explicitly authorized to assess.
@@ -78,12 +78,29 @@ same-origin runtime requests, including methods and likely authentication, while
 following same-origin links. Supplied OpenAPI operations are merged with that
 runtime evidence, including summaries and templated paths.
 Explorers may submit multiple findings and continue after each submission.
-Findings carry severity, CWE, impact, mitigation, an ordered reproduction plan
+Findings carry severity, CWE, impact, mitigation, a safe impact-demonstration level, an ordered reproduction plan
 containing exact REST methods, bodies, headers, and authentication mode, and one
-structured proof predicate. The predicates prove cross-principal access, unauthenticated
-successful access, or specifically declared exposed fields. BOLA proofs require
-different actor and resource-owner identities plus concrete impact fields in a
-successful access response.
+structured proof predicate. Vulnerability-specific validators cover authorization
+and data exposure, browser-visible XSS effects, HTTP OAST callbacks, verifier-only
+canary retrieval, and exact before/after state transitions. Response and timing
+differentials are retained as supporting evidence but cannot independently
+confirm injection. BOLA proofs require different actor and resource-owner
+identities plus concrete impact fields in a successful access response.
+
+Impact levels are derived by code: `observation` for read-only HTTP evidence,
+`bounded` for read-only browser/OAST collectors, and `state-change` for any
+non-read-only request or policy-backed transition with a fresh-state reset hook.
+A profile sets the maximum level, and `DELETE` is never accepted as a proof
+demonstration. Explorer labels must exactly match the derived level.
+Browser and OAST challenge issuance is itself unavailable below `bounded`, and
+state reset hooks declare their exact request cost for validation preflight.
+
+Exploit-chain submissions reference two to six already submitted findings in
+execution order. Each adjacent link must select a scalar from the upstream
+response and identify a named query, JSON-body, or header field in the downstream
+request. Fresh validation replays steps in order, injects that fresh scalar into
+the next request, and reconfirms every individual predicate before confirming
+chain dataflow.
 
 A shared campaign ledger coalesces duplicate concurrent requests, distinguishes
 anonymous from authenticated observations, and exposes tested operations and
@@ -109,8 +126,14 @@ Current hard boundaries:
   blocks its database- and filesystem-mutating mechanic report handlers
 - Exact-origin enforcement with redirects disabled
 - Shared campaign budget with a reserved validation portion
+- Browser proof documents and assets consume a policy-declared collector budget
 - 12 KB cap for agent-visible responses
 - No shell, browser, filesystem, or arbitrary network tools exposed directly to agents
+
+The OAST listener binds to loopback by default. For a target in Docker, set
+`QUIVER_OAST_BIND_HOST=0.0.0.0` and
+`QUIVER_OAST_ADVERTISED_HOST=host.docker.internal` (with an appropriate
+host-gateway mapping) so the target can reach the campaign-local listener.
 
 ## Evals
 
@@ -180,9 +203,12 @@ bun run campaign -- \
 ```
 
 Set `QUIVER_HELD_OUT_SEED` when a reproducible showcase run is useful. The
+server also publishes the active seed atomically to `.prototype/held-out-seed`
+so a separately started campaign can construct the hidden canary verifier. The
 generated Markdown report includes severity, CWE, impact, mitigation, raw replay
 responses, predicate checks, copyable requests, route coverage, model cost, and
-an anchored chronological trace.
+an anchored chronological trace. Reports use schema version 8 and include
+impact levels, collector artifacts, and exploit-chain outcomes.
 
 ## Developer loop
 

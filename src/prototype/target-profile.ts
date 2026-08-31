@@ -1,4 +1,4 @@
-import type { ChallengeMutation, FindingCategory } from "./state.ts";
+import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts";
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
 
 export interface ReproductionAuthentication {
@@ -26,12 +26,12 @@ export interface CanaryProofPolicy extends ProofPolicyRule {
 export interface StateTransitionProofPolicy extends ProofPolicyRule {
   kind: "state-transition";
   endpoint: string;
-  method: string;
+  method: "POST" | "PUT" | "PATCH";
   jsonPointer: string;
   before: ProofScalar;
   after: ProofScalar;
   readEndpoint: string;
-  readMethod: string;
+  readMethod: "GET" | "HEAD";
 }
 
 export interface BrowserEffectProofPolicy extends ProofPolicyRule {
@@ -68,4 +68,29 @@ export interface TargetProfile {
   reproductionAuthentication?: ReproductionAuthentication;
   proofPolicies?: ProofPolicy[];
   prepareValidation?: (target: ScopedTarget) => Promise<void>;
+  /** Exact scoped-request cost of one prepareValidation call. */
+  validationResetRequestBudget?: number;
+  /** Hard ceiling for code-derived proof impact. Defaults to observation. */
+  maximumImpactLevel?: ImpactLevel;
+}
+
+export function assertValidTargetProfile(profile: TargetProfile): void {
+  if (
+    profile.prepareValidation &&
+    (!Number.isInteger(profile.validationResetRequestBudget) ||
+      (profile.validationResetRequestBudget ?? -1) < 0)
+  ) {
+    throw new Error("Profiles with prepareValidation must declare validationResetRequestBudget");
+  }
+  for (const policy of profile.proofPolicies ?? []) {
+    if (
+      policy.kind === "state-transition" &&
+      (!["POST", "PUT", "PATCH"].includes(policy.method) ||
+        !["GET", "HEAD"].includes(policy.readMethod))
+    ) {
+      throw new Error(
+        `State-transition policy ${policy.id} must use POST/PUT/PATCH with a GET/HEAD state read`,
+      );
+    }
+  }
 }

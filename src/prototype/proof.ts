@@ -10,6 +10,8 @@ import type {
 } from "./state.ts";
 import { hasPotentialAuthenticationHeaders } from "./scoped-target.ts";
 import type { ProofPolicy } from "./target-profile.ts";
+import { impactSafetyChecks } from "./impact.ts";
+import type { ImpactLevel } from "./state.ts";
 
 /** Code-owned compatibility is the first vulnerability-specific validation boundary. */
 export const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["type"][]> = {
@@ -42,10 +44,14 @@ export interface ProofEvaluationContext {
   policies?: readonly ProofPolicy[];
   artifacts?: ProofArtifacts;
   stateResetAvailable?: boolean;
+  maximumImpactLevel?: ImpactLevel;
 }
 
 export function evaluateProof(
-  finding: Pick<Finding, "category" | "endpoint" | "method" | "proof" | "reproduction">,
+  finding: Pick<
+    Finding,
+    "category" | "endpoint" | "method" | "impactLevel" | "proof" | "reproduction"
+  >,
   observations: readonly ValidationObservation[],
   context: ProofEvaluationContext = {},
 ): ProofResult {
@@ -69,6 +75,9 @@ export function evaluateProof(
     ),
     check(!observations.some(({ truncated }) => truncated), "proof responses were not truncated"),
   ];
+  if (context.maximumImpactLevel) {
+    checks.push(...impactSafetyChecks(finding, context.maximumImpactLevel));
+  }
 
   switch (finding.proof.type) {
     case "cross-principal-access": {
@@ -278,6 +287,12 @@ export function evaluateProof(
       const transition = finding.reproduction[finding.proof.transitionRequestIndex];
       checks.push(
         check(policy?.category === finding.category, "target policy authorizes this state proof"),
+        check(
+          policy !== undefined &&
+            ["POST", "PUT", "PATCH"].includes(policy.method) &&
+            ["GET", "HEAD"].includes(policy.readMethod),
+          "state policy separates an explicit mutating operation from read-only state checks",
+        ),
         check(
           context.stateResetAvailable === true,
           "target provides a fresh-state preparation hook for validation",

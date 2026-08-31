@@ -3,6 +3,7 @@ import { start } from "@flue/runtime/node";
 import { AdaptiveCoordinator } from "./adaptive-coordinator.ts";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
+import { ChainBudgetExceededError, replayExploitChain } from "./exploit-chain.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import { ProofArtifactStore } from "./proof-artifacts.ts";
 import { ScopedTarget } from "./scoped-target.ts";
@@ -13,7 +14,7 @@ import {
   type CampaignAction,
   type CampaignState,
 } from "./state.ts";
-import type { TargetProfile } from "./target-profile.ts";
+import { assertValidTargetProfile, type TargetProfile } from "./target-profile.ts";
 
 export interface RunCampaignOptions {
   target: URL;
@@ -43,6 +44,7 @@ export interface RunEvent {
 }
 
 export async function runCampaign(options: RunCampaignOptions): Promise<CampaignRun> {
+  assertValidTargetProfile(options.profile);
   await using artifacts = new ProofArtifactStore();
   const startedAt = performance.now();
   const budget = createCampaignBudget(options.requestBudget ?? 30);
@@ -109,6 +111,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       testedRequestCount: state.testedRequests.length,
       findingCount: state.findings.length,
       validationCount: state.validations.length,
+      exploitChainCount: state.exploitChains.length,
     });
     options.onState?.(state, action);
   };
@@ -125,6 +128,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         dispatch({ type: "request", phase: "exploration" });
       },
       openApi: options.openApi,
+      maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
     });
     const coordinator = new AdaptiveCoordinator({
       supportsAuthentication: options.profile.authenticate !== undefined,
@@ -138,8 +142,13 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         coordinator.observeFinding(finding);
         dispatch({ type: "finding", finding });
       },
+      onExploitChain: (chain) => dispatch({ type: "exploit-chain", chain }),
     });
-    if (options.profile.authenticate) await options.profile.authenticate(explorationTarget);
+    if (options.profile.authenticate) {
+      await explorationTarget.runProfileSetup(() =>
+        options.profile.authenticate!(explorationTarget),
+      );
+    }
     dispatch({ type: "phase", phase: "exploring" });
     const focuses = [
       "broken authorization and cross-object access, using identifiers discovered in one response against other GET endpoints",
@@ -215,6 +224,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
           record("request", { phase: "validation", ...request });
           dispatch({ type: "request", phase: "validation" });
         },
+        maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
       });
       if (
         options.profile.authenticate &&
@@ -224,7 +234,9 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
             (finding.proof.type === "browser-visible-effect" && finding.proof.pageAuthenticated),
         )
       ) {
-        await options.profile.authenticate(validationTarget);
+        await validationTarget.runProfileSetup(() =>
+          options.profile.authenticate!(validationTarget!),
+        );
       }
       dispatch({ type: "agent", id: "validator", status: "running" });
       const validator = init(Validator);
@@ -246,6 +258,37 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         status: "finished",
         summary: "No findings required validation.",
       });
+    }
+    for (const chain of state.exploitChains) {
+      if (!validationTarget) break;
+      try {
+        dispatch({
+          type: "exploit-chain-validation",
+          validation: await replayExploitChain(
+            validationTarget,
+            chain,
+            state.findings,
+            options.profile,
+            artifacts,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof ChainBudgetExceededError) continue;
+        dispatch({
+          type: "exploit-chain-validation",
+          validation: {
+            fingerprint: chain.fingerprint,
+            status: "rejected",
+            summary: error instanceof Error ? error.message : String(error),
+            checks: [
+              {
+                passed: false,
+                description: "ordered exploit-chain replay completed without an error",
+              },
+            ],
+          },
+        });
+      }
     }
     dispatch({ type: "phase", phase: "complete" });
   } catch (error) {
