@@ -29,6 +29,18 @@ describe("prototype CLI options", () => {
     });
   });
 
+  it.each([
+    ["broken-crystals", "http://127.0.0.1:3000/"],
+    ["vulnerableapp", "http://127.0.0.1:9090/VulnerableApp/"],
+    ["vampi-vulnerable", "http://127.0.0.1:5002/ui/"],
+    ["vampi-secure", "http://127.0.0.1:5001/ui/"],
+  ])("selects the %s profile and default target", (profile, target) => {
+    expect(parseCliOptions(["--profile", profile])).toMatchObject({
+      profileId: profile,
+      target: new URL(target),
+    });
+  });
+
   it("accepts supplied OpenAPI and context files", () => {
     expect(parseCliOptions(["--openapi", "api.yaml", "--context", "target.md"])).toMatchObject({
       openApiPath: "api.yaml",
@@ -45,7 +57,7 @@ describe("prototype CLI options", () => {
 
   it("rejects unknown profiles", () => {
     expect(() => parseCliOptions(["--profile", "unknown"])).toThrow(
-      "--profile must be one of: crapi, held-out",
+      "--profile must be one of: broken-crystals, crapi, held-out, vampi-secure, vampi-vulnerable, vulnerableapp",
     );
   });
 

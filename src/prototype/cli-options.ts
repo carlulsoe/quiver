@@ -1,4 +1,4 @@
-import type { TargetProfileId } from "../targets/profiles.ts";
+import { getDefaultTarget, targetProfiles, type TargetProfileId } from "../targets/profiles.ts";
 
 export interface CliOptions {
   target: URL;
@@ -38,10 +38,10 @@ export function parseCliOptions(args: string[]): CliOptions {
       index += 1;
     } else if (argument === "--profile") {
       const value = args[index + 1];
-      if (value !== "crapi" && value !== "held-out") {
-        throw new Error("--profile must be one of: crapi, held-out");
+      if (!value || !Object.hasOwn(targetProfiles, value)) {
+        throw new Error(`--profile must be one of: ${Object.keys(targetProfiles).join(", ")}`);
       }
-      profileId = value;
+      profileId = value as TargetProfileId;
       index += 1;
     } else if (argument === "--budget") {
       const value = Number(args[index + 1]);
@@ -63,7 +63,7 @@ export function parseCliOptions(args: string[]): CliOptions {
     }
   }
 
-  target ??= new URL(profileId === "held-out" ? "http://127.0.0.1:8899" : "http://127.0.0.1:8888");
+  target ??= getDefaultTarget(profileId);
   return {
     target,
     profileId,
@@ -85,7 +85,8 @@ export const CLI_HELP = `Usage: bun run campaign -- [target] [options]
 
 Options:
   --report <path>  Write a .json trace or polished .md report
-  --profile <id>   Target profile: crapi or held-out (default: crapi)
+  --profile <id>   broken-crystals, crapi, held-out, vampi-secure,
+                   vampi-vulnerable, or vulnerableapp (default: crapi)
   --budget <count> Total HTTP request budget (default: 30)
   --openapi <path> Merge a supplied OpenAPI JSON or YAML document
   --context <path> Supply target notes and assessment context to explorers

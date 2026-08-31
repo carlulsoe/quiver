@@ -26,6 +26,27 @@ describe("scoped target", () => {
     expect(target.requestBudget).toBe(2);
   });
 
+  it("allows profile-only setup requests to read authentication response headers", async () => {
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 2,
+      allowedRequests: [{ method: "POST", path: "/login" }],
+      deniedRequests: [{ method: "POST", path: "/login" }],
+      transport: async () =>
+        new Response("{}", { status: 200, headers: { authorization: "Bearer setup-token" } }),
+    });
+
+    await expect(target.request({ path: "/login", method: "POST" })).rejects.toThrow(
+      "denied by the target profile",
+    );
+    await expect(target.setupRequest({ path: "/login", method: "POST" })).resolves.toMatchObject({
+      status: 200,
+      headers: { authorization: "Bearer setup-token" },
+    });
+    await expect(target.setupRequest({ path: "/other" })).rejects.toThrow(
+      "is not an allowed profile setup request",
+    );
+  });
   it("delegates to a budgeted REST attack-surface mapper", async () => {
     const requested: string[] = [];
     const target = new ScopedTarget({
