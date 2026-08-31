@@ -284,6 +284,9 @@ export function evaluateProof(
       const after = policy
         ? selectedAt(observations, finding.proof.afterRequestIndex, policy.jsonPointer)
         : { found: false };
+      const beforeObservation = observations[finding.proof.beforeRequestIndex];
+      const transitionObservation = observations[finding.proof.transitionRequestIndex];
+      const afterObservation = observations[finding.proof.afterRequestIndex];
       const transition = finding.reproduction[finding.proof.transitionRequestIndex];
       checks.push(
         check(policy?.category === finding.category, "target policy authorizes this state proof"),
@@ -327,6 +330,15 @@ export function evaluateProof(
               finding.reproduction[finding.proof.afterRequestIndex],
             ),
           "before and after requests read the same policy-bound resource",
+        ),
+        check(
+          beforeObservation !== undefined &&
+            transitionObservation !== undefined &&
+            afterObservation !== undefined &&
+            isSuccess(beforeObservation.status) &&
+            isSuccess(transitionObservation.status) &&
+            isSuccess(afterObservation.status),
+          "before, transition, and after operations all completed successfully",
         ),
         check(
           before.found && sameValue(before.value, policy?.before),

@@ -158,6 +158,18 @@ describe("target-owned proof policies", () => {
     ).toBe(true);
     expect(
       evaluateWithPolicy(
+        finding,
+        [
+          { ...observation("/settings", { emailPublic: false }), status: 500 },
+          observation("/settings/email", { ok: true }, "POST"),
+          observation("/settings", { emailPublic: true }),
+        ],
+        policy,
+        { stateResetAvailable: true },
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateWithPolicy(
         {
           ...finding,
           proof: {
