@@ -32,6 +32,8 @@ export interface SecurityEvalOutput extends Record<string, JsonValue> {
   validationRequests: number;
   agentFailures: number;
   durationMs: number;
+  modelTokens: number;
+  approximateModelCost: number;
   error: string | null;
 }
 
@@ -84,6 +86,8 @@ export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutp
       validationRequests: run.state.requests.validation,
       agentFailures: run.state.agents.filter((agent) => agent.status === "failed").length,
       durationMs: run.durationMs,
+      modelTokens: run.usage.totalTokens,
+      approximateModelCost: run.usage.cost.total,
       error: run.state.error ?? null,
     };
 

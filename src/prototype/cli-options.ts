@@ -1,5 +1,8 @@
+import type { TargetProfileId } from "../targets/profiles.ts";
+
 export interface CliOptions {
   target: URL;
+  profileId: TargetProfileId;
   reportPath?: string;
   quiet: boolean;
   help: boolean;
@@ -7,7 +10,8 @@ export interface CliOptions {
 }
 
 export function parseCliOptions(args: string[]): CliOptions {
-  let target = new URL("http://127.0.0.1:8888");
+  let target: URL | undefined;
+  let profileId: TargetProfileId = "crapi";
   let reportPath: string | undefined;
   let quiet = false;
   let help = false;
@@ -21,6 +25,13 @@ export function parseCliOptions(args: string[]): CliOptions {
       if (!reportPath || reportPath.startsWith("-")) {
         throw new Error("--report requires a file path");
       }
+      index += 1;
+    } else if (argument === "--profile") {
+      const value = args[index + 1];
+      if (value !== "crapi" && value !== "held-out") {
+        throw new Error("--profile must be one of: crapi, held-out");
+      }
+      profileId = value;
       index += 1;
     } else if (argument === "--budget") {
       const value = Number(args[index + 1]);
@@ -42,13 +53,15 @@ export function parseCliOptions(args: string[]): CliOptions {
     }
   }
 
-  return { target, reportPath, quiet, help, requestBudget };
+  target ??= new URL(profileId === "held-out" ? "http://127.0.0.1:8899" : "http://127.0.0.1:8888");
+  return { target, profileId, reportPath, quiet, help, requestBudget };
 }
 
 export const CLI_HELP = `Usage: bun run campaign -- [target] [options]
 
 Options:
   --report <path>  Write a .json trace or polished .md report
+  --profile <id>   Target profile: crapi or held-out (default: crapi)
   --budget <count> Total HTTP request budget (default: 30)
   --quiet          Suppress live state rendering
   -h, --help       Show this help

@@ -14,11 +14,25 @@ describe("prototype CLI options", () => {
       ]),
     ).toEqual({
       target: new URL("http://127.0.0.1:8888"),
+      profileId: "crapi",
       reportPath: ".prototype/runs/latest.json",
       quiet: true,
       help: false,
       requestBudget: 45,
     });
+  });
+
+  it("selects the randomized held-out profile and its default target", () => {
+    expect(parseCliOptions(["--profile", "held-out"])).toMatchObject({
+      profileId: "held-out",
+      target: new URL("http://127.0.0.1:8899"),
+    });
+  });
+
+  it("rejects unknown profiles", () => {
+    expect(() => parseCliOptions(["--profile", "unknown"])).toThrow(
+      "--profile must be one of: crapi, held-out",
+    );
   });
 
   it("rejects a missing report path before parsing the next option", () => {

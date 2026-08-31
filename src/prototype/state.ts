@@ -7,6 +7,8 @@ export type FindingCategory =
   | "security-misconfiguration"
   | "other";
 
+export type FindingSeverity = "low" | "medium" | "high" | "critical";
+
 export interface CampaignAgent {
   id: string;
   role: "explorer" | "validator";
@@ -19,14 +21,50 @@ export interface ReproductionRequest {
   authenticated: boolean;
 }
 
+export interface JsonEvidenceSelector {
+  requestIndex: number;
+  jsonPointer: string;
+}
+
+export type ProofPredicate =
+  | {
+      type: "cross-principal-access";
+      actor: JsonEvidenceSelector;
+      resourceOwner: JsonEvidenceSelector;
+      accessRequestIndex: number;
+      evidencePointers: string[];
+    }
+  | {
+      type: "unauthenticated-success";
+      requestIndex: number;
+      evidencePointers: string[];
+    }
+  | {
+      type: "cross-principal-data-exposure";
+      actor: JsonEvidenceSelector;
+      exposedSubject: JsonEvidenceSelector;
+      responseRequestIndex: number;
+      evidencePointers: string[];
+    }
+  | {
+      type: "internal-field-exposure";
+      requestIndex: number;
+      evidencePointers: string[];
+    };
+
 export interface FindingInput {
   agentId: string;
   title: string;
   category: FindingCategory;
+  severity: FindingSeverity;
+  cwe: string;
   endpoint: string;
   resource: string;
   rationale: string;
+  impact: string;
+  mitigation: string;
   reproduction: ReproductionRequest[];
+  proof: ProofPredicate;
 }
 
 export interface Finding extends FindingInput {
@@ -37,6 +75,33 @@ export interface FindingValidation {
   fingerprint: string;
   status: "confirmed" | "rejected";
   evidence: string;
+  proof: ProofResult;
+  observations: ValidationObservation[];
+  reviewer: {
+    assessment: "supported" | "unsupported";
+    evidence: string;
+  };
+}
+
+export interface ProofCheck {
+  description: string;
+  passed: boolean;
+  actual?: unknown;
+}
+
+export interface ProofResult {
+  predicate: ProofPredicate["type"];
+  passed: boolean;
+  summary: string;
+  checks: ProofCheck[];
+}
+
+export interface ValidationObservation {
+  status: number;
+  path: string;
+  authenticated: boolean;
+  body: unknown;
+  truncated: boolean;
 }
 
 export interface CampaignBudget {
@@ -59,6 +124,7 @@ export interface CampaignState {
   requests: { total: number; exploration: number; validation: number };
   agents: CampaignAgent[];
   testedRequests: TestedRequest[];
+  discoveredRoutes: string[];
   findings: Finding[];
   validations: FindingValidation[];
   error?: string;
@@ -78,6 +144,7 @@ export type CampaignAction =
   | { type: "request"; phase: "exploration" | "validation" }
   | { type: "reclaim-exploration-budget" }
   | { type: "request-tested"; request: TestedRequest }
+  | { type: "routes-discovered"; routes: string[] }
   | { type: "finding"; finding: FindingInput }
   | { type: "validation"; validation: FindingValidation }
   | { type: "failed"; error: string };
@@ -112,6 +179,7 @@ export function createCampaignState(
       { id: "validator", role: "validator", status: "queued" },
     ],
     testedRequests: [],
+    discoveredRoutes: [],
     findings: [],
     validations: [],
   };
@@ -161,6 +229,11 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
         ...state,
         testedRequests: [...state.testedRequests, action.request],
       };
+    case "routes-discovered":
+      return {
+        ...state,
+        discoveredRoutes: [...new Set([...state.discoveredRoutes, ...action.routes])],
+      };
     case "finding": {
       const finding = { ...action.finding, fingerprint: fingerprintFinding(action.finding) };
       return state.findings.some((existing) => existing.fingerprint === finding.fingerprint)
@@ -182,7 +255,7 @@ export function fingerprintFinding(finding: Pick<FindingInput, "category" | "end
   return `${finding.category}:GET:${normalizeEndpoint(finding.endpoint)}`;
 }
 
-function normalizeEndpoint(endpoint: string): string {
+export function normalizeEndpoint(endpoint: string): string {
   const url = new URL(endpoint, "http://scope.invalid");
   const normalizedPath = url.pathname
     .split("/")
@@ -198,4 +271,22 @@ function normalizeEndpoint(endpoint: string): string {
     })
     .join("/");
   return normalizedPath;
+}
+
+export function campaignRouteCoverage(state: CampaignState): {
+  discovered: number;
+  tested: number;
+  coverage: number;
+} {
+  const discovered = new Set(state.discoveredRoutes.map(normalizeEndpoint));
+  const tested = new Set(
+    state.testedRequests
+      .map(({ path }) => normalizeEndpoint(path))
+      .filter((path) => discovered.has(path)),
+  ).size;
+  return {
+    discovered: discovered.size,
+    tested,
+    coverage: discovered.size === 0 ? 0 : tested / discovered.size,
+  };
 }

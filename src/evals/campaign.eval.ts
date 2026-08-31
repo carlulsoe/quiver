@@ -7,57 +7,54 @@ const CampaignContractJudge = createJudge<SecurityEvalInput, SecurityEvalOutput>
   async ({ output }) => {
     const passed =
       output.phase === "complete" &&
-      output.benchmarkTruePositiveCount > 0 &&
+      output.benchmarkCoverage >= 0.5 &&
       output.benchmarkFalsePositiveCount === 0 &&
+      output.benchmarkUnscoredCount === 0 &&
+      output.benchmarkPrecision === 1 &&
       output.unvalidatedCount === 0 &&
+      output.agentFailures === 0 &&
       output.requestsUsed <= output.requestBudget;
     return {
       score: passed ? 1 : 0,
       metadata: {
         rationale: passed
-          ? `Campaign found ${output.benchmarkTruePositiveCount} benchmark vulnerabilities with no safe-control false positives in ${output.requestsUsed} requests.`
-          : `Campaign ended phase=${output.phase}, benchmark true positives=${output.benchmarkTruePositiveCount}, safe-control false positives=${output.benchmarkFalsePositiveCount}, unvalidated=${output.unvalidatedCount}, requests=${output.requestsUsed}/${output.requestBudget}.`,
+          ? `Campaign covered ${(output.benchmarkCoverage * 100).toFixed(0)}% of the benchmark with no false or unscored confirmations in ${output.requestsUsed} requests.`
+          : `Campaign ended phase=${output.phase}, coverage=${(output.benchmarkCoverage * 100).toFixed(0)}%, precision=${output.benchmarkPrecision}, safe-control false positives=${output.benchmarkFalsePositiveCount}, unscored=${output.benchmarkUnscoredCount}, unvalidated=${output.unvalidatedCount}, agent failures=${output.agentFailures}, requests=${output.requestsUsed}/${output.requestBudget}.`,
       },
     };
   },
 );
 
 const target = process.env.XBOW_TARGET ?? "http://127.0.0.1:8888";
-const trialCount = Number.parseInt(process.env.XBOW_EVAL_TRIALS ?? "1", 10);
-if (!Number.isInteger(trialCount) || trialCount < 1) {
-  throw new Error("XBOW_EVAL_TRIALS must be a positive integer");
-}
-const trials = Array.from({ length: trialCount }, (_, index) => ({
-  name: `trial ${index + 1} of ${trialCount}`,
-}));
+const trialIndex = Number.parseInt(process.env.QUIVER_EVAL_TRIAL_INDEX ?? "1", 10);
+const trialTotal = Number.parseInt(process.env.QUIVER_EVAL_TRIAL_TOTAL ?? "1", 10);
 
 describeEval("crAPI read-only vulnerability campaign", { harness: securityHarness }, (it) => {
-  it.for(trials)(
-    "finds and validates unique vulnerabilities within budget ($name)",
-    async (_, { run }) => {
-      const result = await run({ target, requestBudget: 36, explorerCount: 2 });
+  it(`finds and deterministically validates vulnerabilities within budget (trial ${trialIndex} of ${trialTotal})`, async ({
+    run,
+  }) => {
+    const result = await run({ target, requestBudget: 42, explorerCount: 3 });
 
-      expect(result.output).toMatchObject({ phase: "complete", unvalidatedCount: 0 });
-      expect(result.output.benchmarkTruePositiveCount).toBeGreaterThan(0);
-      expect(result.output.benchmarkFalsePositiveCount).toBe(0);
-      expect(result.output.benchmarkCoverage).toBeGreaterThan(0);
-      expect(result.output.benchmarkPrecision).toBe(1);
-      expect(new Set(result.output.confirmedFingerprints).size).toBe(
-        result.output.confirmedFingerprints.length,
-      );
-      expect(result.output.requestsUsed).toBeLessThanOrEqual(result.output.requestBudget);
-      expect(toolCalls(result).map((call) => call.name)).toEqual(
-        expect.arrayContaining([
-          "crawl_target",
-          "review_campaign",
-          "submit_finding",
-          "finish_exploration",
-          "replay_finding",
-          "submit_validation",
-          "finish_validation",
-        ]),
-      );
-      await expect(result).toSatisfyJudge(CampaignContractJudge);
-    },
-  );
+    expect(result.output).toMatchObject({ phase: "complete", unvalidatedCount: 0 });
+    expect(result.output.benchmarkCoverage).toBeGreaterThanOrEqual(0.5);
+    expect(result.output.benchmarkFalsePositiveCount).toBe(0);
+    expect(result.output.benchmarkUnscoredCount).toBe(0);
+    expect(result.output.benchmarkPrecision).toBe(1);
+    expect(result.output.agentFailures).toBe(0);
+    expect(new Set(result.output.confirmedFingerprints).size).toBe(
+      result.output.confirmedFingerprints.length,
+    );
+    expect(result.output.requestsUsed).toBeLessThanOrEqual(result.output.requestBudget);
+    expect(toolCalls(result).map((call) => call.name)).toEqual(
+      expect.arrayContaining([
+        "crawl_target",
+        "review_campaign",
+        "submit_finding",
+        "finish_exploration",
+        "replay_finding",
+        "submit_validation",
+      ]),
+    );
+    await expect(result).toSatisfyJudge(CampaignContractJudge);
+  });
 });

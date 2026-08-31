@@ -1,4 +1,4 @@
-import { init, type ConversationStreamChunk } from "@flue/runtime";
+import { init, type ConversationStreamChunk, type PromptUsage } from "@flue/runtime";
 import { start } from "@flue/runtime/node";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
@@ -25,6 +25,7 @@ export interface CampaignRun {
   profileId: string;
   model: string;
   durationMs: number;
+  usage: PromptUsage;
   state: CampaignState;
   events: RunEvent[];
 }
@@ -41,6 +42,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
   const budget = createCampaignBudget(options.requestBudget ?? 30);
   const explorerCount = options.explorerCount ?? 2;
   const events: RunEvent[] = [];
+  const usage = emptyUsage();
   const record = (type: RunEvent["type"], data: Record<string, unknown>) => {
     events.push({
       sequence: events.length + 1,
@@ -72,6 +74,20 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         durationMs: chunk.durationMs,
       });
     }
+  };
+  const captureUsage = (metadata: Record<string, unknown> | undefined) => {
+    const value = metadata?.quiverUsage;
+    if (!isPromptUsage(value)) return;
+    usage.input += value.input;
+    usage.output += value.output;
+    usage.cacheRead += value.cacheRead;
+    usage.cacheWrite += value.cacheWrite;
+    usage.totalTokens += value.totalTokens;
+    usage.cost.input += value.cost.input;
+    usage.cost.output += value.cost.output;
+    usage.cost.cacheRead += value.cost.cacheRead;
+    usage.cost.cacheWrite += value.cost.cacheWrite;
+    usage.cost.total += value.cost.total;
   };
   let state = createCampaignState(
     `${options.target.origin}${options.target.pathname}${options.target.search}`,
@@ -112,6 +128,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     const focuses = [
       "broken authorization and cross-object access, using identifiers discovered in one response against other GET endpoints",
       "excessive or sensitive data exposure and security misconfiguration",
+      "route-level authentication gaps and object-detail authorization controls not yet tested by the other explorers",
     ];
     const explorers = Array.from({ length: explorerCount }, (_, index) =>
       createExplorerAgent(
@@ -120,10 +137,21 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         explorationTarget,
         options.profile,
         ledger,
+        dispatch,
       ),
     );
+    let validationTarget: ScopedTarget | undefined;
+    const Validator = createValidatorAgent(
+      () => state.findings,
+      () => {
+        if (!validationTarget) throw new Error("Validation target is not ready");
+        return validationTarget;
+      },
+      options.profile,
+      dispatch,
+    );
+    await using _campaignRuntime = await start({ agents: [...explorers, Validator] });
     {
-      await using _explorerRuntime = await start({ agents: explorers });
       await Promise.all(
         explorers.map(async (Explorer, index) => {
           const id = `explorer-${index + 1}`;
@@ -134,6 +162,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
             const reply = await agent.read(receipt, {
               onEvent: (chunk) => captureAgentEvent(id, chunk),
             });
+            captureUsage(reply.metadata);
             dispatch({
               type: "agent",
               id,
@@ -150,7 +179,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     dispatch({ type: "reclaim-exploration-budget" });
     dispatch({ type: "phase", phase: "validating" });
     if (state.findings.length > 0) {
-      const validationTarget = new ScopedTarget({
+      validationTarget = new ScopedTarget({
         target: options.target,
         requestBudget: state.budget.validation,
         allowedRequests: options.profile.allowedRequests,
@@ -170,26 +199,18 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       }
 
       dispatch({ type: "agent", id: "validator", status: "running" });
-      const Validator = createValidatorAgent(
-        state.findings,
-        validationTarget,
-        options.profile,
-        dispatch,
-      );
-      {
-        await using _validatorRuntime = await start({ agents: [Validator] });
-        const validator = init(Validator);
-        const receipt = await validator.dispatch("Validate every submitted campaign finding.");
-        const reply = await validator.read(receipt, {
-          onEvent: (chunk) => captureAgentEvent("validator", chunk),
-        });
-        dispatch({
-          type: "agent",
-          id: "validator",
-          status: "finished",
-          summary: reply.text.slice(0, 100),
-        });
-      }
+      const validator = init(Validator);
+      const receipt = await validator.dispatch("Validate every submitted campaign finding.");
+      const reply = await validator.read(receipt, {
+        onEvent: (chunk) => captureAgentEvent("validator", chunk),
+      });
+      captureUsage(reply.metadata);
+      dispatch({
+        type: "agent",
+        id: "validator",
+        status: "finished",
+        summary: reply.text.slice(0, 100),
+      });
     } else {
       dispatch({
         type: "agent",
@@ -207,7 +228,37 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     profileId: options.profile.id,
     model: GLM_FLASH_MODEL,
     durationMs: Math.round(performance.now() - startedAt),
+    usage,
     state,
     events,
   };
+}
+
+function emptyUsage(): PromptUsage {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+function isPromptUsage(value: unknown): value is PromptUsage {
+  if (!value || typeof value !== "object") return false;
+  const usage = value as Partial<PromptUsage>;
+  return (
+    typeof usage.input === "number" &&
+    typeof usage.output === "number" &&
+    typeof usage.cacheRead === "number" &&
+    typeof usage.cacheWrite === "number" &&
+    typeof usage.totalTokens === "number" &&
+    !!usage.cost &&
+    typeof usage.cost.input === "number" &&
+    typeof usage.cost.output === "number" &&
+    typeof usage.cost.cacheRead === "number" &&
+    typeof usage.cost.cacheWrite === "number" &&
+    typeof usage.cost.total === "number"
+  );
 }

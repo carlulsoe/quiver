@@ -6,10 +6,21 @@ const finding: FindingInput = {
   agentId: "explorer-1",
   title: "Object leak",
   category: "broken-object-authorization",
+  severity: "high",
+  cwe: "CWE-639",
   endpoint: "/api/items/42",
   resource: "42",
   rationale: "A different user's object was returned.",
+  impact: "Another user's item is disclosed.",
+  mitigation: "Authorize every item lookup against the authenticated principal.",
   reproduction: [{ path: "/api/items/42", authenticated: true }],
+  proof: {
+    type: "cross-principal-access",
+    actor: { requestIndex: 0, jsonPointer: "/viewer" },
+    resourceOwner: { requestIndex: 0, jsonPointer: "/owner" },
+    accessRequestIndex: 0,
+    evidencePointers: ["/secret"],
+  },
 };
 
 describe("campaign ledger", () => {
@@ -63,6 +74,31 @@ describe("campaign ledger", () => {
 
     expect(networkRequests).toBe(2);
     expect(ledger.snapshot().testedRequests).toHaveLength(2);
+  });
+
+  it("reconstructs deterministic proof observations from completed requests", async () => {
+    const ledger = new CampaignLedger();
+    await ledger.request(
+      { agentId: "explorer-1", path: "/api/items/42", authenticated: true },
+      async () => ({
+        status: 200,
+        path: "/api/items/42",
+        body: { viewer: "alice", owner: "bob", secret: "canary" },
+      }),
+    );
+
+    expect(ledger.observationsFor([{ path: "/api/items/42", authenticated: true }])).toEqual([
+      {
+        status: 200,
+        path: "/api/items/42",
+        authenticated: true,
+        body: { viewer: "alice", owner: "bob", secret: "canary" },
+        truncated: false,
+      },
+    ]);
+    expect(
+      ledger.observationsFor([{ path: "/api/items/99", authenticated: true }]),
+    ).toBeUndefined();
   });
 
   it("shares accepted finding fingerprints and rejects duplicates", () => {

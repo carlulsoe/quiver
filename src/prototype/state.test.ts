@@ -5,9 +5,13 @@ const firstFinding = {
   agentId: "explorer-1",
   title: "Cross-owner vehicle location",
   category: "broken-object-authorization" as const,
+  severity: "high" as const,
+  cwe: "CWE-639",
   endpoint: "/identity/api/v2/vehicle/4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5/location",
   resource: "4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5",
   rationale: "Another user's coordinates were returned.",
+  impact: "An attacker can track another user's vehicle.",
+  mitigation: "Check vehicle ownership before returning its location.",
   reproduction: [
     { path: "/community/api/v2/community/posts/recent", authenticated: true },
     {
@@ -15,6 +19,13 @@ const firstFinding = {
       authenticated: true,
     },
   ],
+  proof: {
+    type: "cross-principal-access" as const,
+    actor: { requestIndex: 0, jsonPointer: "/viewer/email" },
+    resourceOwner: { requestIndex: 1, jsonPointer: "/email" },
+    accessRequestIndex: 1,
+    evidencePointers: ["/vehicleLocation/latitude"],
+  },
 };
 
 describe("campaign state", () => {
@@ -80,6 +91,14 @@ describe("campaign state", () => {
         fingerprint: withFinding.findings[0]!.fingerprint,
         status: "confirmed",
         evidence: "Independent replay returned cross-owner coordinates.",
+        proof: {
+          predicate: "cross-principal-access",
+          passed: true,
+          summary: "All checks passed.",
+          checks: [],
+        },
+        observations: [],
+        reviewer: { assessment: "supported", evidence: "Replay supports the claim." },
       },
     });
 

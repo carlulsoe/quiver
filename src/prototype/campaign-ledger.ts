@@ -3,7 +3,9 @@ import {
   fingerprintFinding,
   type Finding,
   type FindingInput,
+  type ReproductionRequest,
   type TestedRequest,
+  type ValidationObservation,
 } from "./state.ts";
 
 export interface LedgerRequest {
@@ -36,6 +38,7 @@ export interface CampaignLedgerOptions {
 
 interface RequestEntry {
   promise: Promise<HttpObservation>;
+  observation?: HttpObservation;
   tested?: TestedRequest;
 }
 
@@ -70,6 +73,7 @@ export class CampaignLedger {
           status: observation.status,
         };
         entry.tested = tested;
+        entry.observation = observation;
         this.#onTestedRequest?.(tested);
         return observation;
       })
@@ -89,6 +93,24 @@ export class CampaignLedger {
     this.#findings.set(fingerprint, { ...input, fingerprint });
     this.#onFinding?.(input);
     return { accepted: true, fingerprint };
+  }
+
+  observationsFor(
+    reproduction: readonly ReproductionRequest[],
+  ): ValidationObservation[] | undefined {
+    const observations: ValidationObservation[] = [];
+    for (const request of reproduction) {
+      const observation = this.#requests.get(requestKey(request))?.observation;
+      if (!observation) return undefined;
+      observations.push({
+        status: observation.status,
+        path: observation.path,
+        authenticated: request.authenticated,
+        body: observation.body,
+        truncated: observation.truncated ?? false,
+      });
+    }
+    return observations;
   }
 
   snapshot(): CampaignLedgerSnapshot {

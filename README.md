@@ -4,12 +4,13 @@ Quiver is a bounded Bun CLI for running read-only Flue security campaigns agains
 authorized local web targets. Given a loopback URL and an HTTP request budget,
 explorers crawl the live frontend, derive routes from links and compiled
 JavaScript, test concrete hypotheses, and submit every distinct vulnerability
-they can support. A fresh validator independently replays each finding.
+they can support. A fresh validator independently replays each finding, while
+code-owned proof predicates—not an LLM decision—determine confirmation.
 
 The campaign engine is target-agnostic. A small `TargetProfile` supplies target
-setup such as authentication and narrowly allowed setup requests. The current
-CLI selects the OWASP crAPI profile; the campaign state, crawler, agents,
-validation, reporting, and eval harness contain no crAPI route inventory or
+setup such as authentication and narrowly allowed setup requests. The CLI ships
+OWASP crAPI and a randomized held-out target profile; campaign state, crawling,
+deterministic validation, and reporting contain no target route inventory or
 vulnerability-specific proof code.
 
 This is not a general-purpose vulnerability scanner. Only test systems you own
@@ -62,8 +63,12 @@ Explorers begin with `crawl_target`; there is no supplied endpoint list. Static
 frontend analysis associates routes with observed GET call sites, likely
 authentication, and collection routes that may supply dynamic identifiers.
 Explorers may submit multiple findings and continue after each submission.
-Findings carry an ordered reproduction plan containing only anonymous or
-authenticated GET requests.
+Findings carry severity, CWE, impact, mitigation, an ordered reproduction plan
+containing only anonymous or authenticated GET requests, and one structured
+proof predicate. The predicates prove cross-principal access, unauthenticated
+successful access, or specifically declared exposed fields. BOLA proofs require
+different actor and resource-owner identities plus concrete impact fields in a
+successful access response.
 
 A shared campaign ledger coalesces duplicate concurrent requests, distinguishes
 anonymous from authenticated observations, and exposes tested routes and
@@ -73,8 +78,10 @@ observation instead of consuming more request budget.
 Quiver deduplicates findings by vulnerability category and normalized endpoint.
 For example, two different vehicle UUIDs affected by the same object-level
 authorization flaw become one finding. The validator replays every unique
-finding and records it as confirmed or rejected. If the validation budget is
-insufficient, the report leaves the remaining findings explicitly unvalidated.
+finding. Its LLM supplies an informational review, but cannot set the outcome:
+the declared predicate runs over raw replay observations and is authoritative.
+If the validation budget is insufficient, the report leaves the remaining
+findings explicitly unvalidated.
 
 Current hard boundaries:
 
@@ -102,17 +109,62 @@ It scores unique true positives, explicit safe-control false positives, coverage
 precision, missed cases, novel unscored findings, and requests per true positive.
 The answer key is not imported by the runtime campaign or target profile.
 
-The campaign contract requires at least one grounded benchmark finding, no
-confirmed safe-control claims, independent replay of every submission, and
-strict request-budget compliance. The runtime has no dedicated BOLA mode or
-negative-control scenario.
+The campaign contract requires at least 50% benchmark coverage, 100%
+conservative precision, no safe-control or unscored confirmations, no agent
+failures, deterministic replay of every submission, and strict request-budget
+compliance. Unscored confirmations remain visible for human ground-truth review
+but count against precision rather than escaping false-positive accounting.
 
 Run repeated GLM trials and inspect the generated report with:
 
 ```sh
-XBOW_EVAL_TRIALS=5 bun run evals:json
+XBOW_EVAL_TRIALS=10 bun run evals:json
 bun run evals:report
 ```
+
+Each trial runs in a fresh process because Flue permits one runtime lifecycle
+per process. Quiver writes merged viewer input to
+`.prototype/eval-results.json` and publishable aggregate metrics to
+`.prototype/eval-summary.json` and `.prototype/eval-summary.md`: success rate,
+mean coverage, false-positive rate, requests per true positive, duration, token
+usage, and approximate model cost.
+
+Trials are sequential by default. Set `XBOW_EVAL_CONCURRENCY=2` to use two
+isolated worker processes when the local target and model provider can support
+the extra load.
+
+See the committed [10-trial crAPI results](docs/showcase/crapi-10-trial-results.md)
+for the full strict-pass baseline and the
+[held-out deterministic proof report](docs/showcase/held-out-sample.md) for the
+randomized target showcase.
+
+## Randomized held-out target
+
+The bundled Ledgerly fixture gives the same engine a substantially different,
+seeded target without a public answer key. Its frontend route namespace, asset
+name, principal IDs, object IDs, and impact canary change with the seed. It
+contains a canary-backed cross-principal record and a neighboring authorization
+control.
+
+Start it in one terminal with a fresh random seed:
+
+```sh
+bun run target:held-out
+```
+
+Then run the same campaign engine in another terminal:
+
+```sh
+bun run campaign -- \
+  --profile held-out \
+  --budget 30 \
+  --report .prototype/runs/held-out.md
+```
+
+Set `QUIVER_HELD_OUT_SEED` when a reproducible showcase run is useful. The
+generated Markdown report includes severity, CWE, impact, mitigation, raw replay
+responses, predicate checks, copyable requests, route coverage, model cost, and
+an anchored chronological trace.
 
 ## Developer loop
 
@@ -120,6 +172,6 @@ bun run evals:report
 bun run test              # fast campaign, benchmark, crawler, CLI, and report tests
 bun run test:integration  # live crawl and authentication checks against crAPI
 bun run test:all          # fast and live HTTP suites
-bun run evals             # live GLM campaign acceptance suite
+bun run evals             # isolated live GLM trial (set XBOW_EVAL_TRIALS to repeat)
 bun run verify            # formatting, linting, types, and fast tests
 ```

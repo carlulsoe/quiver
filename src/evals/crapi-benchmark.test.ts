@@ -30,16 +30,20 @@ describe("crAPI read-only benchmark", () => {
     });
 
     expect(score).toEqual({
-      expectedCount: 4,
+      expectedCount: 5,
       truePositiveCount: 2,
       falsePositiveCount: 1,
-      missedCount: 2,
+      missedCount: 3,
       unscoredCount: 1,
-      coverage: 0.5,
-      precision: 2 / 3,
+      coverage: 0.4,
+      precision: 0.5,
       requestsPerTruePositive: 10,
       matchedBenchmarkIds: ["vehicle-location-bola", "community-author-data-exposure"],
-      missedBenchmarkIds: ["profile-video-internal-property", "unauthenticated-order-access"],
+      missedBenchmarkIds: [
+        "profile-video-internal-property",
+        "unauthenticated-order-access",
+        "service-request-cross-user-access",
+      ],
       falsePositiveFingerprints: [
         "broken-object-authorization:GET:/identity/api/v2/vehicle/vehicles",
       ],
@@ -51,7 +55,7 @@ describe("crAPI read-only benchmark", () => {
     expect(scoreCrapiReadOnlyBenchmark({ confirmedFindings: [], requestsUsed: 12 })).toMatchObject({
       truePositiveCount: 0,
       falsePositiveCount: 0,
-      missedCount: 4,
+      missedCount: 5,
       coverage: 0,
       precision: 0,
       requestsPerTruePositive: null,
@@ -70,5 +74,27 @@ describe("crAPI read-only benchmark", () => {
     });
 
     expect(score.matchedBenchmarkIds).toEqual(["vehicle-location-bola"]);
+  });
+
+  it("scores single-post and recent-feed author exposure as one benchmark case", () => {
+    const score = scoreCrapiReadOnlyBenchmark({
+      confirmedFindings: [
+        {
+          category: "excessive-data-exposure",
+          endpoint: "/community/api/v2/community/posts/recent",
+        },
+        {
+          category: "excessive-data-exposure",
+          endpoint: "/community/api/v2/community/posts/QgEDnpmS45F5xerGCXtwbe",
+        },
+      ],
+      requestsUsed: 10,
+    });
+
+    expect(score).toMatchObject({
+      truePositiveCount: 1,
+      unscoredCount: 0,
+      matchedBenchmarkIds: ["community-author-data-exposure"],
+    });
   });
 });

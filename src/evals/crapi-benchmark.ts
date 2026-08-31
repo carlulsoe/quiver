@@ -26,6 +26,7 @@ export interface CrapiBenchmarkScore {
 interface BenchmarkCase {
   id: string;
   endpoint: string;
+  endpointAliases?: readonly string[];
   categories: readonly string[];
 }
 
@@ -39,6 +40,7 @@ export const CRAPI_READ_ONLY_BENCHMARK: readonly BenchmarkCase[] = [
   {
     id: "community-author-data-exposure",
     endpoint: "/community/api/v2/community/posts/recent",
+    endpointAliases: ["/community/api/v2/community/posts/{id}"],
     categories: ["excessive-data-exposure", "sensitive-data-exposure"],
   },
   {
@@ -52,6 +54,18 @@ export const CRAPI_READ_ONLY_BENCHMARK: readonly BenchmarkCase[] = [
     categories: [
       "broken-object-authorization",
       "broken-function-authorization",
+      "security-misconfiguration",
+      "other",
+    ],
+  },
+  {
+    id: "service-request-cross-user-access",
+    endpoint: "/workshop/api/mechanic/service_request/{id}",
+    categories: [
+      "broken-object-authorization",
+      "broken-function-authorization",
+      "excessive-data-exposure",
+      "sensitive-data-exposure",
       "security-misconfiguration",
       "other",
     ],
@@ -113,7 +127,7 @@ export function scoreCrapiReadOnlyBenchmark(input: CrapiBenchmarkInput): CrapiBe
   );
   const truePositiveCount = matchedBenchmarkIds.length;
   const falsePositiveCount = falsePositiveFingerprints.length;
-  const scoredClaimCount = truePositiveCount + falsePositiveCount;
+  const confirmedClaimCount = truePositiveCount + falsePositiveCount + unscoredFingerprints.length;
 
   return {
     expectedCount: CRAPI_READ_ONLY_BENCHMARK.length,
@@ -122,7 +136,7 @@ export function scoreCrapiReadOnlyBenchmark(input: CrapiBenchmarkInput): CrapiBe
     missedCount: missedBenchmarkIds.length,
     unscoredCount: unscoredFingerprints.length,
     coverage: truePositiveCount / CRAPI_READ_ONLY_BENCHMARK.length,
-    precision: scoredClaimCount === 0 ? 0 : truePositiveCount / scoredClaimCount,
+    precision: confirmedClaimCount === 0 ? 0 : truePositiveCount / confirmedClaimCount,
     requestsPerTruePositive:
       truePositiveCount === 0 ? null : input.requestsUsed / truePositiveCount,
     matchedBenchmarkIds,
@@ -134,8 +148,20 @@ export function scoreCrapiReadOnlyBenchmark(input: CrapiBenchmarkInput): CrapiBe
 
 function matches(testCase: BenchmarkCase, finding: BenchmarkFinding): boolean {
   return (
-    testCase.endpoint === normalizeEndpoint(finding.endpoint) &&
-    testCase.categories.includes(finding.category)
+    [testCase.endpoint, ...(testCase.endpointAliases ?? [])].some((endpoint) =>
+      routePatternMatches(endpoint, normalizeEndpoint(finding.endpoint)),
+    ) && testCase.categories.includes(finding.category)
+  );
+}
+
+function routePatternMatches(pattern: string, endpoint: string): boolean {
+  const patternSegments = normalizeEndpoint(pattern).split("/");
+  const endpointSegments = endpoint.split("/");
+  return (
+    patternSegments.length === endpointSegments.length &&
+    patternSegments.every(
+      (segment, index) => segment === "{id}" || segment === endpointSegments[index],
+    )
   );
 }
 

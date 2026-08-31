@@ -1,0 +1,98 @@
+import { describe, expect, it } from "vitest";
+import {
+  findSecurityEvalOutput,
+  renderRepeatedEvalSummary,
+  summarizeRepeatedEvals,
+} from "./repeated.ts";
+import type { SecurityEvalOutput } from "./harness.ts";
+
+function output(overrides: Partial<SecurityEvalOutput> = {}): SecurityEvalOutput {
+  return {
+    model: "openrouter/z-ai/glm-5.3-flash",
+    phase: "complete",
+    findingCount: 2,
+    confirmedCount: 2,
+    rejectedCount: 0,
+    unvalidatedCount: 0,
+    confirmedFingerprints: [],
+    benchmarkTruePositiveCount: 2,
+    benchmarkFalsePositiveCount: 0,
+    benchmarkMissedCount: 2,
+    benchmarkUnscoredCount: 0,
+    benchmarkCoverage: 0.5,
+    benchmarkPrecision: 1,
+    requestsPerTruePositive: 12,
+    matchedBenchmarkIds: [],
+    missedBenchmarkIds: [],
+    requestsUsed: 24,
+    requestBudget: 36,
+    explorationRequests: 18,
+    validationRequests: 6,
+    agentFailures: 0,
+    durationMs: 120_000,
+    modelTokens: 1_000,
+    approximateModelCost: 0.02,
+    error: null,
+    ...overrides,
+  };
+}
+
+describe("repeated eval summary", () => {
+  it("aggregates success, strength, efficiency, duration, and model cost", () => {
+    const summary = summarizeRepeatedEvals(
+      [
+        {
+          index: 1,
+          passed: true,
+          wallDurationMs: 121_000,
+          output: output(),
+          artifactPath: "trial-1.json",
+        },
+        {
+          index: 2,
+          passed: false,
+          wallDurationMs: 181_000,
+          output: output({
+            confirmedCount: 2,
+            benchmarkFalsePositiveCount: 1,
+            benchmarkUnscoredCount: 1,
+            benchmarkCoverage: 0.25,
+            benchmarkPrecision: 0.5,
+            requestsPerTruePositive: 20,
+            durationMs: 180_000,
+            approximateModelCost: 0.04,
+          }),
+          artifactPath: "trial-2.json",
+        },
+      ],
+      new Date("2026-08-31T00:00:00.000Z"),
+    );
+
+    expect(summary).toMatchObject({
+      requestedTrials: 2,
+      passedTrials: 1,
+      completedTrials: 2,
+      successRate: 0.5,
+      infrastructureCompletionRate: 1,
+      meanCoverage: 0.375,
+      falsePositiveRate: 0.5,
+      meanRequestsPerTruePositive: 16,
+      meanDurationMs: 150_000,
+      totalApproximateModelCost: 0.06,
+      meanApproximateModelCost: 0.03,
+      costedTrials: 2,
+    });
+    expect(renderRepeatedEvalSummary(summary)).toContain("| Trials passed | 1/2 |");
+  });
+
+  it("recovers harness output when an acceptance assertion fails", () => {
+    const expected = output({ benchmarkUnscoredCount: 1, benchmarkPrecision: 0.5 });
+
+    expect(
+      findSecurityEvalOutput([
+        { type: "message", role: "user", content: "input" },
+        { type: "message", role: "assistant", content: expected },
+      ]),
+    ).toBe(expected);
+  });
+});

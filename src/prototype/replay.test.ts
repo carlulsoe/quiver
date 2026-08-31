@@ -20,20 +20,43 @@ describe("finding replay", () => {
       agentId: "explorer-1",
       title: "Cross-owner item",
       category: "broken-object-authorization",
+      severity: "high",
+      cwe: "CWE-639",
       endpoint: "/items/other",
       resource: "other",
       rationale: "An unrelated item was returned.",
+      impact: "Another user's item is disclosed.",
+      mitigation: "Authorize object access against the current principal.",
       reproduction: [
         { path: "/items/mine", authenticated: true },
         { path: "/items/other", authenticated: true },
       ],
+      proof: {
+        type: "cross-principal-access",
+        actor: { requestIndex: 0, jsonPointer: "/owner" },
+        resourceOwner: { requestIndex: 1, jsonPointer: "/owner" },
+        accessRequestIndex: 1,
+        evidencePointers: ["/path"],
+      },
     };
 
     await expect(replayFinding(target, finding)).resolves.toEqual({
       fingerprint: finding.fingerprint,
       observations: [
-        { status: 200, path: "/items/mine", body: { path: "/items/mine" }, truncated: false },
-        { status: 200, path: "/items/other", body: { path: "/items/other" }, truncated: false },
+        {
+          status: 200,
+          path: "/items/mine",
+          authenticated: true,
+          body: { path: "/items/mine" },
+          truncated: false,
+        },
+        {
+          status: 200,
+          path: "/items/other",
+          authenticated: true,
+          body: { path: "/items/other" },
+          truncated: false,
+        },
       ],
     });
   });
