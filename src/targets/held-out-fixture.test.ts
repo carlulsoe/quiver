@@ -70,7 +70,8 @@ describe("randomized held-out target", () => {
           expect.objectContaining({
             path: `/api/${fixture.namespace}/audit`,
             methods: ["POST"],
-            callSites: [expect.objectContaining({ method: "POST" })],
+            sources: ["openapi"],
+            callSites: [],
           }),
           expect.objectContaining({
             path: `/api/${fixture.namespace}/vaults/{vaultId}`,
@@ -91,5 +92,5 @@ describe("randomized held-out target", () => {
     } finally {
       server.stop(true);
     }
-  }, 20_000);
+  }, 40_000);
 });

@@ -74,9 +74,9 @@ function explorationTools(
       "Map browser-observed requests and supplied OpenAPI operations into a REST attack surface. Use this first.",
     async run() {
       const map = await target.mapAttackSurface();
-      const operations = map.routeDetails.flatMap(({ path, methods }) =>
-        methods.map((method) => ({ method, path })),
-      );
+      const operations = map.routeDetails
+        .filter(({ scope }) => scope !== "visit-only")
+        .flatMap(({ path, methods }) => methods.map((method) => ({ method, path })));
       coordinator.discoverOperations(operations);
       dispatch({
         type: "operations-discovered",
@@ -86,6 +86,18 @@ function explorationTools(
         output: {
           startPath: map.startPath,
           documents: map.documents.map((document) => ({ ...document })),
+          ...(map.forms
+            ? {
+                forms: map.forms.map((form) => ({
+                  ...form,
+                  fields: form.fields.map((field) => ({ ...field })),
+                  fileFields: [...form.fileFields],
+                })),
+              }
+            : {}),
+          ...(map.webSockets
+            ? { webSockets: map.webSockets.map((socket) => ({ ...socket })) }
+            : {}),
           routes: [...map.routes],
           routeDetails: map.routeDetails.map((detail) => ({
             path: detail.path,
@@ -95,6 +107,28 @@ function explorationTools(
             callSites: detail.callSites.map((callSite) => ({ ...callSite })),
             getCallSites: detail.getCallSites.map((callSite) => ({ ...callSite })),
             identifierSources: detail.identifierSources.map((source) => ({ ...source })),
+            ...(detail.origin ? { origin: detail.origin } : {}),
+            ...(detail.scope ? { scope: detail.scope } : {}),
+            ...(detail.requestBodies
+              ? {
+                  requestBodies: detail.requestBodies.map((body) => ({
+                    ...body,
+                    ...(body.example === undefined
+                      ? {}
+                      : { example: JSON.parse(JSON.stringify(body.example)) }),
+                    ...(body.fields ? { fields: [...body.fields] } : {}),
+                    ...(body.files ? { files: body.files.map((file) => ({ ...file })) } : {}),
+                  })),
+                }
+              : {}),
+            ...(detail.graphqlOperations
+              ? {
+                  graphqlOperations: detail.graphqlOperations.map((operation) => ({
+                    ...operation,
+                    rootFields: [...operation.rootFields],
+                  })),
+                }
+              : {}),
             ...(detail.summary ? { summary: detail.summary } : {}),
           })),
         },
@@ -104,7 +138,7 @@ function explorationTools(
   const request = defineTool({
     name: "http_request",
     description:
-      "Issue one scope-enforced REST request to a discovered origin-relative path. Responses are capped.",
+      "Issue one scope-enforced REST request to a discovered path or configured attackable URL. Responses are capped.",
     input: v.object({
       path: v.string(),
       method: methodSchema,

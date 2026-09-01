@@ -152,6 +152,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         dispatch({ type: "request", phase: "exploration" });
       },
       openApi: options.openApi,
+      attackSurfaceOrigins: options.profile.attackSurfaceOrigins,
       maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
     });
     let enqueueValidation = (_fingerprint: string) => {};
@@ -218,6 +219,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         dispatch({ type: "request", phase: "validation" });
       },
       maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
+      attackSurfaceOrigins: options.profile.attackSurfaceOrigins,
     });
     const Validator = createValidatorAgent(
       () => state.findings,

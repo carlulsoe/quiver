@@ -1,6 +1,7 @@
 import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts";
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
 import type { ActorId } from "./sessions.ts";
+import type { AttackSurfaceOrigin } from "./attack-surface.ts";
 
 export interface ReproductionAuthentication {
   description: string;
@@ -68,6 +69,8 @@ export interface TargetProfile {
   id: string;
   displayName: string;
   objective: string;
+  /** Extra browser discovery origins, each explicitly active or passive. */
+  attackSurfaceOrigins?: AttackSurfaceOrigin[];
   allowedRequests?: AllowedRequest[];
   deniedRequests?: DeniedRequest[];
   authenticate?: (target: ScopedTarget) => Promise<{ authContext: string }>;

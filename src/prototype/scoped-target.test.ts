@@ -257,7 +257,7 @@ describe("scoped target", () => {
     );
   });
 
-  it("does not authorize rejected browser observations for direct requests", async () => {
+  it("allows safe form reads without authorizing rejected browser mutations", async () => {
     const target = new ScopedTarget({
       target: new URL("http://localhost:8888"),
       requestBudget: 2,
@@ -276,7 +276,7 @@ describe("scoped target", () => {
             budgeted: true,
             automaticInteraction: true,
           }).allowed,
-        ).toBe(false);
+        ).toBe(true);
         return {
           startPath: "/",
           documents: [],
@@ -324,6 +324,78 @@ describe("scoped target", () => {
     await expect(
       target.request({ path: "/api/runtime-operation", method: "POST", body: "{}" }),
     ).resolves.toMatchObject({ status: 200, body: { created: true } });
+  });
+
+  it("does not authorize browser operations rejected by discovery policy", async () => {
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 2,
+      attackSurfaceMapper: async (options) => {
+        options.onOperationDiscovered?.("POST", "/api/rejected", "browser", {
+          automaticInteraction: false,
+          allowed: false,
+          blockedReason: "state-changing operation is not preauthorized",
+        });
+        return { startPath: "/", documents: [], routes: [], routeDetails: [] };
+      },
+      transport: async () => response("unexpected", "text/plain"),
+    });
+
+    await target.mapAttackSurface();
+    await expect(
+      target.request({ path: "/api/rejected", method: "POST", body: "{}" }),
+    ).rejects.toThrow("was not supplied by the profile or attack-surface map");
+  });
+
+  it("attacks configured secondary origins while keeping visit-only origins browser-only", async () => {
+    const requested: Array<{ url: string; authorization: string | null }> = [];
+    const target = new ScopedTarget({
+      target: new URL("http://127.0.0.1:8888"),
+      requestBudget: 2,
+      attackSurfaceOrigins: [
+        { origin: "http://127.0.0.1:8889", scope: "attackable" },
+        { origin: "http://127.0.0.1:8890", scope: "visit-only" },
+      ],
+      attackSurfaceMapper: async (options) => {
+        expect(options.origins).toEqual([
+          { origin: "http://127.0.0.1:8889", scope: "attackable" },
+          { origin: "http://127.0.0.1:8890", scope: "visit-only" },
+        ]);
+        options.onOperationDiscovered?.("POST", "/api/items/{id}", "openapi", {
+          automaticInteraction: false,
+          origin: "http://127.0.0.1:8889",
+          scope: "attackable",
+        });
+        return { startPath: "/", documents: [], routes: [], routeDetails: [] };
+      },
+      transport: async (input, init) => {
+        requested.push({
+          url: String(input),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        return response('{"updated":true}', "application/json");
+      },
+    });
+    target.setSession("ordinary-user", {
+      headers: { authorization: "Bearer primary-session" },
+    });
+
+    await target.mapAttackSurface();
+    await expect(
+      target.request({
+        path: "http://127.0.0.1:8889/api/items/42",
+        method: "POST",
+        body: "{}",
+        actorId: "ordinary-user",
+      }),
+    ).resolves.toMatchObject({
+      path: "http://127.0.0.1:8889/api/items/42",
+      body: { updated: true },
+    });
+    await expect(target.request({ path: "http://127.0.0.1:8890/documentation" })).rejects.toThrow(
+      "visit-only origin blocked",
+    );
+    expect(requested).toEqual([{ url: "http://127.0.0.1:8889/api/items/42", authorization: null }]);
   });
 
   it("rejects credential-capable headers on anonymous requests", async () => {
@@ -447,6 +519,14 @@ describe("scoped target", () => {
     await expect(target.request({ path: "//example.com/escape" })).rejects.toBeInstanceOf(
       TargetScopeError,
     );
+    expect(
+      () =>
+        new ScopedTarget({
+          target: new URL("http://127.0.0.1:8888"),
+          requestBudget: 1,
+          attackSurfaceOrigins: [{ origin: "https://example.com", scope: "visit-only" }],
+        }),
+    ).toThrow("Discovery origins must be exact loopback");
   });
 
   it("blocks profile-denied GET routes before transport or budget use", async () => {

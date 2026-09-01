@@ -115,9 +115,26 @@ bun run target:vampi:down
 ## Campaign behavior
 
 Explorers begin with `map_attack_surface`. A headless Chromium session records
-same-origin runtime requests, including methods and likely authentication, while
-following same-origin links. Supplied OpenAPI operations are merged with that
-runtime evidence, including summaries and templated paths.
+runtime requests, including methods and likely authentication, while following
+scoped links. Discovery fills form controls from their types, labels, existing
+values, and semantic hints, then submits only non-destructive search,
+authentication, verification, or continuation workflows. It rescans each result
+to follow multi-step flows instead of clicking every button on a page. File
+inputs are described but never populated.
+
+Supplied OpenAPI operations are merged with runtime evidence, including
+summaries, templated paths, explicit request examples, and bounded values derived
+from request schemas. Browser JSON, URL-encoded, and multipart bodies retain
+their safe shape; multipart observations list field and filename metadata rather
+than file content. GraphQL request documents are reduced to operation type,
+name, and root fields. Primary-origin WebSocket URLs and frame counts/sizes are
+observed while frames are forwarded unchanged; secondary-origin socket attempts
+are recorded then closed. Active WebSocket testing is not performed.
+
+Profiles can add exact loopback origins with `attackSurfaceOrigins`, classifying
+each as `attackable` or `visit-only`. Attackable origins participate in form and
+agent workflows. Visit-only origins permit passive document and asset reads,
+but browser interactions, mutations, and agent requests are blocked.
 Explorers may submit multiple findings and continue after each submission.
 Findings carry severity, CWE, impact, mitigation, a safe impact-demonstration level, an ordered reproduction plan
 containing exact REST methods, bodies, headers, and authentication mode, and one
@@ -170,7 +187,9 @@ Current hard boundaries:
 - Agent state-changing requests must come from the browser/OpenAPI map or profile setup allowlist
 - Profiles may deny operations known to have unwanted side effects; the crAPI profile
   blocks its database- and filesystem-mutating mechanic report handlers
-- Exact-origin enforcement with redirects disabled
+- Explicit exact-origin enforcement with redirects disabled; configured
+  secondary origins are independently `attackable` or `visit-only`
+- WebSockets are observed and forwarded unchanged, not actively tested
 - Shared campaign budget with a reserved validation portion
 - Browser proof documents and assets consume a policy-declared collector budget
 - 12 KB cap for agent-visible responses

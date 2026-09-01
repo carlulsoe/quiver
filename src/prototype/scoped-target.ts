@@ -2,7 +2,9 @@ import {
   BrowserAttackSurfaceMapper,
   type AttackSurfaceDocument,
   type AttackSurfaceMap,
+  type AttackSurfaceOrigin,
   type BrowserCookie,
+  type BrowserRequestMetadata,
 } from "./attack-surface.ts";
 import { collectBrowserEffect, type BrowserProofProbe } from "./browser-proof.ts";
 import { impactAtMost } from "./impact.ts";
@@ -18,6 +20,7 @@ import {
 export type {
   AttackSurfaceCallSite as CrawlGetCallSite,
   AttackSurfaceIdentifierSource as CrawlIdentifierSource,
+  AttackSurfaceOrigin,
   AttackSurfaceRouteDetail as CrawlRouteDetail,
 } from "./attack-surface.ts";
 
@@ -66,6 +69,7 @@ export interface ScopedTargetOptions {
   timeoutMs?: number;
   maxResponseChars?: number;
   openApi?: unknown;
+  attackSurfaceOrigins?: AttackSurfaceOrigin[];
   browserExecutablePath?: string;
   attackSurfaceMapper?: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
   browserEffectCollector?: (probe: BrowserProofProbe) => Promise<BrowserEffectEvidence | undefined>;
@@ -84,16 +88,23 @@ export interface AttackSurfaceMapperOptions {
   sessionStorage?: Record<string, string>;
   cookies?: BrowserCookie[];
   openApi?: unknown;
+  origins?: AttackSurfaceOrigin[];
   decideRequest: (
     method: string,
     path: string,
-    metadata?: { budgeted: boolean; automaticInteraction?: boolean },
+    metadata?: BrowserRequestMetadata,
   ) => { allowed: boolean; reason?: string };
   onOperationDiscovered?: (
     method: string,
     path: string,
     source: "browser" | "openapi",
-    metadata?: { automaticInteraction: boolean },
+    metadata?: {
+      automaticInteraction: boolean;
+      allowed?: boolean;
+      blockedReason?: string;
+      origin?: string;
+      scope?: "attackable" | "visit-only";
+    },
   ) => void;
   executablePath?: string;
 }
@@ -132,6 +143,7 @@ export class TargetScopeError extends Error {
 
 export class ScopedTarget {
   readonly #origin: string;
+  readonly #attackableOrigins: Set<string>;
   readonly #startPath: string;
   #requestBudget: number;
   readonly #allowedRequests: Set<string>;
@@ -143,6 +155,7 @@ export class ScopedTarget {
   readonly #timeoutMs: number;
   readonly #maxResponseChars: number;
   readonly #openApi?: unknown;
+  readonly #attackSurfaceOrigins?: AttackSurfaceOrigin[];
   readonly #browserExecutablePath?: string;
   readonly #attackSurfaceMapper: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
   readonly #browserEffectCollector: (
@@ -164,7 +177,23 @@ export class ScopedTarget {
     ) {
       throw new TargetScopeError("Only loopback HTTP(S) targets are allowed");
     }
+    for (const configured of options.attackSurfaceOrigins ?? []) {
+      const origin = new URL(configured.origin);
+      if (
+        !localHosts.has(origin.hostname) ||
+        !["http:", "https:"].includes(origin.protocol) ||
+        `${origin.origin}/` !== origin.href
+      ) {
+        throw new TargetScopeError("Discovery origins must be exact loopback HTTP(S) origins");
+      }
+    }
     this.#origin = options.target.origin;
+    this.#attackableOrigins = new Set([
+      this.#origin,
+      ...(options.attackSurfaceOrigins ?? [])
+        .filter(({ scope }) => scope === "attackable")
+        .map(({ origin }) => new URL(origin).origin),
+    ]);
     this.#startPath = `${options.target.pathname}${options.target.search}`;
     this.#requestBudget = options.requestBudget;
     this.#allowedRequests = new Set(
@@ -179,6 +208,7 @@ export class ScopedTarget {
     this.#timeoutMs = options.timeoutMs ?? 10_000;
     this.#maxResponseChars = options.maxResponseChars ?? 12_000;
     this.#openApi = options.openApi;
+    this.#attackSurfaceOrigins = options.attackSurfaceOrigins;
     this.#browserExecutablePath = options.browserExecutablePath;
     this.#attackSurfaceMapper =
       options.attackSurfaceMapper ??
@@ -266,10 +296,9 @@ export class ScopedTarget {
   async setupRequest(request: ScopedRequest): Promise<SetupHttpObservation> {
     const method = request.method ?? "GET";
     const url = this.#resolvePath(request.path);
-    if (!operationAllowed(this.#allowedRequests, method, url.pathname)) {
-      throw new TargetScopeError(
-        `${method} ${url.pathname} is not an allowed profile setup request`,
-      );
+    const targetPath = this.#targetIdentifier(url);
+    if (!operationAllowed(this.#allowedRequests, method, targetPath)) {
+      throw new TargetScopeError(`${method} ${targetPath} is not an allowed profile setup request`);
     }
     const observation = await this.#request(request, this.#maxResponseChars, true);
     return observation as SetupHttpObservation;
@@ -309,9 +338,10 @@ export class ScopedTarget {
   ): Promise<HttpObservation | SetupHttpObservation> {
     const method = request.method ?? "GET";
     const url = this.#resolvePath(request.path);
+    const targetPath = this.#targetIdentifier(url);
     if (this.#setupAccess || includeResponseHeaders) {
-      if (!operationAllowed(this.#allowedRequests, method, url.pathname)) {
-        throw new TargetScopeError(`${method} ${url.pathname} is not a profile setup operation`);
+      if (!operationAllowed(this.#allowedRequests, method, targetPath)) {
+        throw new TargetScopeError(`${method} ${targetPath} is not a profile setup operation`);
       }
     } else {
       if (method === "DELETE") {
@@ -324,9 +354,9 @@ export class ScopedTarget {
     if (!includeResponseHeaders && this.#isDenied(method, url.pathname)) {
       throw new TargetScopeError(`${method} ${url.pathname} is denied by the target profile`);
     }
-    if (isStateChanging(method) && !this.#isAuthorizedOperation(method, url.pathname)) {
+    if (isStateChanging(method) && !this.#isAuthorizedOperation(method, targetPath)) {
       throw new TargetScopeError(
-        `${method} ${url.pathname} was not supplied by the profile or attack-surface map`,
+        `${method} ${targetPath} was not supplied by the profile or attack-surface map`,
       );
     }
     const actorId = request.actorId ?? actorIds.anonymous;
@@ -353,13 +383,13 @@ export class ScopedTarget {
     this.#onRequest?.({
       number: this.#requestsUsed,
       method,
-      path: `${url.pathname}${url.search}`,
+      path: targetPath,
     });
     const startedAt = performance.now();
     const response = await this.#transport(url, {
       method,
       headers: {
-        ...session.headers,
+        ...(url.origin === this.#origin ? session.headers : {}),
         ...request.headers,
       },
       body: request.body,
@@ -379,7 +409,7 @@ export class ScopedTarget {
     const observation: HttpObservation = {
       method,
       status: response.status,
-      path: `${url.pathname}${url.search}`,
+      path: targetPath,
       body,
       truncated,
       contentType: response.headers.get("content-type") ?? "",
@@ -412,6 +442,7 @@ export class ScopedTarget {
       sessionStorage: browserState.sessionStorage,
       cookies: browserState.cookies,
       openApi: this.#openApi,
+      origins: this.#attackSurfaceOrigins,
       executablePath: this.#browserExecutablePath,
       decideRequest: (method, path, metadata) =>
         this.#decideBrowserRequest(
@@ -419,10 +450,21 @@ export class ScopedTarget {
           path,
           metadata?.budgeted ?? true,
           metadata?.automaticInteraction ?? false,
+          metadata?.scope,
+          metadata?.origin,
+          metadata?.passiveVisitOnly,
         ),
       onOperationDiscovered: (method, path, source, metadata) => {
-        if (source === "browser" && metadata?.automaticInteraction) return;
-        const key = operationKey(method, path);
+        if (
+          metadata?.scope === "visit-only" ||
+          metadata?.allowed === false ||
+          (source === "browser" && metadata?.automaticInteraction)
+        ) {
+          return;
+        }
+        const targetPath =
+          metadata?.origin && metadata.origin !== this.#origin ? `${metadata.origin}${path}` : path;
+        const key = operationKey(method, targetPath);
         this.#mappedOperations.add(key);
         if (source === "openapi") this.#browserAllowedOperations.add(key);
       },
@@ -435,8 +477,20 @@ export class ScopedTarget {
     path: string,
     budgeted: boolean,
     automaticInteraction: boolean,
+    scope?: "attackable" | "visit-only",
+    origin = this.#origin,
+    passiveVisitOnly = true,
   ): { allowed: boolean; reason?: string } {
-    const url = this.#resolvePath(path);
+    const targetPath = origin === this.#origin ? path : `${origin}${path}`;
+    const url = scope === "visit-only" ? new URL(path, origin) : this.#resolvePath(targetPath);
+    if (!passiveVisitOnly) {
+      return { allowed: false, reason: "visit-only documents permit passive assets only" };
+    }
+    if (scope === "visit-only") {
+      if (automaticInteraction || !["GET", "HEAD"].includes(method)) {
+        return { allowed: false, reason: "visit-only origins permit passive reads only" };
+      }
+    }
     if (method === "DELETE") {
       return { allowed: false, reason: "DELETE is never allowed for proof demonstration" };
     }
@@ -450,13 +504,12 @@ export class ScopedTarget {
     if (this.#isDenied(method, url.pathname)) {
       return { allowed: false, reason: "denied by target profile" };
     }
-    if (automaticInteraction) {
-      return { allowed: false, reason: "automatic interactions cannot issue network requests" };
-    }
     if (
       isStateChanging(method) &&
-      !operationAllowed(this.#browserAllowedOperations, method, url.pathname)
+      !operationAllowed(this.#browserAllowedOperations, method, targetPath)
     ) {
+      // Form semantics select a workflow to explore; page-controlled labels never grant
+      // mutation authority. POST workflows still require profile/OpenAPI preauthorization.
       return { allowed: false, reason: "state-changing operation is not preauthorized" };
     }
     if (!budgeted) return { allowed: true };
@@ -467,18 +520,31 @@ export class ScopedTarget {
     this.#onRequest?.({
       number: this.#requestsUsed,
       method,
-      path: `${url.pathname}${url.search}`,
+      path: targetPath,
     });
     return { allowed: true };
   }
 
   #resolvePath(path: string): URL {
-    if (!path.startsWith("/") || path.startsWith("//")) {
-      throw new TargetScopeError("Only origin-relative paths are allowed");
+    if (path.startsWith("//")) {
+      throw new TargetScopeError("Protocol-relative target paths are not allowed");
+    }
+    const absolute = /^https?:\/\//i.test(path);
+    if (!absolute && !path.startsWith("/")) {
+      throw new TargetScopeError(
+        "Only origin-relative paths or configured absolute URLs are allowed",
+      );
     }
     const url = new URL(path, this.#origin);
-    if (url.origin !== this.#origin) throw new TargetScopeError("Out-of-scope origin blocked");
+    if (!this.#attackableOrigins.has(url.origin)) {
+      throw new TargetScopeError("Out-of-scope or visit-only origin blocked");
+    }
     return url;
+  }
+
+  #targetIdentifier(url: URL): string {
+    const path = `${url.pathname}${url.search}`;
+    return url.origin === this.#origin ? path : `${url.origin}${path}`;
   }
 
   #isDenied(method: string, pathname: string): boolean {
@@ -561,14 +627,17 @@ function operationAllowed(operations: ReadonlySet<string>, method: string, path:
 }
 
 function canonicalOperationPath(path: string): string {
-  const pathname = new URL(path, "http://scope.invalid").pathname
+  const absolute = /^https?:\/\//i.test(path);
+  const url = new URL(path, "http://scope.invalid");
+  const pathname = url.pathname
     .split("/")
     .map((encodedSegment) => {
       const segment = decodeURIComponent(encodedSegment);
       return /^(?:\{[^}]+\}|<[^>]+>|:[A-Za-z_$][\w$]*)$/.test(segment) ? "{id}" : segment;
     })
     .join("/");
-  return pathname === "/" ? pathname : pathname.replace(/\/+$/, "");
+  const canonicalPath = pathname === "/" ? pathname : pathname.replace(/\/+$/, "");
+  return absolute ? `${url.origin}${canonicalPath}` : canonicalPath;
 }
 
 function pathTemplateMatches(template: string, concrete: string): boolean {
