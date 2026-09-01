@@ -8,6 +8,8 @@ import type { SecurityEvalOutput } from "./harness.ts";
 
 function output(overrides: Partial<SecurityEvalOutput> = {}): SecurityEvalOutput {
   return {
+    profileId: "crapi",
+    target: "http://127.0.0.1:8888/",
     model: "openrouter/z-ai/glm-5.3-flash",
     phase: "complete",
     findingCount: 2,
@@ -15,6 +17,16 @@ function output(overrides: Partial<SecurityEvalOutput> = {}): SecurityEvalOutput
     rejectedCount: 0,
     unvalidatedCount: 0,
     confirmedFingerprints: [],
+    confirmedFindings: [],
+    coverage: 0.5,
+    coverageKind: "benchmark",
+    precision: 1,
+    validationCompleteness: 1,
+    tokens: 1_000,
+    failures: [],
+    failureCount: 0,
+    scoreKind: "crapi-read-only",
+    scoreDetails: {},
     benchmarkTruePositiveCount: 2,
     benchmarkFalsePositiveCount: 0,
     benchmarkMissedCount: 2,
@@ -29,6 +41,7 @@ function output(overrides: Partial<SecurityEvalOutput> = {}): SecurityEvalOutput
     explorationRequests: 18,
     validationRequests: 6,
     agentFailures: 0,
+    operationCoverage: 0.8,
     durationMs: 120_000,
     modelTokens: 1_000,
     approximateModelCost: 0.02,
@@ -58,6 +71,8 @@ describe("repeated eval summary", () => {
             benchmarkUnscoredCount: 1,
             benchmarkCoverage: 0.25,
             benchmarkPrecision: 0.5,
+            coverage: 0.25,
+            precision: 0.5,
             requestsPerTruePositive: 20,
             durationMs: 180_000,
             approximateModelCost: 0.04,
@@ -75,14 +90,19 @@ describe("repeated eval summary", () => {
       successRate: 0.5,
       infrastructureCompletionRate: 1,
       meanCoverage: 0.375,
+      meanPrecision: 0.75,
+      meanValidationCompleteness: 1,
       falsePositiveRate: 0.5,
       meanRequestsPerTruePositive: 16,
       meanDurationMs: 150_000,
+      totalTokens: 2_000,
+      meanTokens: 1_000,
+      totalFailures: 0,
       totalApproximateModelCost: 0.06,
       meanApproximateModelCost: 0.03,
       costedTrials: 2,
     });
-    expect(renderRepeatedEvalSummary(summary)).toContain("| Trials passed | 1/2 |");
+    expect(renderRepeatedEvalSummary(summary)).toContain("| Profile runs passed | 1/2 |");
   });
 
   it("recovers harness output when an acceptance assertion fails", () => {

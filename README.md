@@ -183,12 +183,29 @@ host-gateway mapping) so the target can reach the campaign-local listener.
 
 ## Evals
 
-The live-model suite uses Flue through a `vitest-evals` harness:
+The live-model suite uses Flue through a `vitest-evals` harness. By default one
+trial covers crAPI, VAmPI's vulnerable and secure modes, VulnerableApp, and the
+randomized held-out fixture. Start the Docker-backed targets and keep the
+held-out server running in another terminal:
 
 ```sh
 bun run target:up
+bun run target:vampi:up
+bun run target:vulnerableapp:up
+bun run target:held-out
 bun run evals
 ```
+
+Each campaign runs in an isolated process. The harness selects the target
+profile from the shared registry; crAPI uses its read-only benchmark,
+VulnerableApp automatically invokes its native DAST comparator, and the runner
+automatically passes the two VAmPI confirmation sets through the differential
+oracle. The held-out fixture is scored against its verifier-only canary policy.
+Every profile records coverage, precision, validation completeness, duration,
+model tokens, and failures in the same result envelope. VAmPI coverage is
+operation coverage because its differential oracle classifies confirmations but
+does not provide a recall denominator; the other profiles report benchmark or
+fixture coverage, identified by `coverageKind`.
 
 The eval-only [crAPI read-only benchmark](src/evals/crapi-read-only-benchmark.md)
 is grounded in the pinned target source and official OWASP challenge material.
@@ -202,19 +219,24 @@ failures, deterministic replay of every submission, and strict request-budget
 compliance. Unscored confirmations remain visible for human ground-truth review
 but count against precision rather than escaping false-positive accounting.
 
-Run repeated GLM trials and inspect the generated report with:
+Run repeated full-matrix GLM trials and inspect the generated report with:
 
 ```sh
 XBOW_EVAL_TRIALS=10 bun run evals:json
 bun run evals:report
 ```
 
-Each trial runs in a fresh process because Flue permits one runtime lifecycle
-per process. Quiver writes merged viewer input to
+Each profile run uses a fresh process because Flue permits one runtime lifecycle
+per process. Use `XBOW_EVAL_PROFILES=crapi,held-out` for a focused subset; VAmPI
+subsets must include both `vampi-vulnerable` and `vampi-secure`. Per-profile target
+overrides use names such as `XBOW_TARGET_CRAPI` and
+`XBOW_TARGET_VAMPI_VULNERABLE`; the legacy `XBOW_TARGET` applies when exactly one
+profile is selected. Quiver writes merged viewer input to
 `.prototype/eval-results.json` and publishable aggregate metrics to
 `.prototype/eval-summary.json` and `.prototype/eval-summary.md`: success rate,
-mean coverage, false-positive rate, requests per true positive, duration, token
-usage, and approximate model cost.
+per-profile and aggregate coverage, precision, validation completeness,
+false-positive rate, requests per true positive, duration, token usage, failures,
+and approximate model cost.
 
 Trials are sequential by default. Set `XBOW_EVAL_CONCURRENCY=2` to use two
 isolated worker processes when the local target and model provider can support
@@ -262,7 +284,7 @@ impact levels, collector artifacts, and exploit-chain outcomes.
 bun run test              # fast campaign, benchmark, mapper, CLI, and report tests
 bun run test:integration  # live crawl and authentication checks against crAPI
 bun run test:all          # fast and live HTTP suites
-bun run evals             # isolated live GLM trial (set XBOW_EVAL_TRIALS to repeat)
+bun run evals             # isolated live GLM profile matrix (set XBOW_EVAL_TRIALS to repeat)
 bun run verify            # formatting, linting, types, and fast tests
 bun run security:secrets  # scan committable files for credentials (requires Docker)
 ```
