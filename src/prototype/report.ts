@@ -2,15 +2,25 @@ import { dirname, extname, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import type { CampaignRun, RunEvent } from "./runner.ts";
 import { isCredentialCapableHeader } from "./scoped-target.ts";
-import { campaignOperationCoverage, type Finding, type FindingValidation } from "./state.ts";
+import {
+  campaignOperationCoverage,
+  type ExploitChain,
+  type ExploitChainValidation,
+  type Finding,
+  type FindingValidation,
+} from "./state.ts";
 
 export interface ReportedFinding extends Finding {
   validation?: FindingValidation;
   traceEventSequences: number[];
 }
 
+export interface ReportedExploitChain extends ExploitChain {
+  validation?: ExploitChainValidation;
+}
+
 export interface RunReport {
-  schemaVersion: 7;
+  schemaVersion: 8;
   generatedAt: string;
   profileId: string;
   reproductionAuthentication?: CampaignRun["reproductionAuthentication"];
@@ -29,8 +39,11 @@ export interface RunReport {
     agentFailures: number;
     durationMs: number;
     operationCoverage: ReturnType<typeof campaignOperationCoverage>;
+    confirmedChainCount: number;
+    rejectedChainCount: number;
   };
   findings: ReportedFinding[];
+  exploitChains: ReportedExploitChain[];
   events: CampaignRun["events"];
 }
 
@@ -59,9 +72,15 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
   const rejectedCount = run.state.validations.filter(
     (validation) => validation.status === "rejected",
   ).length;
+  const exploitChains = run.state.exploitChains.map((chain) => ({
+    ...chain,
+    validation: run.state.exploitChainValidations.find(
+      ({ fingerprint }) => fingerprint === chain.fingerprint,
+    ),
+  }));
 
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     generatedAt: generatedAt.toISOString(),
     profileId: run.profileId,
     reproductionAuthentication: run.reproductionAuthentication,
@@ -80,8 +99,15 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
       agentFailures: run.state.agents.filter((agent) => agent.status === "failed").length,
       durationMs: run.durationMs,
       operationCoverage: campaignOperationCoverage(run.state),
+      confirmedChainCount: run.state.exploitChainValidations.filter(
+        ({ status }) => status === "confirmed",
+      ).length,
+      rejectedChainCount: run.state.exploitChainValidations.filter(
+        ({ status }) => status === "rejected",
+      ).length,
     },
     findings,
+    exploitChains: redactCredentials(exploitChains) as ReportedExploitChain[],
     events: redactCredentials(run.events) as RunEvent[],
   };
 }
@@ -179,6 +205,8 @@ export function renderMarkdownReport(report: RunReport): string {
     `| Confirmed | ${report.outcome.confirmedCount} |`,
     `| Rejected | ${report.outcome.rejectedCount} |`,
     `| Unvalidated | ${report.outcome.unvalidatedCount} |`,
+    `| Confirmed exploit chains | ${report.outcome.confirmedChainCount} |`,
+    `| Rejected exploit chains | ${report.outcome.rejectedChainCount} |`,
     `| Requests | ${report.outcome.requests.total}/${report.outcome.budget.total} |`,
     `| Actionable operation coverage | ${(report.outcome.operationCoverage.coverage * 100).toFixed(1)}% (${report.outcome.operationCoverage.tested}/${report.outcome.operationCoverage.discovered}) |`,
     `| Access-mode coverage | ${(report.coordination.coverage.accessModeCoverage * 100).toFixed(1)}% (${report.coordination.coverage.testedAccessModes}/${report.coordination.coverage.totalAccessModes}) |`,
@@ -204,7 +232,12 @@ export function renderMarkdownReport(report: RunReport): string {
 
   if (
     report.reproductionAuthentication &&
-    report.findings.some((finding) => finding.reproduction.some((request) => request.authenticated))
+    report.findings.some(
+      (finding) =>
+        finding.reproduction.some((request) => request.authenticated) ||
+        (finding.validation?.replayedProof?.type === "browser-visible-effect" &&
+          finding.validation.replayedProof.pageAuthenticated),
+    )
   ) {
     lines.push(
       "## Authentication for reproduction",
@@ -241,6 +274,7 @@ export function renderMarkdownReport(report: RunReport): string {
         "",
         `- Category: \`${finding.category}\``,
         `- Severity: **${finding.severity}**`,
+        `- Impact level: \`${finding.impactLevel}\``,
         `- CWE: \`${finding.cwe}\``,
         `- Operation: \`${finding.method ?? "GET"} ${finding.endpoint}\``,
         `- Fingerprint: \`${finding.fingerprint}\``,
@@ -291,7 +325,7 @@ export function renderMarkdownReport(report: RunReport): string {
         });
       }
       lines.push("Reproduction:", "", "```sh");
-      for (const request of finding.reproduction) {
+      for (const request of finding.validation?.reproduction ?? finding.reproduction) {
         const url = new URL(request.path, report.target).href;
         const auth = request.authenticated ? " --header 'Authorization: Bearer $QUIVER_TOKEN'" : "";
         const method = request.method ?? "GET";
@@ -319,6 +353,60 @@ export function renderMarkdownReport(report: RunReport): string {
         );
       }
       lines.push("```", "");
+      const replayedProof = finding.validation?.replayedProof;
+      if (replayedProof?.type === "browser-visible-effect") {
+        lines.push(
+          "Artifact collection:",
+          "",
+          `1. Open \`${new URL(replayedProof.pagePath, report.target).href}\` in a constrained Chromium session${replayedProof.pageAuthenticated ? " using the authenticated reproduction session" : " without authentication"}.`,
+          `2. Block cross-origin requests, WebSockets, and popups; observe a dialog whose complete message is \`${replayedProof.marker}\`.`,
+          "",
+        );
+      } else if (replayedProof?.type === "oast-callback") {
+        lines.push(
+          "Artifact collection:",
+          "",
+          "1. Start a fresh HTTP OAST listener reachable from the target (for Docker, configure a host-gateway advertised address).",
+          `2. Replace the expired campaign callback \`${replayedProof.callbackUrl}\` in the request with the fresh listener URL, then replay the request.`,
+          "3. Confirm the listener receives the fresh unguessable token; historical callback metadata is retained below as validation evidence.",
+          "",
+        );
+      }
+      if (finding.validation?.artifacts) {
+        lines.push(
+          "Collected artifacts:",
+          "",
+          "```json",
+          JSON.stringify(finding.validation.artifacts, null, 2),
+          "```",
+          "",
+        );
+      }
+    }
+  }
+
+  lines.push("## Exploit-chain proofs", "");
+  if (report.exploitChains.length === 0) {
+    lines.push("_None._", "");
+  } else {
+    for (const chain of report.exploitChains) {
+      lines.push(
+        `### ${chain.title}`,
+        "",
+        `- Outcome: **${chain.validation?.status ?? "unvalidated"}**`,
+        `- Impact level: \`${chain.impactLevel}\``,
+        `- Steps: ${chain.steps.map((step) => `\`${step}\``).join(" → ")}`,
+        `- Result: ${chain.validation?.summary ?? "No fresh chain validation was recorded."}`,
+        "",
+      );
+      for (const item of chain.validation?.checks ?? []) {
+        lines.push(
+          `- ${item.passed ? "PASS" : "FAIL"}: ${item.description}${
+            item.actual === undefined ? "" : ` (observed: \`${inlineValue(item.actual)}\`)`
+          }`,
+        );
+      }
+      lines.push("");
     }
   }
 

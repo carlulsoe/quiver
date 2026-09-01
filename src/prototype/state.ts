@@ -8,12 +8,22 @@ export type AgentStatus = "queued" | "running" | "finished" | "failed";
 export type FindingCategory =
   | "broken-object-authorization"
   | "broken-function-authorization"
+  | "authentication-bypass"
   | "excessive-data-exposure"
   | "sensitive-data-exposure"
+  | "cross-site-scripting"
+  | "sql-injection"
+  | "command-injection"
+  | "server-side-request-forgery"
+  | "path-traversal"
+  | "open-redirect"
+  | "cross-site-request-forgery"
+  | "business-logic"
   | "security-misconfiguration"
   | "other";
 
 export type FindingSeverity = "low" | "medium" | "high" | "critical";
+export type ImpactLevel = "observation" | "bounded" | "state-change";
 
 export interface CampaignAgent {
   id: string;
@@ -28,11 +38,47 @@ export interface ReproductionRequest {
   headers?: Record<string, string>;
   body?: string;
   authenticated: boolean;
+  /** Distinguishes intentional repeated samples from ledger-deduplicated requests. */
+  sampleId?: string;
 }
 
 export interface JsonEvidenceSelector {
   requestIndex: number;
   jsonPointer: string;
+}
+
+export interface RequestMutation {
+  location: "query" | "json-body";
+  parameter: string;
+  controlValue: string;
+  probeValue: string;
+}
+
+export interface ChallengeMutation {
+  location: "query" | "json-body";
+  parameter: string;
+  template: string;
+}
+
+export interface BrowserEffectEvidence {
+  probeId: string;
+  path: string;
+  kind: "dialog";
+  value: string;
+}
+
+export interface OastCallbackEvidence {
+  probeId: string;
+  token: string;
+  protocol: "http";
+  method: string;
+  path: string;
+  observedAt: string;
+}
+
+export interface ProofArtifacts {
+  browserEffects: BrowserEffectEvidence[];
+  oastCallbacks: OastCallbackEvidence[];
 }
 
 export type ProofPredicate =
@@ -59,6 +105,59 @@ export type ProofPredicate =
       type: "internal-field-exposure";
       requestIndex: number;
       evidencePointers: string[];
+    }
+  | {
+      /** Supporting-only evidence; no category may use this as authoritative proof. */
+      type: "response-differential";
+      controlRequestIndex: number;
+      probeRequestIndex: number;
+      comparison: "status" | "body" | "json-value";
+      expectation: "equal" | "different";
+      jsonPointer?: string;
+      mutation: RequestMutation;
+    }
+  | {
+      /** Supporting-only evidence; no category may use this as authoritative proof. */
+      type: "timing-differential";
+      controlRequestIndexes: number[];
+      probeRequestIndexes: number[];
+      minimumDeltaMs: number;
+      mutation: RequestMutation;
+    }
+  | {
+      type: "canary-retrieval";
+      policyId: string;
+      requestIndex: number;
+      jsonPointer: string;
+    }
+  | {
+      type: "state-transition";
+      policyId: string;
+      transitionRequestIndex: number;
+      beforeRequestIndex: number;
+      afterRequestIndex: number;
+    }
+  | {
+      type: "browser-visible-effect";
+      policyId: string;
+      probeId: string;
+      marker: string;
+      requestIndex: number;
+      pagePath: string;
+      kind: "dialog";
+      challenge: ChallengeMutation;
+      pageAuthenticated: boolean;
+      pageChallenge?: ChallengeMutation;
+      collectorRequestBudget: number;
+    }
+  | {
+      type: "oast-callback";
+      policyId: string;
+      probeId: string;
+      token: string;
+      requestIndex: number;
+      callbackUrl: string;
+      challenge: ChallengeMutation;
     };
 
 export interface FindingInput {
@@ -73,6 +172,8 @@ export interface FindingInput {
   rationale: string;
   impact: string;
   mitigation: string;
+  /** Required at the agent boundary; optional here for backwards-compatible imported reports. */
+  impactLevel?: ImpactLevel;
   reproduction: ReproductionRequest[];
   proof: ProofPredicate;
 }
@@ -87,10 +188,42 @@ export interface FindingValidation {
   evidence: string;
   proof: ProofResult;
   observations: ValidationObservation[];
+  artifacts?: ProofArtifacts;
+  reproduction?: ReproductionRequest[];
+  replayedProof?: ProofPredicate;
   reviewer: {
     assessment: "supported" | "unsupported";
     evidence: string;
   };
+}
+
+export interface ExploitChainLink {
+  from: JsonEvidenceSelector & { fingerprint: string };
+  to: {
+    fingerprint: string;
+    requestIndex: number;
+    location: "query" | "json-body" | "header";
+    parameter: string;
+  };
+}
+
+export interface ExploitChainInput {
+  agentId: string;
+  title: string;
+  impactLevel: ImpactLevel;
+  steps: string[];
+  links: ExploitChainLink[];
+}
+
+export interface ExploitChain extends ExploitChainInput {
+  fingerprint: string;
+}
+
+export interface ExploitChainValidation {
+  fingerprint: string;
+  status: "confirmed" | "rejected";
+  summary: string;
+  checks: ProofCheck[];
 }
 
 export interface ProofCheck {
@@ -113,6 +246,8 @@ export interface ValidationObservation {
   authenticated: boolean;
   body: unknown;
   truncated: boolean;
+  durationMs?: number;
+  sampleId?: string;
 }
 
 export interface CampaignBudget {
@@ -146,6 +281,8 @@ export interface CampaignState {
   findings: Finding[];
   validations: FindingValidation[];
   coordination: CoordinatorSnapshot;
+  exploitChains: ExploitChain[];
+  exploitChainValidations: ExploitChainValidation[];
   error?: string;
 }
 
@@ -169,6 +306,8 @@ export type CampaignAction =
   | { type: "operations-discovered"; operations: DiscoveredOperation[] }
   | { type: "finding"; finding: FindingInput }
   | { type: "validation"; validation: FindingValidation }
+  | { type: "exploit-chain"; chain: ExploitChainInput }
+  | { type: "exploit-chain-validation"; validation: ExploitChainValidation }
   | { type: "failed"; error: string };
 
 const nextPhases: Record<CampaignState["phase"], CampaignState["phase"][]> = {
@@ -206,6 +345,8 @@ export function createCampaignState(
     findings: [],
     validations: [],
     coordination: emptyCoordinatorSnapshot(budget.exploration),
+    exploitChains: [],
+    exploitChainValidations: [],
   };
 }
 
@@ -277,7 +418,8 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
       return { ...state, discoveredOperations: [...operations.values()] };
     }
     case "finding": {
-      const finding = { ...action.finding, fingerprint: fingerprintFinding(action.finding) };
+      const normalized = normalizeFindingInput(action.finding);
+      const finding = { ...normalized, fingerprint: fingerprintFinding(normalized) };
       return state.findings.some((existing) => existing.fingerprint === finding.fingerprint)
         ? state
         : { ...state, findings: [...state.findings, finding] };
@@ -288,6 +430,21 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
       )
         ? state
         : { ...state, validations: [...state.validations, action.validation] };
+    case "exploit-chain": {
+      const chain = { ...action.chain, fingerprint: fingerprintExploitChain(action.chain) };
+      return state.exploitChains.some((existing) => existing.fingerprint === chain.fingerprint)
+        ? state
+        : { ...state, exploitChains: [...state.exploitChains, chain] };
+    }
+    case "exploit-chain-validation":
+      return state.exploitChainValidations.some(
+        (validation) => validation.fingerprint === action.validation.fingerprint,
+      )
+        ? state
+        : {
+            ...state,
+            exploitChainValidations: [...state.exploitChainValidations, action.validation],
+          };
     case "failed":
       return { ...state, phase: "failed", error: action.error };
   }
@@ -318,11 +475,35 @@ function emptyCoordinatorSnapshot(requestBudget: number): CoordinatorSnapshot {
   };
 }
 
+export function fingerprintExploitChain(chain: Pick<ExploitChainInput, "steps">): string {
+  return `exploit-chain:${chain.steps.map((step) => `${step.length}:${step}`).join("")}`;
+}
+
 export function fingerprintFinding(
   finding: Pick<FindingInput, "category" | "endpoint" | "method">,
 ): string {
   const method = finding.method ?? "GET";
   return `${finding.category}:${method}:${normalizeEndpoint(finding.endpoint)}`;
+}
+
+export function deriveImpactLevel(
+  finding: Pick<FindingInput, "proof" | "reproduction">,
+): ImpactLevel {
+  if (
+    finding.proof.type === "state-transition" ||
+    finding.reproduction.some(({ method = "GET" }) => !["GET", "HEAD", "OPTIONS"].includes(method))
+  ) {
+    return "state-change";
+  }
+  return ["browser-visible-effect", "oast-callback"].includes(finding.proof.type)
+    ? "bounded"
+    : "observation";
+}
+
+export function normalizeFindingInput<T extends FindingInput>(
+  finding: T,
+): T & { impactLevel: ImpactLevel } {
+  return { ...finding, impactLevel: finding.impactLevel ?? deriveImpactLevel(finding) };
 }
 
 export function campaignOperationCoverage(state: CampaignState): {

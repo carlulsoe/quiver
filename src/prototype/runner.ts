@@ -3,7 +3,10 @@ import { start } from "@flue/runtime/node";
 import { PersistentCoordinator } from "./adaptive-coordinator.ts";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
+import { ChainBudgetExceededError, replayExploitChain } from "./exploit-chain.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
+import { ProofArtifactStore } from "./proof-artifacts.ts";
+import { ReplayBudgetExceededError, replayRequestBudget } from "./replay.ts";
 import { RequestBudgetExceededError, ScopedTarget } from "./scoped-target.ts";
 import {
   createCampaignBudget,
@@ -12,7 +15,7 @@ import {
   type CampaignAction,
   type CampaignState,
 } from "./state.ts";
-import type { TargetProfile } from "./target-profile.ts";
+import { assertValidTargetProfile, type TargetProfile } from "./target-profile.ts";
 
 export interface RunCampaignOptions {
   target: URL;
@@ -42,6 +45,8 @@ export interface RunEvent {
 }
 
 export async function runCampaign(options: RunCampaignOptions): Promise<CampaignRun> {
+  assertValidTargetProfile(options.profile);
+  await using artifacts = new ProofArtifactStore();
   const startedAt = performance.now();
   const budget = createCampaignBudget(options.requestBudget ?? 30);
   const explorerCount = options.explorerCount ?? 2;
@@ -107,6 +112,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       testedRequestCount: state.testedRequests.length,
       findingCount: state.findings.length,
       validationCount: state.validations.length,
+      exploitChainCount: state.exploitChains.length,
     });
     options.onState?.(state, action);
   };
@@ -131,6 +137,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         dispatch({ type: "request", phase: "exploration" });
       },
       openApi: options.openApi,
+      maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
     });
     let enqueueValidation = (_fingerprint: string) => {};
     const ledger = new CampaignLedger({
@@ -143,8 +150,13 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         dispatch({ type: "finding", finding });
         enqueueValidation(fingerprint);
       },
+      onExploitChain: (chain) => dispatch({ type: "exploit-chain", chain }),
     });
-    if (options.profile.authenticate) await options.profile.authenticate(explorationTarget);
+    if (options.profile.authenticate) {
+      await explorationTarget.runProfileSetup(() =>
+        options.profile.authenticate!(explorationTarget),
+      );
+    }
     dispatch({ type: "phase", phase: "exploring" });
     const focuses = [
       "broken authorization and cross-object access, using identifiers discovered in one response against other GET endpoints",
@@ -159,6 +171,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         options.profile,
         ledger,
         coordinator,
+        artifacts,
         dispatch,
         options.context,
       ),
@@ -173,6 +186,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         options.profile,
         ledger,
         coordinator,
+        artifacts,
         dispatch,
         options.context,
       );
@@ -186,11 +200,13 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         record("request", { phase: "validation", ...request });
         dispatch({ type: "request", phase: "validation" });
       },
+      maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
     });
     const Validator = createValidatorAgent(
       () => state.findings,
       () => validationTarget,
       options.profile,
+      artifacts,
       (action, mission) => {
         if (action.type === "validation") {
           coordinator.recordValidation(
@@ -206,7 +222,9 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     let validationAuthentication: Promise<unknown> | undefined;
     const authenticateValidationTarget = async () => {
       if (!options.profile.authenticate) return;
-      validationAuthentication ??= options.profile.authenticate(validationTarget);
+      validationAuthentication ??= validationTarget.runProfileSetup(() =>
+        options.profile.authenticate!(validationTarget),
+      );
       try {
         await validationAuthentication;
       } catch (error) {
@@ -227,7 +245,8 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       );
       if (
         options.profile.authenticate &&
-        finding.reproduction.some((request) => request.authenticated)
+        (finding.reproduction.some((request) => request.authenticated) ||
+          (finding.proof.type === "browser-visible-effect" && finding.proof.pageAuthenticated))
       ) {
         try {
           await authenticateValidationTarget();
@@ -236,10 +255,12 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
           throw error;
         }
       }
-      if (
-        validationTarget.requestBudget - validationTarget.requestsUsed <
-        finding.reproduction.length
-      ) {
+      const requiredRequests =
+        replayRequestBudget(finding) +
+        (finding.proof.type === "state-transition"
+          ? (options.profile.validationResetRequestBudget ?? 0)
+          : 0);
+      if (validationTarget.remainingRequests < requiredRequests) {
         return;
       }
       const validatorId =
@@ -350,6 +371,36 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         summary: "No findings required validation.",
       });
     }
+    for (const chain of state.exploitChains) {
+      try {
+        dispatch({
+          type: "exploit-chain-validation",
+          validation: await replayExploitChain(
+            validationTarget,
+            chain,
+            state.findings,
+            options.profile,
+            artifacts,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof ChainBudgetExceededError) continue;
+        dispatch({
+          type: "exploit-chain-validation",
+          validation: {
+            fingerprint: chain.fingerprint,
+            status: "rejected",
+            summary: error instanceof Error ? error.message : String(error),
+            checks: [
+              {
+                passed: false,
+                description: "ordered exploit-chain replay completed without an error",
+              },
+            ],
+          },
+        });
+      }
+    }
     dispatch({ type: "phase", phase: "complete" });
   } catch (error) {
     dispatch({ type: "failed", error: error instanceof Error ? error.message : String(error) });
@@ -398,6 +449,7 @@ function isPromptUsage(value: unknown): value is PromptUsage {
 function isRequestBudgetExhausted(error: unknown): boolean {
   return (
     error instanceof RequestBudgetExceededError ||
+    error instanceof ReplayBudgetExceededError ||
     String(error).includes("Request budget exhausted")
   );
 }

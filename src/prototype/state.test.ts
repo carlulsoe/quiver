@@ -3,6 +3,7 @@ import {
   campaignOperationCoverage,
   createCampaignBudget,
   createCampaignState,
+  fingerprintExploitChain,
   reduceCampaign,
 } from "./state.ts";
 
@@ -34,6 +35,12 @@ const firstFinding = {
 };
 
 describe("campaign state", () => {
+  it("uses an unambiguous length-delimited exploit-chain fingerprint", () => {
+    expect(fingerprintExploitChain({ steps: ["a->b", "c"] })).not.toBe(
+      fingerprintExploitChain({ steps: ["a", "b->c"] }),
+    );
+  });
+
   it("reserves one third of the total request budget for independent validation", () => {
     expect(createCampaignBudget(30)).toEqual({ total: 30, exploration: 20, validation: 10 });
   });
@@ -59,6 +66,7 @@ describe("campaign state", () => {
     expect(withDuplicate.findings[0]).toMatchObject({
       fingerprint: "broken-object-authorization:GET:/identity/api/v2/vehicle/{id}/location",
       resource: "4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5",
+      impactLevel: "observation",
     });
   });
 

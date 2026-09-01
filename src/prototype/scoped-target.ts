@@ -4,6 +4,9 @@ import {
   type AttackSurfaceMap,
   type BrowserCookie,
 } from "./attack-surface.ts";
+import { collectBrowserEffect, type BrowserProofProbe } from "./browser-proof.ts";
+import { impactAtMost } from "./impact.ts";
+import type { BrowserEffectEvidence, ImpactLevel } from "./state.ts";
 
 export type {
   AttackSurfaceCallSite as CrawlGetCallSite,
@@ -23,6 +26,7 @@ export interface HttpObservation {
   body: unknown;
   truncated?: boolean;
   contentType?: string;
+  durationMs?: number;
 }
 
 export interface SetupHttpObservation extends HttpObservation {
@@ -57,6 +61,8 @@ export interface ScopedTargetOptions {
   openApi?: unknown;
   browserExecutablePath?: string;
   attackSurfaceMapper?: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
+  browserEffectCollector?: (probe: BrowserProofProbe) => Promise<BrowserEffectEvidence | undefined>;
+  maximumImpactLevel?: ImpactLevel;
 }
 
 export interface AttackSurfaceMapperOptions {
@@ -89,6 +95,16 @@ export interface ScopedRequest {
   headers?: Record<string, string>;
   body?: string;
   authenticated?: boolean;
+  sampleId?: string;
+}
+
+export interface BrowserEffectRequest {
+  probeId: string;
+  path: string;
+  marker: string;
+  kind: BrowserEffectEvidence["kind"];
+  authenticated: boolean;
+  requestBudget: number;
 }
 
 export type RestMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
@@ -120,6 +136,11 @@ export class ScopedTarget {
   readonly #openApi?: unknown;
   readonly #browserExecutablePath?: string;
   readonly #attackSurfaceMapper: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
+  readonly #browserEffectCollector: (
+    probe: BrowserProofProbe,
+  ) => Promise<BrowserEffectEvidence | undefined>;
+  readonly #maximumImpactLevel: ImpactLevel;
+  #setupAccess = false;
   #requestsUsed = 0;
   #authenticationHeaders?: Record<string, string>;
   #browserLocalStorage?: Record<string, string>;
@@ -154,6 +175,8 @@ export class ScopedTarget {
     this.#attackSurfaceMapper =
       options.attackSurfaceMapper ??
       ((mapperOptions) => new BrowserAttackSurfaceMapper(mapperOptions).map());
+    this.#browserEffectCollector = options.browserEffectCollector ?? collectBrowserEffect;
+    this.#maximumImpactLevel = options.maximumImpactLevel ?? "state-change";
   }
 
   get origin(): string {
@@ -193,6 +216,27 @@ export class ScopedTarget {
     }
   }
 
+  get remainingRequests(): number {
+    return Math.max(0, this.#requestBudget - this.#requestsUsed);
+  }
+
+  assertImpactLevel(level: ImpactLevel): void {
+    if (!impactAtMost(level, this.#maximumImpactLevel)) {
+      throw new TargetScopeError(
+        `${level} impact exceeds the target's ${this.#maximumImpactLevel} ceiling`,
+      );
+    }
+  }
+
+  async runProfileSetup<T>(setup: () => Promise<T>): Promise<T> {
+    this.#setupAccess = true;
+    try {
+      return await setup();
+    } finally {
+      this.#setupAccess = false;
+    }
+  }
+
   setAuthentication(headers: Record<string, string>): void {
     this.#authenticationHeaders = { ...headers };
   }
@@ -227,6 +271,44 @@ export class ScopedTarget {
     return observation as SetupHttpObservation;
   }
 
+  async observeBrowserEffect(
+    request: BrowserEffectRequest,
+  ): Promise<BrowserEffectEvidence | undefined> {
+    this.assertImpactLevel("bounded");
+    this.#resolvePath(request.path);
+    if (request.authenticated && !this.#hasBrowserAuthentication()) {
+      throw new Error("This target has no authenticated browser session");
+    }
+    let collectorRequests = 0;
+    return this.#browserEffectCollector({
+      ...request,
+      origin: this.#origin,
+      timeoutMs: this.#timeoutMs,
+      authenticationHeaders: request.authenticated ? this.#authenticationHeaders : undefined,
+      cookies: request.authenticated ? this.#browserCookies : undefined,
+      localStorage: request.authenticated ? this.#browserLocalStorage : undefined,
+      sessionStorage: request.authenticated ? this.#browserSessionStorage : undefined,
+      executablePath: this.#browserExecutablePath,
+      decideRequest: (method, path) => {
+        if (!["GET", "HEAD"].includes(method) || collectorRequests >= request.requestBudget) {
+          return false;
+        }
+        const decision = this.#decideBrowserRequest(method, path, true, false);
+        if (decision.allowed) collectorRequests += 1;
+        return decision.allowed;
+      },
+    });
+  }
+
+  #hasBrowserAuthentication(): boolean {
+    return (
+      Object.keys(this.#authenticationHeaders ?? {}).length > 0 ||
+      (this.#browserCookies?.length ?? 0) > 0 ||
+      Object.keys(this.#browserLocalStorage ?? {}).length > 0 ||
+      Object.keys(this.#browserSessionStorage ?? {}).length > 0
+    );
+  }
+
   async #request(
     request: ScopedRequest,
     responseLimit: number,
@@ -234,6 +316,18 @@ export class ScopedTarget {
   ): Promise<HttpObservation | SetupHttpObservation> {
     const method = request.method ?? "GET";
     const url = this.#resolvePath(request.path);
+    if (this.#setupAccess || includeResponseHeaders) {
+      if (!operationAllowed(this.#allowedRequests, method, url.pathname)) {
+        throw new TargetScopeError(`${method} ${url.pathname} is not a profile setup operation`);
+      }
+    } else {
+      if (method === "DELETE") {
+        throw new TargetScopeError("DELETE is never allowed for proof demonstration");
+      }
+      if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+        this.assertImpactLevel("state-change");
+      }
+    }
     if (!includeResponseHeaders && this.#isDenied(method, url.pathname)) {
       throw new TargetScopeError(`${method} ${url.pathname} is denied by the target profile`);
     }
@@ -269,6 +363,7 @@ export class ScopedTarget {
       method,
       path: `${url.pathname}${url.search}`,
     });
+    const startedAt = performance.now();
     const response = await this.#transport(url, {
       method,
       headers: {
@@ -296,6 +391,7 @@ export class ScopedTarget {
       body,
       truncated,
       contentType: response.headers.get("content-type") ?? "",
+      durationMs: Math.round(performance.now() - startedAt),
     };
     return includeResponseHeaders
       ? { ...observation, headers: Object.fromEntries(response.headers.entries()) }
@@ -348,6 +444,16 @@ export class ScopedTarget {
     automaticInteraction: boolean,
   ): { allowed: boolean; reason?: string } {
     const url = this.#resolvePath(path);
+    if (method === "DELETE") {
+      return { allowed: false, reason: "DELETE is never allowed for proof demonstration" };
+    }
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      try {
+        this.assertImpactLevel("state-change");
+      } catch (error) {
+        return { allowed: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
     if (this.#isDenied(method, url.pathname)) {
       return { allowed: false, reason: "denied by target profile" };
     }

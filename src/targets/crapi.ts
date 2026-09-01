@@ -51,6 +51,7 @@ export const crapiProfile: TargetProfile = {
   displayName: "OWASP crAPI",
   objective:
     "Find as many distinct read-only vulnerabilities as the request budget supports. Prioritize broken authorization, excessive data exposure, sensitive data exposure, and security misconfiguration. Treat multiple affected resources at the same endpoint as one vulnerability.",
+  maximumImpactLevel: "observation",
   allowedRequests: [
     { method: "POST", path: "/identity/api/auth/login" },
     { method: "POST", path: "/identity/api/auth/verify" },

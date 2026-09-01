@@ -47,6 +47,124 @@ describe("scoped target", () => {
       "is not an allowed profile setup request",
     );
   });
+
+  it("enforces the impact ceiling before target or browser network activity", async () => {
+    let targetRequests = 0;
+    let browserCollections = 0;
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 2,
+      maximumImpactLevel: "observation",
+      allowedRequests: [{ method: "POST", path: "/profile/setup" }],
+      transport: async () => {
+        targetRequests += 1;
+        return response("ok", "text/plain");
+      },
+      browserEffectCollector: async () => {
+        browserCollections += 1;
+        return undefined;
+      },
+    });
+
+    await expect(
+      target.request({ path: "/profile/setup", method: "POST", body: "{}" }),
+    ).rejects.toThrow("state-change impact exceeds");
+    await expect(
+      target.observeBrowserEffect({
+        probeId: "probe-1",
+        path: "/proof",
+        marker: "QUIVER-BROWSER-1",
+        kind: "dialog",
+        authenticated: false,
+        requestBudget: 1,
+      }),
+    ).rejects.toThrow("bounded impact exceeds");
+    await expect(target.request({ path: "/anything", method: "DELETE" })).rejects.toThrow(
+      "DELETE is never allowed",
+    );
+    expect(targetRequests).toBe(0);
+    expect(browserCollections).toBe(0);
+    expect(target.remainingRequests).toBe(2);
+  });
+
+  it("limits profile setup bypasses to predeclared setup operations", async () => {
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 3,
+      maximumImpactLevel: "observation",
+      allowedRequests: [
+        { method: "POST", path: "/login" },
+        { method: "DELETE", path: "/synthetic-session" },
+      ],
+      transport: async () => response("ok", "text/plain"),
+    });
+
+    await expect(
+      target.runProfileSetup(() => target.request({ path: "/login", method: "POST" })),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      target.runProfileSetup(() => target.request({ path: "/other", method: "POST" })),
+    ).rejects.toThrow("not a profile setup operation");
+    await expect(
+      target.runProfileSetup(() =>
+        target.request({ path: "/synthetic-session", method: "DELETE" }),
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("charges browser proof requests to both the collector cap and campaign budget", async () => {
+    const requested: string[] = [];
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 3,
+      onRequest: ({ method, path }) => requested.push(`${method} ${path}`),
+      browserEffectCollector: async (probe) => {
+        expect(probe.decideRequest("GET", "/proof")).toBe(true);
+        expect(probe.decideRequest("GET", "/asset.js")).toBe(true);
+        expect(probe.decideRequest("GET", "/extra.js")).toBe(false);
+        expect(probe.decideRequest("POST", "/submit")).toBe(false);
+        return undefined;
+      },
+    });
+
+    await target.observeBrowserEffect({
+      probeId: "probe-1",
+      path: "/proof",
+      marker: "QUIVER-BROWSER-1",
+      kind: "dialog",
+      authenticated: false,
+      requestBudget: 2,
+    });
+
+    expect(requested).toEqual(["GET /proof", "GET /asset.js"]);
+    expect(target.remainingRequests).toBe(1);
+  });
+
+  it("rejects an authenticated browser proof without configured browser credentials", async () => {
+    let browserCollections = 0;
+    const target = new ScopedTarget({
+      target: new URL("http://localhost:8888"),
+      requestBudget: 1,
+      browserEffectCollector: async () => {
+        browserCollections += 1;
+        return undefined;
+      },
+    });
+
+    await expect(
+      target.observeBrowserEffect({
+        probeId: "probe-1",
+        path: "/proof",
+        marker: "QUIVER-BROWSER-1",
+        kind: "dialog",
+        authenticated: true,
+        requestBudget: 1,
+      }),
+    ).rejects.toThrow("no authenticated browser session");
+    expect(browserCollections).toBe(0);
+    expect(target.remainingRequests).toBe(1);
+  });
+
   it("delegates to a budgeted REST attack-surface mapper", async () => {
     const requested: string[] = [];
     const target = new ScopedTarget({
@@ -135,7 +253,7 @@ describe("scoped target", () => {
       target.request({ path: "/api/items/widget-blue", method: "PATCH", body: "{}" }),
     ).resolves.toMatchObject({ status: 200 });
     await expect(target.request({ path: "/api/admin", method: "DELETE" })).rejects.toThrow(
-      "was not supplied by the profile or attack-surface map",
+      "DELETE is never allowed for proof demonstration",
     );
   });
 
@@ -183,7 +301,7 @@ describe("scoped target", () => {
 
     expect(map.routes).toContain("/api/items/42");
     await expect(target.request({ path: "/api/items/42", method: "DELETE" })).rejects.toThrow(
-      "was not supplied by the profile or attack-surface map",
+      "DELETE is never allowed for proof demonstration",
     );
   });
 
