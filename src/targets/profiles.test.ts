@@ -3,6 +3,7 @@ import { ScopedTarget } from "../prototype/scoped-target.ts";
 import { brokenCrystalsProfile } from "./broken-crystals.ts";
 import { heldOutProfile } from "./held-out.ts";
 import { vampiVulnerableProfile } from "./vampi.ts";
+import { vulnerableAppProfile } from "./vulnerableapp.ts";
 
 describe("additional target profiles", () => {
   it("exposes bundled TypeScript profiles as thin declarative adapters", () => {
@@ -62,5 +63,37 @@ describe("additional target profiles", () => {
     await expect(target.request({ path: "/createdb" })).rejects.toThrow(
       "denied by the target profile",
     );
+  });
+
+  it("binds VulnerableApp injection proofs to vulnerable and secure-control levels", () => {
+    expect(vulnerableAppProfile.maximumImpactLevel).toBe("bounded");
+    expect(
+      vulnerableAppProfile.proofPolicies?.map((policy) => ({
+        id: policy.id,
+        kind: policy.kind,
+        endpoint: "endpoint" in policy ? policy.endpoint : undefined,
+      })),
+    ).toEqual([
+      {
+        id: "vulnerableapp-blind-sql-level-1",
+        kind: "sql-semantic-differential",
+        endpoint: "/VulnerableApp/BlindSQLInjectionVulnerability/LEVEL_1",
+      },
+      {
+        id: "vulnerableapp-blind-sql-level-3-secure-control",
+        kind: "sql-semantic-differential",
+        endpoint: "/VulnerableApp/BlindSQLInjectionVulnerability/LEVEL_3",
+      },
+      {
+        id: "vulnerableapp-command-level-1",
+        kind: "command-execution-challenge",
+        endpoint: "/VulnerableApp/CommandInjection/LEVEL_1",
+      },
+      {
+        id: "vulnerableapp-command-level-6-secure-control",
+        kind: "command-execution-challenge",
+        endpoint: "/VulnerableApp/CommandInjection/LEVEL_6",
+      },
+    ]);
   });
 });

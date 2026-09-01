@@ -114,11 +114,13 @@ function explorationTools(
       sampleId: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(80))),
     }),
     async run({ data }) {
-      const requestedImpact = artifacts.hasIssuedChallenge(JSON.stringify(data))
-        ? "bounded"
-        : ["GET", "HEAD", "OPTIONS"].includes(data.method)
-          ? "observation"
-          : "state-change";
+      const requestedImpact =
+        verification.impactLevelFor(data) ??
+        (artifacts.hasIssuedChallenge(JSON.stringify(data))
+          ? "bounded"
+          : ["GET", "HEAD", "OPTIONS"].includes(data.method)
+            ? "observation"
+            : "state-change");
       target.assertImpactLevel(requestedImpact);
       const { observation: result, reused } = await ledger.request(
         {
@@ -474,10 +476,12 @@ The reproduction list must contain the ordered REST requests an independent vali
 - cross-principal-data-exposure: identify the authenticated actor and a different subject whose fields appear in the successful response, plus every concrete exposed field.
 - internal-field-exposure: identify a successful response and implementation-only fields whose presence alone violates the response contract. Use this only for unmistakable internal/debug/configuration properties—not normal fields from the caller's own resource. Owner access to their own identifiers, credentials, location, or profile data is not evidence of excessive exposure.
 - canary-retrieval: select a value from a replay response that matches a target-owned canary policy.
+- sql-semantic-differential: use the exact target-policy control and probe values in one adjacent request pair. The responses must equal the policy's false/true semantic values and the requests may differ only by that mutation.
+- command-execution-challenge: use the exact target-policy command template with a bounded integer challenge. The response must contain the policy-derived arithmetic output, which is absent from the request. Validation replaces your integer with a fresh challenge; an OAST callback is only SSRF evidence and cannot prove command execution.
 - state-transition: for business-logic findings, identify before, protected transition, and after requests matching a target-owned state policy. Use distinct sampleIds on the otherwise identical before/after reads so the ledger does not reuse the first observation. The code-owned policy supplies the protected pointer and exact before/after values.
 - browser-visible-effect and oast-callback require fresh collector artifacts and a matching target-owned policy; use them only after the corresponding evidence tool returns an observed artifact.
 
-Choose a predicate compatible with the vulnerability-specific category and point only to values you observed. Generic categories cannot stand in for a more precise class. Categories with no compatible authoritative predicate, including injection and authentication bypass, cannot yet be submitted. Differential durations and distinct sampleIds are recorded as supporting evidence, but timing alone cannot prove backend execution and is therefore not an agent-selectable predicate. submit_finding first runs the predicate against the shared exploration observations; if a selector or condition fails, inspect its deterministicProof checks, correct the finding, and resubmit. The same predicate must later pass against a fresh replay. The deterministic predicate, not the validation model's opinion, decides confirmation. submit_finding reports whether the shared campaign accepted or had already recorded the fingerprint; it does not end the campaign. Continue testing other operations and vulnerability classes. A showcase-strength campaign should support at least three distinct machine-proven findings when the target and budget permit; if the shared ledger has fewer, keep testing unexamined actionable operations. Never submit guesses. Call finish_exploration only when further testing is not useful or the request allocation is exhausted. Its debrief is mandatory: summarize completed work and include only concrete, untested hypotheses worth handing to a fresh specialist. Set exhausted=true only when no useful lead remains.
+Choose a predicate compatible with the vulnerability-specific category and point only to values you observed. Generic categories cannot stand in for a more precise class. Categories with no compatible authoritative predicate, including authentication bypass, cannot yet be submitted. Generic response/timing differentials remain supporting evidence; only target-policy semantic SQL pairs and fresh computed command challenges confirm injection. submit_finding first runs the predicate against the shared exploration observations; if a selector or condition fails, inspect its deterministicProof checks, correct the finding, and resubmit. The same predicate must later pass against a fresh replay. The deterministic predicate, not the validation model's opinion, decides confirmation. submit_finding reports whether the shared campaign accepted or had already recorded the fingerprint; it does not end the campaign. Continue testing other operations and vulnerability classes. A showcase-strength campaign should support at least three distinct machine-proven findings when the target and budget permit; if the shared ledger has fewer, keep testing unexamined actionable operations. Never submit guesses. Call finish_exploration only when further testing is not useful or the request allocation is exhausted. Its debrief is mandatory: summarize completed work and include only concrete, untested hypotheses worth handing to a fresh specialist. Set exhausted=true only when no useful lead remains.
 
 If two or more submitted findings form a real exploit chain, call submit_exploit_chain. List their fingerprints in execution order and provide exactly one link per adjacent pair: select a scalar with an RFC 6901 pointer from the upstream observation, then identify the exact query, top-level JSON-body, or header field in the downstream reproduction that consumes the same value. Shared or coincidental values do not count unless this exact dataflow passes.
 `;
