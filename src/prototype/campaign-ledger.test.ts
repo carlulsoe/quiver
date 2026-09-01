@@ -13,7 +13,7 @@ const finding: FindingInput = {
   rationale: "A different user's object was returned.",
   impact: "Another user's item is disclosed.",
   mitigation: "Authorize every item lookup against the authenticated principal.",
-  reproduction: [{ path: "/api/items/42", authenticated: true }],
+  reproduction: [{ path: "/api/items/42", actorId: "ordinary-user" }],
   proof: {
     type: "cross-principal-access",
     actor: { requestIndex: 0, jsonPointer: "/viewer" },
@@ -38,11 +38,11 @@ describe("campaign ledger", () => {
     };
 
     const first = ledger.request(
-      { agentId: "explorer-1", path: "/api/items/42", authenticated: true },
+      { agentId: "explorer-1", path: "/api/items/42", actorId: "ordinary-user" },
       execute,
     );
     const second = ledger.request(
-      { agentId: "explorer-2", path: "/api/items/42", authenticated: true },
+      { agentId: "explorer-2", path: "/api/items/42", actorId: "ordinary-user" },
       execute,
     );
     release();
@@ -55,7 +55,7 @@ describe("campaign ledger", () => {
         agentId: "explorer-1",
         method: "GET",
         path: "/api/items/42",
-        authenticated: true,
+        actorId: "ordinary-user",
         status: 200,
       },
     ]);
@@ -70,8 +70,11 @@ describe("campaign ledger", () => {
       body: {},
     });
 
-    await ledger.request({ agentId: "explorer-1", path: "/api/me", authenticated: false }, execute);
-    await ledger.request({ agentId: "explorer-1", path: "/api/me", authenticated: true }, execute);
+    await ledger.request({ agentId: "explorer-1", path: "/api/me", actorId: "anonymous" }, execute);
+    await ledger.request(
+      { agentId: "explorer-1", path: "/api/me", actorId: "ordinary-user" },
+      execute,
+    );
 
     expect(networkRequests).toBe(2);
     expect(ledger.snapshot().testedRequests).toHaveLength(2);
@@ -93,7 +96,7 @@ describe("campaign ledger", () => {
         path: "/api/search",
         method: "POST",
         body: '{"query":"one"}',
-        authenticated: true,
+        actorId: "ordinary-user",
       },
       execute,
     );
@@ -103,7 +106,7 @@ describe("campaign ledger", () => {
         path: "/api/search",
         method: "POST",
         body: '{"query":"two"}',
-        authenticated: true,
+        actorId: "ordinary-user",
       },
       execute,
     );
@@ -112,7 +115,7 @@ describe("campaign ledger", () => {
         agentId: "explorer-1",
         path: "/api/search",
         method: "GET",
-        authenticated: true,
+        actorId: "ordinary-user",
       },
       execute,
     );
@@ -123,7 +126,7 @@ describe("campaign ledger", () => {
   it("reconstructs deterministic proof observations from completed requests", async () => {
     const ledger = new CampaignLedger();
     await ledger.request(
-      { agentId: "explorer-1", path: "/api/items/42", authenticated: true },
+      { agentId: "explorer-1", path: "/api/items/42", actorId: "ordinary-user" },
       async () => ({
         status: 200,
         path: "/api/items/42",
@@ -131,18 +134,18 @@ describe("campaign ledger", () => {
       }),
     );
 
-    expect(ledger.observationsFor([{ path: "/api/items/42", authenticated: true }])).toEqual([
+    expect(ledger.observationsFor([{ path: "/api/items/42", actorId: "ordinary-user" }])).toEqual([
       {
         status: 200,
         method: "GET",
         path: "/api/items/42",
-        authenticated: true,
+        actorId: "ordinary-user",
         body: { viewer: "alice", owner: "bob", secret: "canary" },
         truncated: false,
       },
     ]);
     expect(
-      ledger.observationsFor([{ path: "/api/items/99", authenticated: true }]),
+      ledger.observationsFor([{ path: "/api/items/99", actorId: "ordinary-user" }]),
     ).toBeUndefined();
   });
 
@@ -165,7 +168,7 @@ describe("campaign ledger", () => {
 
   it("allows a failed request to be retried", async () => {
     const ledger = new CampaignLedger();
-    const request = { agentId: "explorer-1", path: "/api/flaky", authenticated: false };
+    const request = { agentId: "explorer-1", path: "/api/flaky", actorId: "anonymous" };
 
     await expect(
       ledger.request(request, async () => {

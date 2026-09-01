@@ -19,10 +19,10 @@ const firstFinding = {
   impact: "An attacker can track another user's vehicle.",
   mitigation: "Check vehicle ownership before returning its location.",
   reproduction: [
-    { path: "/community/api/v2/community/posts/recent", authenticated: true },
+    { path: "/community/api/v2/community/posts/recent", actorId: "ordinary-user" },
     {
       path: "/identity/api/v2/vehicle/4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5/location",
-      authenticated: true,
+      actorId: "ordinary-user",
     },
   ],
   proof: {
@@ -123,7 +123,7 @@ describe("campaign state", () => {
         agentId: "explorer-1",
         method: "PATCH",
         path: "/api/items/42",
-        authenticated: true,
+        actorId: "ordinary-user",
         status: 200,
       },
     });
@@ -204,7 +204,7 @@ describe("campaign state", () => {
       request: {
         agentId: "explorer-1",
         path: "/api/items/42",
-        authenticated: true,
+        actorId: "ordinary-user",
         status: 200,
       },
     });
@@ -213,7 +213,7 @@ describe("campaign state", () => {
       {
         agentId: "explorer-1",
         path: "/api/items/42",
-        authenticated: true,
+        actorId: "ordinary-user",
         status: 200,
       },
     ]);

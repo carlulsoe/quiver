@@ -17,7 +17,7 @@ function finding(overrides: Partial<Finding> = {}): Finding {
     impact: "Internal details are disclosed.",
     mitigation: "Require authorization.",
     impactLevel: "observation",
-    reproduction: [{ path: "/status", authenticated: false }],
+    reproduction: [{ path: "/status", actorId: "anonymous" }],
     proof: { type: "unauthenticated-success", requestIndex: 0, evidencePointers: ["/build"] },
     ...overrides,
   };
@@ -32,7 +32,7 @@ describe("impact demonstration safety", () => {
     const active = finding({
       method: "POST",
       impactLevel: "state-change",
-      reproduction: [{ path: "/status", method: "POST", authenticated: false }],
+      reproduction: [{ path: "/status", method: "POST", actorId: "anonymous" }],
     });
     expect(requiredImpactLevel(active)).toBe("state-change");
     expect(impactSafetyChecks(active, "observation").some(({ passed }) => !passed)).toBe(true);
@@ -42,7 +42,7 @@ describe("impact demonstration safety", () => {
   it("always rejects DELETE and understated levels", () => {
     const findingWithDelete = finding({
       method: "DELETE",
-      reproduction: [{ path: "/status", method: "DELETE", authenticated: false }],
+      reproduction: [{ path: "/status", method: "DELETE", actorId: "anonymous" }],
     });
     const checks = impactSafetyChecks(findingWithDelete, "state-change");
     expect(checks.filter(({ passed }) => !passed).map(({ description }) => description)).toEqual([

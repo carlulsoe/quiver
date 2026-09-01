@@ -33,7 +33,10 @@ function observation(path: string, body: unknown, method = "GET"): ValidationObs
     path,
     method: method as "GET",
     status: 200,
-    authenticated: false,
+    actorId:
+      path.startsWith("/settings") || path.startsWith("/comments") || path.startsWith("/preview")
+        ? "ordinary-user"
+        : "anonymous",
     body,
     truncated: false,
   };
@@ -54,7 +57,7 @@ describe("target-owned proof policies", () => {
       "sensitive-data-exposure",
       "/files/report",
       "GET",
-      [{ path: "/files/report", authenticated: false }],
+      [{ path: "/files/report", actorId: "anonymous" }],
       {
         type: "canary-retrieval",
         policyId: "report-canary",
@@ -92,7 +95,7 @@ describe("target-owned proof policies", () => {
         {
           path: "/echo",
           method: "POST",
-          authenticated: false,
+          actorId: "anonymous",
           body: '{"value":"QUIVER-\\u0043ANARY-A1"}',
         },
       ],
@@ -118,9 +121,14 @@ describe("target-owned proof policies", () => {
       "/settings/email",
       "POST",
       [
-        { path: "/settings", authenticated: true },
-        { path: "/settings/email", method: "POST", body: '{"public":true}', authenticated: true },
-        { path: "/settings", authenticated: true },
+        { path: "/settings", actorId: "ordinary-user" },
+        {
+          path: "/settings/email",
+          method: "POST",
+          body: '{"public":true}',
+          actorId: "ordinary-user",
+        },
+        { path: "/settings", actorId: "ordinary-user" },
       ],
       {
         type: "state-transition",
@@ -194,9 +202,9 @@ describe("target-owned proof policies", () => {
         {
           ...finding,
           reproduction: [
-            { path: "/settings?account=a", authenticated: true },
+            { path: "/settings?account=a", actorId: "ordinary-user" },
             finding.reproduction[1]!,
-            { path: "/settings?account=b", authenticated: true },
+            { path: "/settings?account=b", actorId: "ordinary-user" },
           ],
         },
         [
@@ -214,7 +222,7 @@ describe("target-owned proof policies", () => {
           ...finding,
           reproduction: [
             finding.reproduction[0]!,
-            { path: "/settings/other", method: "POST", authenticated: true },
+            { path: "/settings/other", method: "POST", actorId: "ordinary-user" },
             finding.reproduction[1]!,
             finding.reproduction[2]!,
           ],
@@ -251,7 +259,7 @@ describe("target-owned proof policies", () => {
           path: "/comments",
           method: "POST",
           body: JSON.stringify({ payload }),
-          authenticated: true,
+          actorId: "ordinary-user",
         },
       ],
       {
@@ -263,7 +271,7 @@ describe("target-owned proof policies", () => {
         pagePath: "/comments/latest",
         kind: "dialog",
         challenge: { location: "json-body", parameter: "payload", template: payloadTemplate },
-        pageAuthenticated: true,
+        pageActorId: "ordinary-user",
         collectorRequestBudget: 3,
       },
     );
@@ -277,7 +285,7 @@ describe("target-owned proof policies", () => {
       pagePath: "/comments/latest",
       payloadTemplate,
       challenge: { location: "json-body", parameter: "payload", template: payloadTemplate },
-      pageAuthenticated: true,
+      pageActorId: "ordinary-user",
       requestBudget: 3,
     };
     expect(
@@ -314,7 +322,7 @@ describe("target-owned proof policies", () => {
             pagePath: "/comments/latest",
             kind: "dialog",
             challenge: { location: "json-body", parameter: "payload", template: "{{challenge}}" },
-            pageAuthenticated: true,
+            pageActorId: "ordinary-user",
             collectorRequestBudget: 3,
           },
         },
@@ -342,7 +350,7 @@ describe("target-owned proof policies", () => {
           path: "/preview",
           method: "POST",
           body: JSON.stringify({ url: callbackUrl }),
-          authenticated: true,
+          actorId: "ordinary-user",
         },
       ],
       {

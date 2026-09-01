@@ -24,7 +24,7 @@ describe("campaign report", () => {
         rationale: "Cross-owner coordinates returned.",
         impact: "Another user's vehicle can be tracked.",
         mitigation: "Check vehicle ownership before returning location data.",
-        reproduction: [{ path: "/vehicles/other/location", authenticated: true }],
+        reproduction: [{ path: "/vehicles/other/location", actorId: "ordinary-user" }],
         proof: {
           type: "cross-principal-access",
           actor: { requestIndex: 0, jsonPointer: "/viewer" },
@@ -114,10 +114,10 @@ describe("campaign report", () => {
         impact: "Another user's vehicle can be tracked.",
         mitigation: "Check vehicle ownership before returning location data.",
         reproduction: [
-          { path: "/vehicles/mine", authenticated: true },
+          { path: "/vehicles/mine", actorId: "ordinary-user" },
           {
             path: "/vehicles/vehicle-2/location?token=url-secret&view=full",
-            authenticated: true,
+            actorId: "ordinary-user",
             headers: {
               accept: "application/json",
               authorization: "Bearer report-secret",
@@ -164,14 +164,14 @@ describe("campaign report", () => {
           {
             status: 200,
             path: "/vehicles/mine",
-            authenticated: true,
+            actorId: "ordinary-user",
             body: { email: "me@example.com" },
             truncated: false,
           },
           {
             status: 200,
             path: "/vehicles/vehicle-2/location",
-            authenticated: true,
+            actorId: "ordinary-user",
             body: { email: "owner@example.com", latitude: "12.34" },
             truncated: false,
           },

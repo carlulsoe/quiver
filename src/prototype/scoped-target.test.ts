@@ -75,7 +75,7 @@ describe("scoped target", () => {
         path: "/proof",
         marker: "QUIVER-BROWSER-1",
         kind: "dialog",
-        authenticated: false,
+        actorId: "anonymous",
         requestBudget: 1,
       }),
     ).rejects.toThrow("bounded impact exceeds");
@@ -132,7 +132,7 @@ describe("scoped target", () => {
       path: "/proof",
       marker: "QUIVER-BROWSER-1",
       kind: "dialog",
-      authenticated: false,
+      actorId: "anonymous",
       requestBudget: 2,
     });
 
@@ -157,10 +157,10 @@ describe("scoped target", () => {
         path: "/proof",
         marker: "QUIVER-BROWSER-1",
         kind: "dialog",
-        authenticated: true,
+        actorId: "ordinary-user",
         requestBudget: 1,
       }),
-    ).rejects.toThrow("no authenticated browser session");
+    ).rejects.toThrow("no browser session for actor ordinary-user");
     expect(browserCollections).toBe(0);
     expect(target.remainingRequests).toBe(1);
   });
@@ -356,26 +356,26 @@ describe("scoped target", () => {
       requestBudget: 1,
       transport: async () => response("ok", "text/plain"),
     });
-    target.setAuthentication({ authorization: "Bearer profile-token" });
+    target.setSession("ordinary-user", { headers: { authorization: "Bearer profile-token" } });
 
     await expect(
       target.request({
         path: "/api/me",
-        authenticated: true,
+        actorId: "ordinary-user",
         headers: { authorization: "Bearer other-token" },
       }),
-    ).rejects.toThrow("may not override the target profile's credential headers");
+    ).rejects.toThrow("may not override the session adapter's credential headers");
     await expect(
       target.request({
         path: "/api/me",
-        authenticated: true,
+        actorId: "ordinary-user",
         headers: { cookie: "session=other" },
       }),
-    ).rejects.toThrow("may not override the target profile's credential headers");
+    ).rejects.toThrow("may not override the session adapter's credential headers");
     await expect(
       target.request({
         path: "/api/me",
-        authenticated: true,
+        actorId: "ordinary-user",
         headers: { "idempotency-key": "request-1", prefer: "return=minimal" },
       }),
     ).resolves.toMatchObject({ status: 200 });

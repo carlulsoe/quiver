@@ -13,6 +13,7 @@ import { browserPolicyPath, type ProofPolicy } from "./target-profile.ts";
 import { impactSafetyChecks } from "./impact.ts";
 import type { ImpactLevel } from "./state.ts";
 import { endpointMatchesRequest } from "./endpoint.ts";
+import { actorIds, type ActorId } from "./sessions.ts";
 
 /** Code-owned compatibility is the first vulnerability-specific validation boundary. */
 export const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["type"][]> = {
@@ -75,6 +76,12 @@ export function evaluateProof(
       "affected operation matches a reproduction request",
     ),
     check(!observations.some(({ truncated }) => truncated), "proof responses were not truncated"),
+    check(
+      observations.every(
+        (observation, index) => observation.actorId === finding.reproduction[index]?.actorId,
+      ),
+      "every replay observation used its declared actor session",
+    ),
   ];
   if (context.maximumImpactLevel) {
     checks.push(...impactSafetyChecks(finding, context.maximumImpactLevel));
@@ -87,8 +94,8 @@ export function evaluateProof(
       const access = observations[finding.proof.accessRequestIndex];
       checks.push(
         check(
-          finding.reproduction[finding.proof.actor.requestIndex]?.authenticated === true,
-          "actor identity was established in an authenticated request",
+          finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
+          "actor identity was established in a named actor session",
         ),
         check(actor.found && isScalar(actor.value), "actor identity exists", actor.value),
         check(owner.found && isScalar(owner.value), "resource-owner identity exists", owner.value),
@@ -105,8 +112,10 @@ export function evaluateProof(
           access?.status,
         ),
         check(
-          finding.reproduction[finding.proof.accessRequestIndex]?.authenticated === true,
-          "cross-principal access used the authenticated actor session",
+          finding.reproduction[finding.proof.accessRequestIndex]?.actorId ===
+            finding.reproduction[finding.proof.actor.requestIndex]?.actorId &&
+            finding.reproduction[finding.proof.accessRequestIndex]?.actorId !== actorIds.anonymous,
+          "cross-principal access used the identified actor session",
         ),
         ...pointerChecks(access, finding.proof.evidencePointers),
       );
@@ -118,7 +127,7 @@ export function evaluateProof(
       checks.push(
         check(
           request !== undefined &&
-            !request.authenticated &&
+            request.actorId === actorIds.anonymous &&
             ["GET", "HEAD"].includes(request.method ?? "GET") &&
             request.body === undefined &&
             !hasPotentialAuthenticationHeaders(request.headers),
@@ -139,8 +148,8 @@ export function evaluateProof(
       const observation = observations[finding.proof.responseRequestIndex];
       checks.push(
         check(
-          finding.reproduction[finding.proof.actor.requestIndex]?.authenticated === true,
-          "actor identity was established in an authenticated request",
+          finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
+          "actor identity was established in a named actor session",
         ),
         check(actor.found && isScalar(actor.value), "actor identity exists", actor.value),
         check(
@@ -161,8 +170,11 @@ export function evaluateProof(
           observation?.status,
         ),
         check(
-          finding.reproduction[finding.proof.responseRequestIndex]?.authenticated === true,
-          "cross-principal data was observed in the authenticated actor session",
+          finding.reproduction[finding.proof.responseRequestIndex]?.actorId ===
+            finding.reproduction[finding.proof.actor.requestIndex]?.actorId &&
+            finding.reproduction[finding.proof.responseRequestIndex]?.actorId !==
+              actorIds.anonymous,
+          "cross-principal data was observed in the identified actor session",
         ),
         ...pointerChecks(observation, finding.proof.evidencePointers),
       );
@@ -373,7 +385,7 @@ export function evaluateProof(
           "browser challenge uses the target-owned mutation and executable payload template",
         ),
         check(
-          policy !== undefined && proof.pageAuthenticated === policy.pageAuthenticated,
+          policy !== undefined && proof.pageActorId === policy.pageActorId,
           "browser page authentication matches the target policy",
         ),
         check(
@@ -619,7 +631,7 @@ function challengePathMatches(
 ): boolean {
   return (
     challenge.location === "query" &&
-    challengeRequestMatches({ path, authenticated: false }, challenge, value)
+    challengeRequestMatches({ path, actorId: "anonymous" }, challenge, value)
   );
 }
 
@@ -685,7 +697,7 @@ type ProofRequest = {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
-  authenticated: boolean;
+  actorId: ActorId;
 };
 
 function requestsShareMutationShape(
@@ -702,7 +714,7 @@ function requestsShareMutationShape(
     hasUniqueHeaderNames(left.headers) &&
     hasUniqueHeaderNames(right.headers) &&
     (left.method ?? "GET") === (right.method ?? "GET") &&
-    left.authenticated === right.authenticated &&
+    left.actorId === right.actorId &&
     canonicalJson(normalizeHeaders(left.headers)) === canonicalJson(normalizeHeaders(right.headers))
   );
 }

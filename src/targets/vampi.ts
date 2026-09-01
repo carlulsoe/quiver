@@ -1,12 +1,12 @@
 import type { ScopedTarget } from "../prototype/scoped-target.ts";
 import type { TargetProfile } from "../prototype/target-profile.ts";
+import { actorIds } from "../prototype/sessions.ts";
 
 interface LoginResponse {
   auth_token?: unknown;
 }
 
 async function authenticate(target: ScopedTarget): Promise<{ authContext: string }> {
-  if (target.isAuthenticated) return { authContext: "name1" };
   const result = await target.setupRequest({
     path: "/users/v1/login",
     method: "POST",
@@ -17,7 +17,9 @@ async function authenticate(target: ScopedTarget): Promise<{ authContext: string
   if (result.status !== 200 || typeof body.auth_token !== "string") {
     throw new Error(`VAmPI fixture-user login failed with status ${result.status}`);
   }
-  target.setAuthentication({ authorization: `Bearer ${body.auth_token}` });
+  target.setSession(actorIds.ordinary, {
+    headers: { authorization: `Bearer ${body.auth_token}` },
+  });
   return { authContext: "name1" };
 }
 
@@ -26,6 +28,7 @@ const shared = {
   allowedRequests: [{ method: "POST" as const, path: "/users/v1/login" }],
   deniedRequests: [{ method: "GET" as const, path: "/createdb" }],
   authenticate,
+  actorIds: [actorIds.ordinary],
   reproductionAuthentication: {
     description:
       "Log in as VAmPI's name1 fixture user. The target launcher initializes the database.",

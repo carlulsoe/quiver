@@ -24,7 +24,7 @@ describe("additional target profiles", () => {
     await expect(brokenCrystalsProfile.authenticate!(target)).resolves.toEqual({
       authContext: "ordinary-test-user",
     });
-    await target.request({ path: "/api/users/me", authenticated: true });
+    await target.request({ path: "/api/users/me", actorId: "ordinary-user" });
     expect(transport.mock.calls[1]![1]).toMatchObject({
       headers: { authorization: "fixture-jwt" },
     });

@@ -45,13 +45,13 @@ export async function replayFinding(
       method: request.method,
       headers: request.headers,
       body: request.body,
-      authenticated: request.authenticated,
+      actorId: request.actorId,
     });
     observations.push({
       method: observation.method ?? request.method ?? "GET",
       status: observation.status,
       path: observation.path,
-      authenticated: request.authenticated,
+      actorId: request.actorId,
       body: observation.body,
       truncated: observation.truncated ?? false,
       durationMs: observation.durationMs,
@@ -64,7 +64,7 @@ export async function replayFinding(
       marker: replayedFinding.proof.marker,
       path: replayedFinding.proof.pagePath,
       kind: replayedFinding.proof.kind,
-      authenticated: replayedFinding.proof.pageAuthenticated,
+      actorId: replayedFinding.proof.pageActorId,
       requestBudget: replayedFinding.proof.collectorRequestBudget,
     });
     if (evidence) artifactStore.recordBrowserEffect(evidence);
@@ -109,7 +109,7 @@ function prepareFreshChallenge(
       marker: probe.marker,
       challenge: policy.challenge,
       pagePath: browserPolicyPath(policy, probe.marker),
-      pageAuthenticated: policy.pageAuthenticated,
+      pageActorId: policy.pageActorId,
       pageChallenge: policy.pageChallenge,
       collectorRequestBudget: policy.requestBudget,
     });

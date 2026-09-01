@@ -1,6 +1,7 @@
 import { dirname, extname, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import type { CampaignRun, RunEvent } from "./runner.ts";
+import { actorIds } from "./sessions.ts";
 import { isCredentialCapableHeader } from "./scoped-target.ts";
 import {
   campaignOperationCoverage,
@@ -234,9 +235,9 @@ export function renderMarkdownReport(report: RunReport): string {
     report.reproductionAuthentication &&
     report.findings.some(
       (finding) =>
-        finding.reproduction.some((request) => request.authenticated) ||
+        finding.reproduction.some((request) => request.actorId !== actorIds.anonymous) ||
         (finding.validation?.replayedProof?.type === "browser-visible-effect" &&
-          finding.validation.replayedProof.pageAuthenticated),
+          finding.validation.replayedProof.pageActorId !== actorIds.anonymous),
     )
   ) {
     lines.push(
@@ -315,7 +316,7 @@ export function renderMarkdownReport(report: RunReport): string {
         );
         finding.validation.observations.forEach((observation, index) => {
           lines.push(
-            `${index + 1}. \`${observation.authenticated ? "authenticated" : "anonymous"} ${observation.method ?? "GET"} ${observation.path}\` → **${observation.status}**${observation.truncated ? " (truncated)" : ""}`,
+            `${index + 1}. \`${observation.actorId} ${observation.method ?? "GET"} ${observation.path}\` → **${observation.status}**${observation.truncated ? " (truncated)" : ""}`,
             "",
             "```json",
             JSON.stringify(observation.body, null, 2),
@@ -327,14 +328,18 @@ export function renderMarkdownReport(report: RunReport): string {
       lines.push("Reproduction:", "", "```sh");
       for (const request of finding.validation?.reproduction ?? finding.reproduction) {
         const url = new URL(request.path, report.target).href;
-        const auth = request.authenticated ? " --header 'Authorization: Bearer $QUIVER_TOKEN'" : "";
+        const auth =
+          request.actorId !== actorIds.anonymous
+            ? " --header 'Authorization: Bearer $QUIVER_TOKEN'"
+            : "";
         const method = request.method ?? "GET";
         const headers = Object.entries(request.headers ?? {})
           .flatMap(([name, value]) => {
             if (!isCredentialCapableHeader(name)) {
               return [` --header ${shellQuote(`${name}: ${value}`)}`];
             }
-            if (request.authenticated && name.toLowerCase() === "authorization") return [];
+            if (request.actorId !== actorIds.anonymous && name.toLowerCase() === "authorization")
+              return [];
             const variable = `QUIVER_HEADER_${name
               .toUpperCase()
               .replaceAll(/[^A-Z0-9]+/g, "_")
@@ -358,7 +363,7 @@ export function renderMarkdownReport(report: RunReport): string {
         lines.push(
           "Artifact collection:",
           "",
-          `1. Open \`${new URL(replayedProof.pagePath, report.target).href}\` in a constrained Chromium session${replayedProof.pageAuthenticated ? " using the authenticated reproduction session" : " without authentication"}.`,
+          `1. Open \`${new URL(replayedProof.pagePath, report.target).href}\` in a constrained Chromium session${replayedProof.pageActorId === actorIds.anonymous ? " without authentication" : ` as ${replayedProof.pageActorId}`}.`,
           `2. Block cross-origin requests, WebSockets, and popups; observe a dialog whose complete message is \`${replayedProof.marker}\`.`,
           "",
         );

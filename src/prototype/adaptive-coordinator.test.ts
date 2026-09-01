@@ -14,7 +14,7 @@ describe("adaptive coordinator", () => {
     expect(second.tasks[0]!.route).not.toBe(first.tasks[0]!.route);
     expect(
       [...first.tasks, ...second.tasks].every(
-        (task) => task.source === "uncovered-surface" && task.authenticated,
+        (task) => task.source === "uncovered-surface" && task.actorId === "ordinary-user",
       ),
     ).toBe(true);
   });
@@ -25,7 +25,7 @@ describe("adaptive coordinator", () => {
     coordinator.observeRequest({
       agentId: "explorer-1",
       path: "/api/users/alice",
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     });
 
@@ -34,7 +34,7 @@ describe("adaptive coordinator", () => {
       tasks: [
         {
           route: "/api/users/{username}",
-          authenticated: false,
+          actorId: "anonymous",
           source: "incoming-evidence",
         },
       ],
@@ -47,16 +47,16 @@ describe("adaptive coordinator", () => {
     coordinator.observeRequest({
       agentId: "explorer-1",
       path: "/api/users/me",
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     });
 
     const assignment = coordinator.assign("explorer-2", 2);
     expect(assignment.tasks).toContainEqual(
-      expect.objectContaining({ route: "/api/users/me", authenticated: false }),
+      expect.objectContaining({ route: "/api/users/me", actorId: "anonymous" }),
     );
     expect(assignment.tasks).toContainEqual(
-      expect.objectContaining({ route: "/api/users/{username}", authenticated: true }),
+      expect.objectContaining({ route: "/api/users/{username}", actorId: "ordinary-user" }),
     );
   });
 
@@ -67,13 +67,13 @@ describe("adaptive coordinator", () => {
     coordinator.observeRequest({
       agentId: "explorer-1",
       path: "/api/me",
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     });
     coordinator.observeRequest({
       agentId: "explorer-2",
       path: "/api/me",
-      authenticated: false,
+      actorId: "anonymous",
       status: 401,
     });
 
@@ -91,16 +91,16 @@ describe("adaptive coordinator", () => {
   });
 
   it("assigns only anonymous work when the target has no authentication", () => {
-    const coordinator = new AdaptiveCoordinator({ supportsAuthentication: false });
+    const coordinator = new AdaptiveCoordinator({ actorIds: ["anonymous"] });
     coordinator.discoverRoutes(["/public/catalog"]);
 
     const [task] = coordinator.assign("explorer-1").tasks;
-    expect(task).toMatchObject({ route: "/public/catalog", authenticated: false });
+    expect(task).toMatchObject({ route: "/public/catalog", actorId: "anonymous" });
 
     coordinator.observeRequest({
       agentId: "explorer-1",
       path: "/public/catalog",
-      authenticated: false,
+      actorId: "anonymous",
       status: 200,
     });
     expect(coordinator.assign("explorer-1").tasks).toEqual([]);
@@ -121,14 +121,14 @@ describe("adaptive coordinator", () => {
     coordinator.observeRequest({
       agentId: "explorer-1",
       path: "/api/items?owner=me",
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     });
 
     expect(coordinator.assign("explorer-2").tasks).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ route: "/api/items?owner=me", authenticated: false }),
-        expect.objectContaining({ route: "/api/items?owner=all", authenticated: true }),
+        expect.objectContaining({ route: "/api/items?owner=me", actorId: "anonymous" }),
+        expect.objectContaining({ route: "/api/items?owner=all", actorId: "ordinary-user" }),
       ]),
     );
   });
@@ -143,14 +143,14 @@ describe("adaptive coordinator", () => {
       agentId: "explorer-1",
       method: "PATCH",
       path: "/api/items/42",
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     });
 
     expect(coordinator.assign("explorer-2").tasks).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ method: "GET", authenticated: true }),
-        expect.objectContaining({ method: "PATCH", authenticated: false }),
+        expect.objectContaining({ method: "GET", actorId: "ordinary-user" }),
+        expect.objectContaining({ method: "PATCH", actorId: "anonymous" }),
       ]),
     );
   });
@@ -161,12 +161,12 @@ describe("adaptive coordinator", () => {
     coordinator.observeRequest({
       agentId: "explorer-1",
       path: "/api/items?owner=alice",
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     });
 
     expect(coordinator.assign("explorer-2").tasks).toEqual([
-      expect.objectContaining({ route: "/api/items?owner={username}", authenticated: false }),
+      expect.objectContaining({ route: "/api/items?owner={username}", actorId: "anonymous" }),
     ]);
   });
 
@@ -182,7 +182,7 @@ describe("adaptive coordinator", () => {
       agentId: "explorer-1",
       method: "GET",
       path: assignment.tasks[0]!.route,
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     });
     coordinator.debrief("explorer-1", {
@@ -272,7 +272,7 @@ describe("adaptive coordinator", () => {
       rationale: "Anonymous access returned the profile.",
       impact: "Private profile data is public.",
       mitigation: "Require authentication.",
-      reproduction: [{ path: "/api/profile", authenticated: false }],
+      reproduction: [{ path: "/api/profile", actorId: "anonymous" }],
       proof: {
         type: "unauthenticated-success",
         requestIndex: 0,

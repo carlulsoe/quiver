@@ -16,8 +16,8 @@ function finding(overrides: Partial<Finding> = {}): Finding {
     impact: "Order data is disclosed.",
     mitigation: "Authorize each lookup.",
     reproduction: [
-      { path: "/me", authenticated: true },
-      { path: "/orders/7", authenticated: true },
+      { path: "/me", actorId: "ordinary-user" },
+      { path: "/orders/7", actorId: "ordinary-user" },
     ],
     proof: {
       type: "cross-principal-access",
@@ -35,7 +35,7 @@ function observation(
   body: unknown,
   overrides: Partial<ValidationObservation> = {},
 ): ValidationObservation {
-  return { status: 200, path, authenticated: true, body, truncated: false, ...overrides };
+  return { status: 200, path, actorId: "ordinary-user", body, truncated: false, ...overrides };
 }
 
 describe("deterministic finding proof", () => {
@@ -81,7 +81,7 @@ describe("deterministic finding proof", () => {
   it("confirms anonymous success only for an actually anonymous request with declared fields", () => {
     const anonymousFinding = finding({
       category: "security-misconfiguration",
-      reproduction: [{ path: "/orders/7", authenticated: false }],
+      reproduction: [{ path: "/orders/7", actorId: "anonymous" }],
       proof: {
         type: "unauthenticated-success",
         requestIndex: 0,
@@ -94,13 +94,13 @@ describe("deterministic finding proof", () => {
         observation(
           "/orders/7",
           { order: { id: 7 }, payment: { card_number: "XXXX1234" } },
-          { authenticated: false },
+          { actorId: "anonymous" },
         ),
       ]).passed,
     ).toBe(true);
     expect(
       evaluateProof(anonymousFinding, [
-        observation("/orders/7", { order: { id: 7 } }, { authenticated: false }),
+        observation("/orders/7", { order: { id: 7 } }, { actorId: "anonymous" }),
       ]).passed,
     ).toBe(false);
     expect(
@@ -108,14 +108,14 @@ describe("deterministic finding proof", () => {
         {
           ...anonymousFinding,
           reproduction: [
-            { path: "/orders/7", authenticated: false, headers: { "x-api-key": "secret" } },
+            { path: "/orders/7", actorId: "anonymous", headers: { "x-api-key": "secret" } },
           ],
         },
         [
           observation(
             "/orders/7",
             { order: { id: 7 }, payment: { card_number: "XXXX1234" } },
-            { authenticated: false },
+            { actorId: "anonymous" },
           ),
         ],
       ).passed,
@@ -129,7 +129,7 @@ describe("deterministic finding proof", () => {
             {
               path: "/orders/7",
               method: "POST",
-              authenticated: false,
+              actorId: "anonymous",
               headers: { "content-type": "application/json" },
               body: '{"apiKey":"secret"}',
             },
@@ -139,7 +139,7 @@ describe("deterministic finding proof", () => {
           observation(
             "/orders/7",
             { order: { id: 7 }, payment: { card_number: "XXXX1234" } },
-            { authenticated: false },
+            { actorId: "anonymous" },
           ),
         ],
       ).passed,
@@ -151,8 +151,8 @@ describe("deterministic finding proof", () => {
       category: "excessive-data-exposure",
       endpoint: "/feed",
       reproduction: [
-        { path: "/me", authenticated: true },
-        { path: "/feed", authenticated: true },
+        { path: "/me", actorId: "ordinary-user" },
+        { path: "/feed", actorId: "ordinary-user" },
       ],
       proof: {
         type: "cross-principal-data-exposure",
@@ -221,8 +221,8 @@ describe("deterministic finding proof", () => {
       category: "sql-injection",
       endpoint: "/search",
       reproduction: [
-        { path: "/search?q=control", authenticated: false },
-        { path: "/search?q=%27", authenticated: false },
+        { path: "/search?q=control", actorId: "anonymous" },
+        { path: "/search?q=%27", actorId: "anonymous" },
       ],
       proof: {
         type: "response-differential",
@@ -242,18 +242,18 @@ describe("deterministic finding proof", () => {
 
     expect(
       evaluateProof(differential, [
-        observation("/search?q=control", { error: { code: "none" } }, { authenticated: false }),
+        observation("/search?q=control", { error: { code: "none" } }, { actorId: "anonymous" }),
         observation(
           "/search?q=%27",
           { error: { code: "You have an error in your SQL syntax" } },
-          { authenticated: false },
+          { actorId: "anonymous" },
         ),
       ]).passed,
     ).toBe(false);
     expect(
       evaluateProof(differential, [
-        observation("/search?q=control", { error: { code: "none" } }, { authenticated: false }),
-        observation("/search?q=%27", { error: {} }, { authenticated: false }),
+        observation("/search?q=control", { error: { code: "none" } }, { actorId: "anonymous" }),
+        observation("/search?q=%27", { error: {} }, { actorId: "anonymous" }),
       ]).passed,
     ).toBe(false);
     expect(
@@ -261,8 +261,8 @@ describe("deterministic finding proof", () => {
         {
           ...differential,
           reproduction: [
-            { path: "/search?q=control&mode=fast", authenticated: false },
-            { path: "/search?q=%27&mode=slow", authenticated: false },
+            { path: "/search?q=control&mode=fast", actorId: "anonymous" },
+            { path: "/search?q=%27&mode=slow", actorId: "anonymous" },
           ],
         },
         [
@@ -291,8 +291,8 @@ describe("deterministic finding proof", () => {
             },
           },
           reproduction: [
-            { path: "/search?q=control", authenticated: false },
-            { path: "/search?q=%27+SQLSTATE+42000", authenticated: false },
+            { path: "/search?q=control", actorId: "anonymous" },
+            { path: "/search?q=%27+SQLSTATE+42000", actorId: "anonymous" },
           ],
         },
         [
@@ -331,7 +331,7 @@ describe("deterministic finding proof", () => {
         {
           ...differential,
           endpoint: "/victim",
-          reproduction: [...differential.reproduction, { path: "/victim", authenticated: false }],
+          reproduction: [...differential.reproduction, { path: "/victim", actorId: "anonymous" }],
         },
         [
           observation("/search?q=control", { error: { code: "none" } }),
@@ -362,7 +362,7 @@ describe("deterministic finding proof", () => {
           },
           reproduction: [
             differential.reproduction[0]!,
-            { path: "/search/reset", method: "POST", authenticated: false },
+            { path: "/search/reset", method: "POST", actorId: "anonymous" },
             differential.reproduction[1]!,
           ],
         },
@@ -397,8 +397,8 @@ describe("deterministic finding proof", () => {
         {
           ...differential,
           reproduction: [
-            { path: "/search?q=control&message=SQLSTATE%2042000", authenticated: false },
-            { path: "/search?q=%27&message=SQLSTATE%2042000", authenticated: false },
+            { path: "/search?q=control&message=SQLSTATE%2042000", actorId: "anonymous" },
+            { path: "/search?q=%27&message=SQLSTATE%2042000", actorId: "anonymous" },
           ],
         },
         [
@@ -420,13 +420,13 @@ describe("deterministic finding proof", () => {
             {
               path: "/search",
               method: "POST",
-              authenticated: false,
+              actorId: "anonymous",
               body: '{"q":"control"}',
             },
             {
               path: "/search",
               method: "POST",
-              authenticated: false,
+              actorId: "anonymous",
               body: '{"q":"\' \\u0053QLSTATE 42000"}',
             },
           ],
@@ -459,13 +459,13 @@ describe("deterministic finding proof", () => {
             {
               path: "/search",
               method: "POST",
-              authenticated: false,
+              actorId: "anonymous",
               body: '{"q":"control"}',
             },
             {
               path: "/search",
               method: "POST",
-              authenticated: false,
+              actorId: "anonymous",
               body: '{"q":"%53QLSTATE%2042000\'"}',
             },
           ],
@@ -498,12 +498,12 @@ describe("deterministic finding proof", () => {
       reproduction: Array.from({ length: 3 }, (_, index) => [
         {
           path: "/search?q=control",
-          authenticated: false,
+          actorId: "anonymous",
           sampleId: `control-${index + 1}`,
         },
         {
           path: "/search?q=%27%3BSELECT+pg_sleep%281%29--",
-          authenticated: false,
+          actorId: "anonymous",
           sampleId: `probe-${index + 1}`,
         },
       ]).flat(),
@@ -522,7 +522,7 @@ describe("deterministic finding proof", () => {
     });
     const timings = [95, 760, 110, 720, 100, 740];
     const observations = timing.reproduction.map((request, index) =>
-      observation(request.path, { ok: true }, { authenticated: false, durationMs: timings[index] }),
+      observation(request.path, { ok: true }, { actorId: "anonymous", durationMs: timings[index] }),
     );
 
     const supportingTiming = evaluateProof(timing, observations);
@@ -630,7 +630,7 @@ describe("deterministic finding proof", () => {
     const publicEndpoint = finding({
       category: "authentication-bypass",
       endpoint: "/health",
-      reproduction: [{ path: "/health", authenticated: false }],
+      reproduction: [{ path: "/health", actorId: "anonymous" }],
       proof: {
         type: "unauthenticated-success",
         requestIndex: 0,
@@ -640,12 +640,12 @@ describe("deterministic finding proof", () => {
 
     expect(
       evaluateProof(publicEndpoint, [
-        observation("/health", { ok: true }, { authenticated: false }),
+        observation("/health", { ok: true }, { actorId: "anonymous" }),
       ]).passed,
     ).toBe(false);
     expect(
       evaluateProof({ ...publicEndpoint, category: "other" }, [
-        observation("/health", { ok: true }, { authenticated: false }),
+        observation("/health", { ok: true }, { actorId: "anonymous" }),
       ]).passed,
     ).toBe(false);
   });

@@ -16,7 +16,7 @@ describe("live crAPI target profile", () => {
       authContext: "ordinary-test-user",
     });
     await expect(
-      target.request({ path: "/identity/api/v2/user/dashboard", authenticated: true }),
+      target.request({ path: "/identity/api/v2/user/dashboard", actorId: "ordinary-user" }),
     ).resolves.toMatchObject({ status: 200 });
   });
 });

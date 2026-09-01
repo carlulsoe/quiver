@@ -1,5 +1,6 @@
 import type { HttpObservation } from "./scoped-target.ts";
 import type { RestMethod } from "./scoped-target.ts";
+import type { ActorId } from "./sessions.ts";
 import {
   fingerprintExploitChain,
   fingerprintFinding,
@@ -19,7 +20,7 @@ export interface LedgerRequest {
   method?: RestMethod;
   headers?: Record<string, string>;
   body?: string;
-  authenticated: boolean;
+  actorId: ActorId;
   sampleId?: string;
 }
 
@@ -84,7 +85,7 @@ export class CampaignLedger {
           agentId: request.agentId,
           method: observation.method ?? request.method ?? "GET",
           path: observation.path,
-          authenticated: request.authenticated,
+          actorId: request.actorId,
           status: observation.status,
         };
         entry.tested = tested;
@@ -159,7 +160,7 @@ export class CampaignLedger {
         method: observation.method ?? request.method ?? "GET",
         status: observation.status,
         path: observation.path,
-        authenticated: request.authenticated,
+        actorId: request.actorId,
         body: observation.body,
         truncated: observation.truncated ?? false,
         durationMs: observation.durationMs,
@@ -190,10 +191,7 @@ export class CampaignLedger {
 }
 
 function requestKey(
-  request: Pick<
-    LedgerRequest,
-    "path" | "method" | "headers" | "body" | "authenticated" | "sampleId"
-  >,
+  request: Pick<LedgerRequest, "path" | "method" | "headers" | "body" | "actorId" | "sampleId">,
 ): string {
   const url = new URL(request.path, "http://scope.invalid");
   url.searchParams.sort();
@@ -202,7 +200,7 @@ function requestKey(
     .sort(([left], [right]) => left.localeCompare(right));
   return JSON.stringify([
     request.method ?? "GET",
-    request.authenticated ? "authenticated" : "anonymous",
+    request.actorId,
     `${url.pathname}${url.search}`,
     headers,
     request.body ?? "",

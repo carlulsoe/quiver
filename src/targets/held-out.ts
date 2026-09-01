@@ -1,6 +1,7 @@
 import type { TargetProfile } from "../prototype/target-profile.ts";
 import { heldOutCanary } from "./held-out-fixture.ts";
 import { readFileSync } from "node:fs";
+import { actorIds } from "../prototype/sessions.ts";
 
 const configuredSeed = process.env.QUIVER_HELD_OUT_SEED ?? readPublishedSeed();
 const configuredCanary = configuredSeed ? heldOutCanary(configuredSeed) : undefined;
@@ -12,9 +13,12 @@ export const heldOutProfile: TargetProfile = {
     "Find the seeded read-only vulnerability while distinguishing it from authorization controls. Routes and identifiers change with each target seed. Treat returned QUIVER-CANARY values as concrete impact evidence and include them in deterministic proof pointers.",
   maximumImpactLevel: "observation",
   authenticate: async (target) => {
-    target.setAuthentication({ authorization: "Bearer quiver-showcase-user" });
+    target.setSession(actorIds.ordinary, {
+      headers: { authorization: "Bearer quiver-showcase-user" },
+    });
     return { authContext: "held-out-ordinary-user" };
   },
+  actorIds: [actorIds.ordinary],
   reproductionAuthentication: {
     description:
       "The local held-out fixture uses a fixed synthetic bearer token; it is not a real credential.",

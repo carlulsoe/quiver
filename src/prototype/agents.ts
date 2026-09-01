@@ -18,6 +18,7 @@ import {
   type ExploitChainInput,
 } from "./state.ts";
 import { browserPolicyPath, type TargetProfile } from "./target-profile.ts";
+import { actorIds } from "./sessions.ts";
 
 const categorySchema = v.picklist([
   "broken-object-authorization",
@@ -105,7 +106,7 @@ const proofSchema = v.variant("type", [
     pagePath: v.string(),
     kind: v.literal("dialog"),
     challenge: challengeMutationSchema,
-    pageAuthenticated: v.boolean(),
+    pageActorId: v.string(),
     pageChallenge: v.optional(challengeMutationSchema),
     collectorRequestBudget: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(20)),
   }),
@@ -175,7 +176,7 @@ function explorationTools(
       method: methodSchema,
       headers: v.optional(v.record(v.string(), v.string())),
       body: v.optional(v.string()),
-      auth: v.picklist(["anonymous", "authenticated"]),
+      actorId: v.picklist([actorIds.anonymous, ...(profile.actorIds ?? [])]),
       sampleId: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(80))),
     }),
     async run({ data }) {
@@ -185,7 +186,6 @@ function explorationTools(
           ? "observation"
           : "state-change";
       target.assertImpactLevel(requestedImpact);
-      const authenticated = data.auth === "authenticated";
       const { observation: result, reused } = await ledger.request(
         {
           agentId,
@@ -193,14 +193,14 @@ function explorationTools(
           method: data.method,
           headers: data.headers,
           body: data.body,
-          authenticated,
+          actorId: data.actorId,
           sampleId: data.sampleId,
         },
         () => {
           if (!coordinator.canRequest(agentId)) {
             throw new Error(`Coordinator request allocation exhausted for ${agentId}`);
           }
-          return target.request({ ...data, authenticated });
+          return target.request(data);
         },
       );
       return {
@@ -305,7 +305,7 @@ function explorationTools(
         marker: probe.marker,
         path,
         kind: policy.effect,
-        authenticated: policy.pageAuthenticated,
+        actorId: policy.pageActorId,
         requestBudget: policy.requestBudget,
       });
       if (evidence) artifacts.recordBrowserEffect(evidence);
@@ -377,7 +377,7 @@ export function createExplorerAgent(
           method: methodSchema,
           headers: v.optional(v.record(v.string(), v.string())),
           body: v.optional(v.string()),
-          authenticated: v.boolean(),
+          actorId: v.picklist([actorIds.anonymous, ...(profile.actorIds ?? [])]),
           sampleId: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(80))),
         }),
       ),

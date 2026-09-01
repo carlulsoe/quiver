@@ -95,7 +95,7 @@ export function render(state: CampaignState, action?: CampaignAction): void {
     console.log(`\n${bold}recent requests${reset}`);
     for (const request of state.testedRequests.slice(-5)) {
       console.log(
-        `  ${String(request.status).padEnd(3)} ${request.authenticated ? "auth" : "anon"} ${request.method ?? "GET"} ${request.path}`,
+        `  ${String(request.status).padEnd(3)} ${request.actorId} ${request.method ?? "GET"} ${request.path}`,
       );
     }
   }

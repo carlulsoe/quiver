@@ -38,7 +38,7 @@ describe("finding replay", () => {
         {
           path: "/comments",
           method: "POST",
-          authenticated: false,
+          actorId: "anonymous",
           body: JSON.stringify({ value: '<script>alert("old")</script>' }),
         },
       ],
@@ -55,7 +55,7 @@ describe("finding replay", () => {
           parameter: "value",
           template: '<script>alert("{{challenge}}")</script>',
         },
-        pageAuthenticated: false,
+        pageActorId: "anonymous",
         collectorRequestBudget: 2,
       },
     };
@@ -97,7 +97,7 @@ describe("finding replay", () => {
       rationale: "A synthetic marker executes in the preview route.",
       impact: "Reflected script execution is possible.",
       mitigation: "Encode output for its rendering context.",
-      reproduction: [{ path: "/app?payload=old#/preview", authenticated: false }],
+      reproduction: [{ path: "/app?payload=old#/preview", actorId: "anonymous" }],
       proof: {
         type: "browser-visible-effect",
         policyId: "preview-dialog",
@@ -107,7 +107,7 @@ describe("finding replay", () => {
         pagePath: "/app?payload=old#/admin",
         kind: "dialog",
         challenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
-        pageAuthenticated: false,
+        pageActorId: "anonymous",
         pageChallenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
         collectorRequestBudget: 1,
       },
@@ -124,7 +124,7 @@ describe("finding replay", () => {
         pagePath: "/app?payload=old#/preview",
         payloadTemplate: "{{challenge}}",
         challenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
-        pageAuthenticated: false,
+        pageActorId: "anonymous",
         pageChallenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
         requestBudget: 1,
       },
@@ -148,7 +148,7 @@ describe("finding replay", () => {
           headers: { "content-type": "application/json" },
         }),
     });
-    target.setAuthentication({ authorization: "Bearer opaque" });
+    target.setSession("ordinary-user", { headers: { authorization: "Bearer opaque" } });
     const finding: Finding = {
       fingerprint: "broken-object-authorization:GET:/items/{id}",
       agentId: "explorer-1",
@@ -162,8 +162,8 @@ describe("finding replay", () => {
       impact: "Another user's item is disclosed.",
       mitigation: "Authorize object access against the current principal.",
       reproduction: [
-        { path: "/items/mine", authenticated: true },
-        { path: "/items/other", authenticated: true },
+        { path: "/items/mine", actorId: "ordinary-user" },
+        { path: "/items/other", actorId: "ordinary-user" },
       ],
       proof: {
         type: "cross-principal-access",
@@ -182,7 +182,7 @@ describe("finding replay", () => {
           status: 200,
           method: "GET",
           path: "/items/mine",
-          authenticated: true,
+          actorId: "ordinary-user",
           body: { path: "/items/mine" },
           truncated: false,
           durationMs: expect.any(Number),
@@ -191,7 +191,7 @@ describe("finding replay", () => {
           status: 200,
           method: "GET",
           path: "/items/other",
-          authenticated: true,
+          actorId: "ordinary-user",
           body: { path: "/items/other" },
           truncated: false,
           durationMs: expect.any(Number),
@@ -231,7 +231,7 @@ describe("finding replay", () => {
         {
           path: "/preview/report",
           method: "POST",
-          authenticated: false,
+          actorId: "anonymous",
           body: JSON.stringify({ url: original.url }),
         },
       ],

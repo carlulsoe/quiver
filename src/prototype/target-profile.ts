@@ -1,5 +1,6 @@
 import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts";
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
+import type { ActorId } from "./sessions.ts";
 
 export interface ReproductionAuthentication {
   description: string;
@@ -41,7 +42,7 @@ export interface BrowserEffectProofPolicy extends ProofPolicyRule {
   pagePath: string;
   payloadTemplate: string;
   challenge: ChallengeMutation;
-  pageAuthenticated: boolean;
+  pageActorId: ActorId;
   pageChallenge?: ChallengeMutation;
   requestBudget: number;
 }
@@ -67,6 +68,8 @@ export interface TargetProfile {
   allowedRequests?: AllowedRequest[];
   deniedRequests?: DeniedRequest[];
   authenticate?: (target: ScopedTarget) => Promise<{ authContext: string }>;
+  /** Actor references made available to campaign agents. Anonymous is always available. */
+  actorIds?: ActorId[];
   reproductionAuthentication?: ReproductionAuthentication;
   proofPolicies?: ProofPolicy[];
   prepareValidation?: (target: ScopedTarget) => Promise<void>;

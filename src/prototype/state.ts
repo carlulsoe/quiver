@@ -1,6 +1,7 @@
 import { normalizeEndpoint } from "./endpoint.ts";
 import type { RestMethod } from "./scoped-target.ts";
 import type { CoordinatorSnapshot } from "./adaptive-coordinator.ts";
+import type { ActorId } from "./sessions.ts";
 
 export { normalizeEndpoint } from "./endpoint.ts";
 
@@ -37,7 +38,7 @@ export interface ReproductionRequest {
   method?: RestMethod;
   headers?: Record<string, string>;
   body?: string;
-  authenticated: boolean;
+  actorId: ActorId;
   /** Distinguishes intentional repeated samples from ledger-deduplicated requests. */
   sampleId?: string;
 }
@@ -146,7 +147,7 @@ export type ProofPredicate =
       pagePath: string;
       kind: "dialog";
       challenge: ChallengeMutation;
-      pageAuthenticated: boolean;
+      pageActorId: ActorId;
       pageChallenge?: ChallengeMutation;
       collectorRequestBudget: number;
     }
@@ -243,7 +244,7 @@ export interface ValidationObservation {
   method?: RestMethod;
   status: number;
   path: string;
-  authenticated: boolean;
+  actorId: ActorId;
   body: unknown;
   truncated: boolean;
   durationMs?: number;
@@ -260,7 +261,7 @@ export interface TestedRequest {
   agentId: string;
   path: string;
   method?: RestMethod;
-  authenticated: boolean;
+  actorId: ActorId;
   status: number;
 }
 

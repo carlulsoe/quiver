@@ -16,6 +16,7 @@ import {
   type CampaignState,
 } from "./state.ts";
 import { assertValidTargetProfile, type TargetProfile } from "./target-profile.ts";
+import { actorIds } from "./sessions.ts";
 
 export interface RunCampaignOptions {
   target: URL;
@@ -120,7 +121,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
 
   try {
     const coordinator = new PersistentCoordinator({
-      supportsAuthentication: options.profile.authenticate !== undefined,
+      actorIds: [actorIds.anonymous, ...(options.profile.actorIds ?? [])],
       requestBudget: budget.exploration,
       expectedWorkers: explorerCount,
       onChange: (snapshot) => dispatch({ type: "coordinator-snapshot", snapshot }),
@@ -245,8 +246,9 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       );
       if (
         options.profile.authenticate &&
-        (finding.reproduction.some((request) => request.authenticated) ||
-          (finding.proof.type === "browser-visible-effect" && finding.proof.pageAuthenticated))
+        (finding.reproduction.some((request) => request.actorId !== actorIds.anonymous) ||
+          (finding.proof.type === "browser-visible-effect" &&
+            finding.proof.pageActorId !== actorIds.anonymous))
       ) {
         try {
           await authenticateValidationTarget();

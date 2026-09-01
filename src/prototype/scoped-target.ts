@@ -7,6 +7,13 @@ import {
 import { collectBrowserEffect, type BrowserProofProbe } from "./browser-proof.ts";
 import { impactAtMost } from "./impact.ts";
 import type { BrowserEffectEvidence, ImpactLevel } from "./state.ts";
+import {
+  actorIds,
+  InMemorySessions,
+  type ActorId,
+  type Sessions,
+  type StoredSession,
+} from "./sessions.ts";
 
 export type {
   AttackSurfaceCallSite as CrawlGetCallSite,
@@ -63,6 +70,8 @@ export interface ScopedTargetOptions {
   attackSurfaceMapper?: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
   browserEffectCollector?: (probe: BrowserProofProbe) => Promise<BrowserEffectEvidence | undefined>;
   maximumImpactLevel?: ImpactLevel;
+  sessions?: Sessions;
+  browserActorId?: ActorId;
 }
 
 export interface AttackSurfaceMapperOptions {
@@ -94,7 +103,7 @@ export interface ScopedRequest {
   method?: RestMethod;
   headers?: Record<string, string>;
   body?: string;
-  authenticated?: boolean;
+  actorId?: ActorId;
   sampleId?: string;
 }
 
@@ -103,7 +112,7 @@ export interface BrowserEffectRequest {
   path: string;
   marker: string;
   kind: BrowserEffectEvidence["kind"];
-  authenticated: boolean;
+  actorId: ActorId;
   requestBudget: number;
 }
 
@@ -140,12 +149,11 @@ export class ScopedTarget {
     probe: BrowserProofProbe,
   ) => Promise<BrowserEffectEvidence | undefined>;
   readonly #maximumImpactLevel: ImpactLevel;
+  readonly #sessions: Sessions;
+  readonly #inMemorySessions?: InMemorySessions;
   #setupAccess = false;
   #requestsUsed = 0;
-  #authenticationHeaders?: Record<string, string>;
-  #browserLocalStorage?: Record<string, string>;
-  #browserSessionStorage?: Record<string, string>;
-  #browserCookies?: BrowserCookie[];
+  #browserActorId: ActorId;
   #attackSurfaceResult?: Promise<AttackSurfaceMap>;
 
   constructor(options: ScopedTargetOptions) {
@@ -177,6 +185,10 @@ export class ScopedTarget {
       ((mapperOptions) => new BrowserAttackSurfaceMapper(mapperOptions).map());
     this.#browserEffectCollector = options.browserEffectCollector ?? collectBrowserEffect;
     this.#maximumImpactLevel = options.maximumImpactLevel ?? "state-change";
+    this.#sessions = options.sessions ?? new InMemorySessions();
+    this.#inMemorySessions =
+      this.#sessions instanceof InMemorySessions ? this.#sessions : undefined;
+    this.#browserActorId = options.browserActorId ?? actorIds.anonymous;
   }
 
   get origin(): string {
@@ -187,8 +199,8 @@ export class ScopedTarget {
     return this.#startPath;
   }
 
-  get isAuthenticated(): boolean {
-    return this.#authenticationHeaders !== undefined;
+  get sessions(): Sessions {
+    return this.#sessions;
   }
 
   get requestsUsed(): number {
@@ -237,22 +249,14 @@ export class ScopedTarget {
     }
   }
 
-  setAuthentication(headers: Record<string, string>): void {
-    this.#authenticationHeaders = { ...headers };
-  }
-
-  setBrowserLocalStorage(entries: Record<string, string>): void {
-    this.#browserLocalStorage = { ...entries };
-  }
-
-  setBrowserSession(session: {
-    localStorage?: Record<string, string>;
-    sessionStorage?: Record<string, string>;
-    cookies?: BrowserCookie[];
-  }): void {
-    this.#browserLocalStorage = { ...session.localStorage };
-    this.#browserSessionStorage = { ...session.sessionStorage };
-    this.#browserCookies = session.cookies?.map((cookie) => ({ ...cookie }));
+  setSession(actorId: ActorId, session: StoredSession): void {
+    if (!this.#inMemorySessions) {
+      throw new Error("Sessions are managed by the configured session adapter");
+    }
+    this.#inMemorySessions.set(actorId, session);
+    if (this.#browserActorId === actorIds.anonymous && actorId !== actorIds.anonymous) {
+      this.#browserActorId = actorId;
+    }
   }
 
   async request(request: ScopedRequest): Promise<HttpObservation> {
@@ -276,18 +280,16 @@ export class ScopedTarget {
   ): Promise<BrowserEffectEvidence | undefined> {
     this.assertImpactLevel("bounded");
     this.#resolvePath(request.path);
-    if (request.authenticated && !this.#hasBrowserAuthentication()) {
-      throw new Error("This target has no authenticated browser session");
-    }
+    const browserState = await this.#sessions.browserState(request.actorId);
     let collectorRequests = 0;
     return this.#browserEffectCollector({
       ...request,
       origin: this.#origin,
       timeoutMs: this.#timeoutMs,
-      authenticationHeaders: request.authenticated ? this.#authenticationHeaders : undefined,
-      cookies: request.authenticated ? this.#browserCookies : undefined,
-      localStorage: request.authenticated ? this.#browserLocalStorage : undefined,
-      sessionStorage: request.authenticated ? this.#browserSessionStorage : undefined,
+      authenticationHeaders: browserState.headers,
+      cookies: browserState.cookies,
+      localStorage: browserState.localStorage,
+      sessionStorage: browserState.sessionStorage,
       executablePath: this.#browserExecutablePath,
       decideRequest: (method, path) => {
         if (!["GET", "HEAD"].includes(method) || collectorRequests >= request.requestBudget) {
@@ -298,15 +300,6 @@ export class ScopedTarget {
         return decision.allowed;
       },
     });
-  }
-
-  #hasBrowserAuthentication(): boolean {
-    return (
-      Object.keys(this.#authenticationHeaders ?? {}).length > 0 ||
-      (this.#browserCookies?.length ?? 0) > 0 ||
-      Object.keys(this.#browserLocalStorage ?? {}).length > 0 ||
-      Object.keys(this.#browserSessionStorage ?? {}).length > 0
-    );
   }
 
   async #request(
@@ -336,9 +329,8 @@ export class ScopedTarget {
         `${method} ${url.pathname} was not supplied by the profile or attack-surface map`,
       );
     }
-    if (request.authenticated && !this.#authenticationHeaders) {
-      throw new Error("This target has no authenticated session");
-    }
+    const actorId = request.actorId ?? actorIds.anonymous;
+    const session = await this.#sessions.acquire(actorId);
     if (hasPotentialScopeOverrideHeaders(request.headers)) {
       throw new TargetScopeError(
         "Request headers may not override the scoped method or target path",
@@ -346,8 +338,8 @@ export class ScopedTarget {
     }
     if (hasPotentialAuthenticationHeaders(request.headers)) {
       throw new TargetScopeError(
-        request.authenticated
-          ? "Authenticated requests may not override the target profile's credential headers"
+        actorId !== actorIds.anonymous
+          ? "Actor requests may not override the session adapter's credential headers"
           : "Anonymous requests may only use standard representation and precondition headers",
       );
     }
@@ -367,7 +359,7 @@ export class ScopedTarget {
     const response = await this.#transport(url, {
       method,
       headers: {
-        ...(request.authenticated ? this.#authenticationHeaders : {}),
+        ...session.headers,
         ...request.headers,
       },
       body: request.body,
@@ -409,15 +401,16 @@ export class ScopedTarget {
   }
 
   async #mapAttackSurface(maxDocuments: number): Promise<AttackSurfaceMap> {
+    const browserState = await this.#sessions.browserState(this.#browserActorId);
     const map = await this.#attackSurfaceMapper({
       origin: this.#origin,
       startPath: this.#startPath,
       maxDocuments,
       timeoutMs: this.#timeoutMs,
-      authenticationHeaders: this.#authenticationHeaders,
-      localStorage: this.#browserLocalStorage,
-      sessionStorage: this.#browserSessionStorage,
-      cookies: this.#browserCookies,
+      authenticationHeaders: browserState.headers,
+      localStorage: browserState.localStorage,
+      sessionStorage: browserState.sessionStorage,
+      cookies: browserState.cookies,
       openApi: this.#openApi,
       executablePath: this.#browserExecutablePath,
       decideRequest: (method, path, metadata) =>

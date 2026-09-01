@@ -1,5 +1,6 @@
 import { normalizeEndpoint } from "./endpoint.ts";
 import { fingerprintFinding, type FindingInput, type TestedRequest } from "./state.ts";
+import { actorIds, type ActorId } from "./sessions.ts";
 
 export type SpecialistKind =
   | "authorization"
@@ -12,7 +13,7 @@ export type HypothesisStatus = "queued" | "testing" | "supported" | "rejected";
 export interface CoordinatedTask {
   route: string;
   method: string;
-  authenticated: boolean;
+  actorId: ActorId;
   source: "uncovered-surface" | "incoming-evidence" | "worker-hypothesis";
   reason: string;
   hypothesisId?: string;
@@ -113,7 +114,7 @@ export interface CoordinatorSnapshot {
 }
 
 export interface AdaptiveCoordinatorOptions {
-  supportsAuthentication?: boolean;
+  actorIds?: readonly ActorId[];
   requestBudget?: number;
   expectedWorkers?: number;
   onChange?: (snapshot: CoordinatorSnapshot) => void;
@@ -143,7 +144,7 @@ export class PersistentCoordinator {
   readonly #allocations = new Map<string, MutableWorkerBudget>();
   readonly #specialists = new Map<string, SpecialistPlan>();
   readonly #validationQueue = new Map<string, ValidationQueueItem>();
-  readonly #supportsAuthentication: boolean;
+  readonly #actorIds: readonly ActorId[];
   readonly #requestBudget?: number;
   readonly #expectedWorkers: number;
   readonly #onChange?: (snapshot: CoordinatorSnapshot) => void;
@@ -153,7 +154,7 @@ export class PersistentCoordinator {
   #revision = 0;
 
   constructor(options: AdaptiveCoordinatorOptions = {}) {
-    this.#supportsAuthentication = options.supportsAuthentication ?? true;
+    this.#actorIds = uniqueActorIds(options.actorIds ?? [actorIds.anonymous, actorIds.ordinary]);
     if (
       options.requestBudget !== undefined &&
       (!Number.isInteger(options.requestBudget) || options.requestBudget < 0)
@@ -204,7 +205,7 @@ export class PersistentCoordinator {
     const requests = this.#tested.get(operation) ?? [];
     requests.push({ ...request });
     this.#tested.set(operation, requests);
-    this.#claims.delete(taskKey(operation, request.authenticated));
+    this.#claims.delete(taskKey(operation, request.actorId));
     const allocation = this.#allocations.get(request.agentId);
     if (allocation && allocation.used < allocation.allocated) allocation.used += 1;
     this.#updateEvidenceHypothesis(operation, requests);
@@ -334,11 +335,12 @@ export class PersistentCoordinator {
       ([operation]) => !this.#tested.has(operation),
     ).length;
     const evidenceSignals = [...this.#tested.entries()].flatMap(([operation, requests]) => {
-      const modes = new Set(requests.map(({ authenticated }) => authenticated));
-      if (modes.size > 1) return [];
+      const modes = new Set(requests.map(({ actorId }) => actorId));
+      if (modes.size >= this.#actorIds.length) return [];
       const latest = requests.at(-1)!;
+      const untested = this.#actorIds.filter((actorId) => !modes.has(actorId));
       return [
-        `${operation} returned ${latest.status} as ${latest.authenticated ? "authenticated" : "anonymous"}; the opposite access mode is untested`,
+        `${operation} returned ${latest.status} as ${latest.actorId}; ${untested.join(", ")} remain untested`,
       ];
     });
     const assignedHypotheses = [...this.#hypotheses.values()].filter(
@@ -441,14 +443,16 @@ export class PersistentCoordinator {
     const candidates: Candidate[] = [];
     for (const [operation, { method, route }] of this.#operations) {
       const requests = this.#tested.get(operation) ?? [];
-      const testedModes = new Set(requests.map(({ authenticated }) => authenticated));
+      const testedModes = new Set(requests.map(({ actorId }) => actorId));
       if (requests.length === 0) {
-        const authenticated = this.#supportsAuthentication;
+        const actorId =
+          this.#actorIds.find((candidate) => candidate !== actorIds.anonymous) ??
+          actorIds.anonymous;
         candidates.push({
-          key: taskKey(operation, authenticated),
+          key: taskKey(operation, actorId),
           route,
           method,
-          authenticated,
+          actorId,
           source: "uncovered-surface",
           priority: 80,
           reason: "No explorer has tested this discovered operation yet.",
@@ -456,22 +460,22 @@ export class PersistentCoordinator {
         continue;
       }
 
-      if (testedModes.size === 1) {
+      if (testedModes.size < this.#actorIds.length) {
         const latest = requests.at(-1)!;
-        const authenticated = !latest.authenticated;
-        if (authenticated && !this.#supportsAuthentication) continue;
+        const actorId = this.#actorIds.find((candidate) => !testedModes.has(candidate));
+        if (!actorId) continue;
         const success = latest.status >= 200 && latest.status < 300;
         const hypothesis = this.#evidenceHypothesis(operation);
         candidates.push({
-          key: taskKey(operation, authenticated),
+          key: taskKey(operation, actorId),
           route,
           method,
-          authenticated,
+          actorId,
           source: "incoming-evidence",
           priority: success ? 100 : 90,
           reason: success
-            ? `${latest.authenticated ? "Authenticated" : "Anonymous"} access succeeded; test the opposite access boundary.`
-            : `${latest.authenticated ? "Authenticated" : "Anonymous"} access returned ${latest.status}; test the opposite mode to map the boundary.`,
+            ? `${latest.actorId} access succeeded; test the ${actorId} boundary.`
+            : `${latest.actorId} access returned ${latest.status}; test ${actorId} to map the boundary.`,
           ...(hypothesis ? { hypothesisId: hypothesis.id } : {}),
         });
       }
@@ -508,7 +512,7 @@ export class PersistentCoordinator {
   }
 
   #updateEvidenceHypothesis(operation: string, requests: TestedRequest[]): void {
-    const testedModes = new Set(requests.map(({ authenticated }) => authenticated));
+    const testedModes = new Set(requests.map(({ actorId }) => actorId));
     const existing = this.#evidenceHypothesis(operation);
     if (testedModes.size > 1) {
       if (existing && existing.status !== "supported") {
@@ -519,18 +523,20 @@ export class PersistentCoordinator {
     }
     if (existing) return;
     const candidate = this.#operations.get(operation);
-    if (!candidate || !this.#supportsAuthentication) return;
+    if (!candidate || this.#actorIds.length < 2) return;
     const latest = requests.at(-1)!;
+    const nextActorId = this.#actorIds.find((actorId) => !testedModes.has(actorId));
+    if (!nextActorId) return;
     const hypothesis: CoordinatorHypothesis = {
       id: `hypothesis-${++this.#hypothesisSequence}`,
       title: `Test the opposite access boundary for ${operation}`,
       method: candidate.method,
       route: candidate.route,
-      specialty: latest.authenticated ? "authentication" : "authorization",
+      specialty: latest.actorId === actorIds.anonymous ? "authorization" : "authentication",
       status: "queued",
       confidence: latest.status >= 200 && latest.status < 300 ? 0.75 : 0.6,
-      rationale: `${latest.authenticated ? "Authenticated" : "Anonymous"} access returned ${latest.status}, while the opposite mode remains unknown.`,
-      nextStep: `Repeat ${operation} as ${latest.authenticated ? "anonymous" : "authenticated"}.`,
+      rationale: `${latest.actorId} access returned ${latest.status}, while ${nextActorId} remains unknown.`,
+      nextStep: `Repeat ${operation} as ${nextActorId}.`,
       proposedBy: "coordinator",
       evidenceSignals: [`${latest.status} observed by ${latest.agentId}`],
     };
@@ -611,13 +617,11 @@ export class PersistentCoordinator {
       this.#tested.has(operation),
     ).length;
     const testedAccessModes = [...this.#operations].reduce((total, [operation]) => {
-      const modes = new Set(
-        (this.#tested.get(operation) ?? []).map(({ authenticated }) => authenticated),
-      );
+      const modes = new Set((this.#tested.get(operation) ?? []).map(({ actorId }) => actorId));
       return total + modes.size;
     }, 0);
     const discoveredOperations = this.#operations.size;
-    const totalAccessModes = discoveredOperations * (this.#supportsAuthentication ? 2 : 1);
+    const totalAccessModes = discoveredOperations * this.#actorIds.length;
     return {
       discoveredOperations,
       testedOperations,
@@ -650,8 +654,12 @@ function clampConfidence(confidence: number): number {
   return Math.min(1, Math.max(0, confidence));
 }
 
-function taskKey(operation: string, authenticated: boolean): string {
-  return `${operation}:${authenticated ? "authenticated" : "anonymous"}`;
+function taskKey(operation: string, actorId: ActorId): string {
+  return `${operation}:${actorId}`;
+}
+
+function uniqueActorIds(configured: readonly ActorId[]): readonly ActorId[] {
+  return [...new Set([actorIds.anonymous, ...configured])];
 }
 
 function operationKey(method: string, route: string): string {
