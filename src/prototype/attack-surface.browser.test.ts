@@ -119,19 +119,31 @@ describe("browser stateful discovery", () => {
               <input name="confirm">
               <button type="submit">Delete</button>
             </form>
-            <form aria-label="Continue account cancellation" action="/cancel-account" method="post">
+            <form aria-label="Continue account cancellation" action="/workflow/one" method="post">
               <input name="confirm">
               <button type="submit">Continue</button>
             </form>
-            <form aria-label="Close workspace" action="/close-workspace" method="post">
+            <form aria-label="Verify workspace closure" action="/workflow/two" method="post">
+              <input name="confirm">
+              <button type="submit">Verify</button>
+            </form>
+            <form aria-label="Continue profile deactivation" action="/workflow/three" method="post">
               <input name="confirm">
               <button type="submit">Continue</button>
             </form>
-            <form aria-label="Deactivate profile" action="/deactivate-profile" method="post">
+            <form aria-label="Verify subscription termination" action="/workflow/four" method="post">
+              <input name="confirm">
+              <button type="submit">Verify</button>
+            </form>
+            <form aria-label="Continue account deletion" action="/workflow/five" method="post">
               <input name="confirm">
               <button type="submit">Continue</button>
             </form>
-            <form aria-label="Terminate subscription" action="/terminate-subscription" method="post">
+            <form aria-label="Verify service suspension" action="/workflow/six" method="post">
+              <input name="confirm">
+              <button type="submit">Verify</button>
+            </form>
+            <form aria-label="Continue data archival" action="/workflow/seven" method="post">
               <input name="confirm">
               <button type="submit">Continue</button>
             </form>
@@ -158,10 +170,13 @@ describe("browser stateful discovery", () => {
         if (url.pathname === "/logout") primaryLogoutRequests += 1;
         if (
           [
-            "/cancel-account",
-            "/close-workspace",
-            "/deactivate-profile",
-            "/terminate-subscription",
+            "/workflow/one",
+            "/workflow/two",
+            "/workflow/three",
+            "/workflow/four",
+            "/workflow/five",
+            "/workflow/six",
+            "/workflow/seven",
           ].includes(url.pathname)
         )
           destructiveWorkflowRequests += 1;
@@ -231,10 +246,13 @@ describe("browser stateful discovery", () => {
           submitted: false,
         }),
         expect.objectContaining({ action: `${origin}/logout`, submitted: false }),
-        expect.objectContaining({ action: `${origin}/cancel-account`, submitted: false }),
-        expect.objectContaining({ action: `${origin}/close-workspace`, submitted: false }),
-        expect.objectContaining({ action: `${origin}/deactivate-profile`, submitted: false }),
-        expect.objectContaining({ action: `${origin}/terminate-subscription`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/workflow/one`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/workflow/two`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/workflow/three`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/workflow/four`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/workflow/five`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/workflow/six`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/workflow/seven`, submitted: false }),
         expect.objectContaining({
           action: `${origin}/blocked-workflow`,
           attempted: true,
