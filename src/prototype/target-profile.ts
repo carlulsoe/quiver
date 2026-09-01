@@ -1,6 +1,7 @@
 import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts";
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
 import type { ActorId } from "./sessions.ts";
+import type { AttackSurfaceOrigin } from "./attack-surface.ts";
 import {
   assertValidTargetManifest,
   authenticateTargetManifest,
@@ -109,6 +110,8 @@ export interface TargetProfile {
   id: string;
   displayName: string;
   objective: string;
+  /** Extra browser discovery origins, each explicitly active or passive. */
+  attackSurfaceOrigins?: AttackSurfaceOrigin[];
   allowedRequests?: AllowedRequest[];
   setupRequests?: AllowedRequest[];
   deniedRequests?: DeniedRequest[];
@@ -132,7 +135,7 @@ export interface TargetProfile {
 
 export type TargetProfileExtensions = Pick<
   TargetProfile,
-  "proofPolicies" | "prepareValidation" | "validationResetRequestBudget"
+  "attackSurfaceOrigins" | "proofPolicies" | "prepareValidation" | "validationResetRequestBudget"
 >;
 
 /** Builds the runtime profile API from a declarative onboarding manifest. */
