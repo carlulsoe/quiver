@@ -1,8 +1,12 @@
 import { createHarness, toJsonValue, type JsonValue, type TranscriptEvent } from "vitest-evals";
 import { campaignOperationCoverage, type Finding } from "../prototype/state.ts";
+import { normalizeEndpoint } from "../prototype/endpoint.ts";
 import { runCampaign, type CampaignRun } from "../prototype/runner.ts";
 import { getDefaultTarget, getTargetProfile } from "../targets/profiles.ts";
+import { createHeldOutFixture } from "../targets/held-out-fixture.ts";
+import { createHeldOutProfile } from "../targets/held-out.ts";
 import { scoreCrapiReadOnlyBenchmark } from "./crapi-benchmark.ts";
+import { classifyCampaignFailures } from "./failure-classification.ts";
 import type {
   CoverageKind,
   EvalFinding,
@@ -41,34 +45,50 @@ interface NormalizedScore {
 export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutput>({
   name: "bounded-security-campaign",
   run: async ({ input, setArtifact }) => {
-    const profile = getTargetProfile(input.profileId);
-    const target = new URL(input.target ?? getDefaultTarget(input.profileId));
+    const fixture =
+      input.profileId === "held-out" && input.heldOutSeed
+        ? createHeldOutFixture(input.heldOutSeed)
+        : undefined;
+    const fixtureServer =
+      fixture && !input.target
+        ? Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: fixture.fetch })
+        : undefined;
+    const profile = fixture
+      ? createHeldOutProfile(fixture.seed)
+      : getTargetProfile(input.profileId);
+    const target = new URL(input.target ?? fixtureServer?.url ?? getDefaultTarget(input.profileId));
     const transitions: string[] = [];
-    const run = await runCampaign({
-      target,
-      profile,
-      requestBudget: input.requestBudget,
-      explorerCount: input.explorerCount,
-      onState: (_state, action) => {
-        if (action) transitions.push(action.type);
-      },
-    });
-    const output = await createSecurityEvalOutput(input.profileId, target, run);
+    try {
+      const run = await runCampaign({
+        target,
+        profile,
+        requestBudget: input.requestBudget,
+        explorerCount: input.explorerCount,
+        onState: (_state, action) => {
+          if (action) transitions.push(action.type);
+        },
+      });
+      const output = await createSecurityEvalOutput(input.profileId, target, run, {
+        heldOutSeed: input.heldOutSeed,
+      });
 
-    setArtifact("findings", toJsonValue(run.state.findings) ?? []);
-    setArtifact("validations", toJsonValue(run.state.validations) ?? []);
-    setArtifact("transitions", transitions);
-    setArtifact("runTrace", toJsonValue(run.events) ?? []);
+      setArtifact("findings", toJsonValue(run.state.findings) ?? []);
+      setArtifact("validations", toJsonValue(run.state.validations) ?? []);
+      setArtifact("transitions", transitions);
+      setArtifact("runTrace", toJsonValue(run.events) ?? []);
 
-    return {
-      output,
-      events: [
-        { type: "message", role: "user", content: JSON.stringify(input) },
-        ...transcriptEvents(run),
-        { type: "message", role: "assistant", content: output },
-      ],
-      usage: { model: run.model, provider: "openrouter" },
-    };
+      return {
+        output,
+        events: [
+          { type: "message", role: "user", content: JSON.stringify(input) },
+          ...transcriptEvents(run),
+          { type: "message", role: "assistant", content: output },
+        ],
+        usage: { model: run.model, provider: "openrouter" },
+      };
+    } finally {
+      fixtureServer?.stop(true);
+    }
   },
 });
 
@@ -76,6 +96,7 @@ export async function createSecurityEvalOutput(
   profileId: SecurityEvalProfileId,
   target: URL,
   run: CampaignRun,
+  metadata: { heldOutSeed?: string } = {},
 ): Promise<SecurityEvalOutput> {
   const confirmedFingerprints = run.state.validations
     .filter((validation) => validation.status === "confirmed")
@@ -91,6 +112,7 @@ export async function createSecurityEvalOutput(
     .filter((agent) => agent.status === "failed")
     .map((agent) => `agent:${agent.id}`);
   if (run.state.error) failures.push(`campaign:${run.state.error}`);
+  const failureClassifications = classifyCampaignFailures(run);
 
   let score: NormalizedScore;
   try {
@@ -102,7 +124,9 @@ export async function createSecurityEvalOutput(
       operationCoverage,
     );
   } catch (error) {
-    failures.push(`scoring:${error instanceof Error ? error.message : String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    failures.push(`scoring:${message}`);
+    failureClassifications.push({ kind: "infrastructure", source: "scoring", message });
     score = emptyScore(profileId, operationCoverage);
   }
 
@@ -127,6 +151,7 @@ export async function createSecurityEvalOutput(
     durationMs: run.durationMs,
     tokens: run.usage.totalTokens,
     failures,
+    failureClassifications,
     failureCount: failures.length,
     scoreKind: score.kind,
     scoreDetails: score.details,
@@ -148,6 +173,7 @@ export async function createSecurityEvalOutput(
     modelTokens: run.usage.totalTokens,
     approximateModelCost: run.usage.cost.total,
     error: run.state.error ?? null,
+    heldOutSeed: metadata.heldOutSeed ?? null,
   };
 }
 
@@ -207,13 +233,9 @@ async function scoreProfile(
 }
 
 function scoreHeldOut(confirmed: readonly Finding[], requestsUsed: number): NormalizedScore {
-  const truePositives = confirmed.filter(
-    (finding) =>
-      finding.proof.type === "canary-retrieval" &&
-      finding.proof.policyId === "held-out-record-canary",
-  );
-  const truePositiveCount = Math.min(truePositives.length, 1);
-  const falsePositiveCount = confirmed.length - truePositiveCount;
+  const matchedFindings = confirmed.filter(matchesHeldOutBenchmark);
+  const truePositiveCount = Math.min(matchedFindings.length, 1);
+  const falsePositiveCount = confirmed.length - matchedFindings.length;
   return {
     kind: "held-out-canary",
     coverage: truePositiveCount,
@@ -229,6 +251,20 @@ function scoreHeldOut(confirmed: readonly Finding[], requestsUsed: number): Norm
     missedIds: truePositiveCount === 0 ? ["held-out-record-canary"] : [],
     details: {},
   };
+}
+
+function matchesHeldOutBenchmark(finding: Finding): boolean {
+  if (
+    finding.proof.type === "canary-retrieval" &&
+    finding.proof.policyId === "held-out-record-canary"
+  ) {
+    return true;
+  }
+  return (
+    finding.category === "broken-object-authorization" &&
+    finding.proof.type === "cross-principal-access" &&
+    /^\/api\/[^/]+\/vaults\/\{id\}$/.test(normalizeEndpoint(finding.endpoint))
+  );
 }
 
 function emptyScore(profileId: SecurityEvalProfileId, operationCoverage: number): NormalizedScore {

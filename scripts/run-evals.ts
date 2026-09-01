@@ -7,7 +7,10 @@ import {
   type SecurityEvalOutput,
   type SecurityEvalProfileId,
 } from "../src/evals/security-eval.ts";
+import { classifyTrialFailures, type EvalFailure } from "../src/evals/failure-classification.ts";
+import { buildEvalMatrix } from "../src/evals/matrix.ts";
 import {
+  conciseEvalFailure,
   findSecurityEvalOutput,
   renderRepeatedEvalSummary,
   summarizeRepeatedEvals,
@@ -34,12 +37,14 @@ interface JsonTestReport {
 const trialCount = positiveInteger("XBOW_EVAL_TRIALS", "1");
 const concurrency = positiveInteger("XBOW_EVAL_CONCURRENCY", "1");
 const profileIds = parseProfiles(process.env.XBOW_EVAL_PROFILES);
+const runSeed = process.env.XBOW_EVAL_SEED ?? crypto.randomUUID();
+const matrix = buildEvalMatrix({ profileIds, trialCount, runSeed });
+const casesByTrial = Map.groupBy(matrix, ({ index }) => index);
 const projectRoot = resolve(import.meta.dir, "..");
 const runId = new Date().toISOString().replaceAll(/[:.]/g, "-");
 const runDirectory = join(projectRoot, ".prototype", "eval-trials", runId);
 await mkdir(runDirectory, { recursive: true });
 
-const reports: JsonTestReport[] = [];
 const trials: RepeatedEvalTrial[] = [];
 const reportEntries = new Map<string, { report: JsonTestReport; assertion: JsonAssertionResult }>();
 let nextTrialIndex = 1;
@@ -48,19 +53,29 @@ await Promise.all(
     while (nextTrialIndex <= trialCount) {
       const index = nextTrialIndex;
       nextTrialIndex += 1;
-      for (const profileId of profileIds) await runProfile(index, profileId);
+      for (const item of casesByTrial.get(index) ?? []) await runProfile(item);
     }
   }),
 );
 
 for (let index = 1; index <= trialCount; index += 1) {
   const vulnerable = trials.find(
-    (trial) => trial.index === index && trial.output?.profileId === "vampi-vulnerable",
+    (trial) => trial.index === index && profileOf(trial) === "vampi-vulnerable",
   );
   const secure = trials.find(
-    (trial) => trial.index === index && trial.output?.profileId === "vampi-secure",
+    (trial) => trial.index === index && profileOf(trial) === "vampi-secure",
   );
-  if (vulnerable?.output && secure?.output) {
+  if (!vulnerable || !secure || !vulnerable.output || !secure.output) {
+    for (const trial of [vulnerable, secure]) {
+      if (!trial) continue;
+      trial.passed = false;
+      addTrialFailure(trial, {
+        kind: "infrastructure",
+        source: "vampi-differential",
+        message: "VAmPI differential scoring requires both vulnerable and secure run outputs",
+      });
+    }
+  } else {
     applyVampiDifferentialScoring(vulnerable.output, secure.output);
     if (
       vulnerable.output.benchmarkTruePositiveCount === 0 ||
@@ -77,6 +92,13 @@ for (let index = 1; index <= trialCount; index += 1) {
   }
 }
 
+for (const trial of trials) {
+  trial.failureClassifications = classifyTrialFailures(trial);
+  if (trial.output) {
+    trial.output.failureClassifications = trial.failureClassifications;
+    trial.output.failureCount = trial.failureClassifications.length;
+  }
+}
 for (const trial of trials) synchronizeReport(trial);
 
 trials.sort((left, right) =>
@@ -84,8 +106,13 @@ trials.sort((left, right) =>
     ? profileIds.indexOf(profileOf(left)) - profileIds.indexOf(profileOf(right))
     : left.index - right.index,
 );
-const summary = summarizeRepeatedEvals(trials);
-const mergedReport = mergeReports(reports);
+const summary = summarizeRepeatedEvals(trials, new Date(), runSeed);
+const mergedReport = mergeReports(
+  trials.flatMap((trial) => {
+    const entry = reportEntries.get(trialKey(trial.index, profileOf(trial)));
+    return entry ? [entry.report] : [];
+  }),
+);
 const outputDirectory = join(projectRoot, ".prototype");
 const reportPath = join(outputDirectory, "eval-results.json");
 const summaryPath = join(outputDirectory, "eval-summary.json");
@@ -97,15 +124,26 @@ await Promise.all([
 ]);
 
 console.error(`\nRepeated eval summary: ${markdownPath}`);
+console.error(`Evaluation run seed: ${runSeed}`);
 console.log(renderRepeatedEvalSummary(summary));
 if (summary.passedTrials !== summary.requestedTrials) process.exitCode = 1;
 
-async function runProfile(index: number, profileId: SecurityEvalProfileId): Promise<void> {
+async function runProfile(item: {
+  index: number;
+  profileId: SecurityEvalProfileId;
+  heldOutSeed?: string;
+}): Promise<void> {
+  const { index, profileId, heldOutSeed } = item;
+  const target = targetFor(profileId);
+  const managedHeldOutSeed = profileId === "held-out" && !target ? heldOutSeed : undefined;
+  const recordedHeldOutSeed =
+    managedHeldOutSeed ?? (profileId === "held-out" ? process.env.QUIVER_HELD_OUT_SEED : undefined);
   const artifactPath = join(
     runDirectory,
     `trial-${String(index).padStart(2, "0")}-${profileId}.json`,
   );
   console.error(`\nQuiver eval trial ${index}/${trialCount}: ${profileId} (isolated process)`);
+  const childEnvironment = evalEnvironment(profileId, index, target, managedHeldOutSeed);
   const child = Bun.spawn(
     [
       "bunx",
@@ -120,13 +158,7 @@ async function runProfile(index: number, profileId: SecurityEvalProfileId): Prom
     ],
     {
       cwd: projectRoot,
-      env: {
-        ...process.env,
-        QUIVER_EVAL_PROFILE: profileId,
-        QUIVER_EVAL_TRIAL_INDEX: String(index),
-        QUIVER_EVAL_TRIAL_TOTAL: String(trialCount),
-        XBOW_TARGET: targetFor(profileId),
-      },
+      env: childEnvironment,
       stdout: "inherit",
       stderr: "inherit",
     },
@@ -137,7 +169,6 @@ async function runProfile(index: number, profileId: SecurityEvalProfileId): Prom
   let parseError: string | undefined;
   try {
     report = (await Bun.file(artifactPath).json()) as JsonTestReport;
-    reports.push(report);
   } catch (error) {
     parseError = `Could not read trial artifact: ${String(error)}`;
   }
@@ -151,10 +182,13 @@ async function runProfile(index: number, profileId: SecurityEvalProfileId): Prom
     passed: exitCode === 0 && assertion?.status === "passed",
     ...(typeof assertion?.duration === "number" ? { wallDurationMs: assertion.duration } : {}),
     ...(output ? { output } : {}),
-    ...((parseError ?? assertion?.failureMessages.join("\n"))
-      ? { error: parseError ?? assertion?.failureMessages.join("\n") }
+    ...((parseError ?? (assertion?.failureMessages.length ? assertion.failureMessages : undefined))
+      ? {
+          error: parseError ?? conciseEvalFailure(assertion?.failureMessages ?? []),
+        }
       : {}),
     artifactPath,
+    ...(recordedHeldOutSeed ? { heldOutSeed: recordedHeldOutSeed } : {}),
   };
   trials.push(trial);
   if (report && assertion) reportEntries.set(trialKey(index, profileId), { report, assertion });
@@ -186,12 +220,36 @@ function parseProfiles(value: string | undefined): SecurityEvalProfileId[] {
   return unique;
 }
 
-function targetFor(profileId: SecurityEvalProfileId): string {
+function targetFor(profileId: SecurityEvalProfileId): string | undefined {
   const suffix = profileId.toUpperCase().replaceAll("-", "_");
   const specific = process.env[`XBOW_TARGET_${suffix}`];
   if (specific) return specific;
   if (profileIds.length === 1 && process.env.XBOW_TARGET) return process.env.XBOW_TARGET;
+  if (profileId === "held-out") return undefined;
   return getDefaultTarget(profileId).href;
+}
+
+function evalEnvironment(
+  profileId: SecurityEvalProfileId,
+  index: number,
+  target: string | undefined,
+  heldOutSeed: string | undefined,
+): Record<string, string> {
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] =>
+        !["XBOW_TARGET", "QUIVER_EVAL_HELD_OUT_SEED"].includes(entry[0]) && entry[1] !== undefined,
+    ),
+  );
+  environment.QUIVER_EVAL_PROFILE = profileId;
+  environment.QUIVER_EVAL_TRIAL_INDEX = String(index);
+  environment.QUIVER_EVAL_TRIAL_TOTAL = String(trialCount);
+  if (target) environment.XBOW_TARGET = target;
+  if (heldOutSeed) {
+    environment.QUIVER_EVAL_HELD_OUT_SEED = heldOutSeed;
+    environment.QUIVER_HELD_OUT_SEED = heldOutSeed;
+  }
+  return environment;
 }
 
 function positiveInteger(name: string, fallback: string): number {
@@ -223,6 +281,20 @@ function synchronizeReport(trial: RepeatedEvalTrial): void {
     entry.assertion.failureMessages.push(trial.error);
   }
   entry.report.success = false;
+}
+
+function addTrialFailure(trial: RepeatedEvalTrial, failure: EvalFailure): void {
+  trial.failureClassifications ??= [];
+  if (
+    !trial.failureClassifications.some(
+      (item) =>
+        item.kind === failure.kind &&
+        item.source === failure.source &&
+        item.message === failure.message,
+    )
+  ) {
+    trial.failureClassifications.push(failure);
+  }
 }
 
 function mergeReports(items: JsonTestReport[]): JsonTestReport {

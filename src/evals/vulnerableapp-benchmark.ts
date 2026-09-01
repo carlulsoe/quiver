@@ -50,11 +50,22 @@ export async function scoreVulnerableAppBenchmark(options: {
     throw new Error(`VulnerableApp benchmark endpoint returned ${response.status}`);
   }
   const body = (await response.json()) as NativeBenchmarkResponse;
-  const totalExpected = numberField(body.totalExpected, "totalExpected");
-  const truePositiveCount = numberField(body.detected, "detected");
-  const falsePositiveCount = numberField(body.unmatched, "unmatched");
-  const missedCount = numberField(body.missed, "missed");
-  const nativeCoverage = numberField(body.coverage, "coverage");
+  const totalExpected = countField(body.totalExpected, "totalExpected");
+  const truePositiveCount = countField(body.detected, "detected");
+  const falsePositiveCount = countField(body.unmatched, "unmatched");
+  const missedCount = countField(body.missed, "missed");
+  const nativeCoverage = percentageField(body.coverage, "coverage");
+  if (truePositiveCount + missedCount !== totalExpected) {
+    throw new Error(
+      "VulnerableApp benchmark response counts are inconsistent: detected + missed must equal totalExpected",
+    );
+  }
+  const expectedCoverage = totalExpected === 0 ? 0 : (truePositiveCount / totalExpected) * 100;
+  if (Math.abs(nativeCoverage - expectedCoverage) > 0.51) {
+    throw new Error(
+      "VulnerableApp benchmark response coverage is inconsistent with detected and totalExpected",
+    );
+  }
   return {
     coverage: nativeCoverage / 100,
     totalExpected,
@@ -70,8 +81,15 @@ export async function scoreVulnerableAppBenchmark(options: {
   };
 }
 
-function numberField(value: unknown, name: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+function countField(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`VulnerableApp benchmark response has invalid ${name}`);
+  }
+  return value;
+}
+
+function percentageField(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
     throw new Error(`VulnerableApp benchmark response has invalid ${name}`);
   }
   return value;

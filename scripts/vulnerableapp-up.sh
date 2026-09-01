@@ -15,7 +15,7 @@ git -C "$target_dir" checkout --detach "$target_revision"
 docker rm --force "$container_name" >/dev/null 2>&1 || true
 docker run --detach --name "$container_name" --publish 127.0.0.1:9090:9090 sasanlabs/owasp-vulnerableapp:unreleased >/dev/null
 
-for attempt in {1..60}; do
+for attempt in {1..150}; do
   if curl --silent --fail http://127.0.0.1:9090/VulnerableApp/scanner/dast >/dev/null; then
     exit 0
   fi

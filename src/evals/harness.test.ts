@@ -17,7 +17,7 @@ import {
 
 describe("profile-agnostic eval scoring", () => {
   it("scores the held-out canary and records the uniform metrics", async () => {
-    const run = campaignRun(heldOutFinding());
+    const run = campaignRun([heldOutFinding(), heldOutBolaFinding()]);
 
     const result = await createSecurityEvalOutput(
       "held-out",
@@ -30,6 +30,8 @@ describe("profile-agnostic eval scoring", () => {
       scoreKind: "held-out-canary",
       coverage: 1,
       precision: 1,
+      findingCount: 2,
+      benchmarkFalsePositiveCount: 0,
       validationCompleteness: 1,
       durationMs: 2_500,
       tokens: 321,
@@ -133,6 +135,7 @@ function output(
     durationMs: 1_000,
     tokens: 100,
     failures: [],
+    failureClassifications: [],
     failureCount: 0,
     scoreKind: "vampi-differential-pending",
     scoreDetails: {},
@@ -154,6 +157,7 @@ function output(
     modelTokens: 100,
     approximateModelCost: 0.01,
     error: null,
+    heldOutSeed: null,
   };
 }
 
@@ -189,7 +193,28 @@ function nativeFinding(): FindingInput {
   };
 }
 
-function campaignRun(finding: FindingInput): CampaignRun {
+function heldOutBolaFinding(): FindingInput {
+  return {
+    ...heldOutFinding(),
+    title: "Cross-principal vault access",
+    category: "broken-object-authorization",
+    cwe: "CWE-639",
+    reproduction: [
+      { path: "/api/random/session", actorId: "ordinary-user" },
+      { path: "/api/random/vaults/foreign", actorId: "ordinary-user" },
+    ],
+    proof: {
+      type: "cross-principal-access",
+      actor: { requestIndex: 0, jsonPointer: "/principal/id" },
+      resourceOwner: { requestIndex: 1, jsonPointer: "/owner/id" },
+      accessRequestIndex: 1,
+      evidencePointers: ["/record/canary"],
+    },
+  };
+}
+
+function campaignRun(input: FindingInput | FindingInput[]): CampaignRun {
+  const findings = Array.isArray(input) ? input : [input];
   let state: CampaignState = createCampaignState(
     "http://127.0.0.1:8899/",
     createCampaignBudget(30),
@@ -198,36 +223,40 @@ function campaignRun(finding: FindingInput): CampaignRun {
   state = reduceCampaign(state, { type: "phase", phase: "exploring" });
   state = reduceCampaign(state, {
     type: "operations-discovered",
-    operations: [{ method: "GET", path: finding.endpoint }],
+    operations: findings.map((finding) => ({ method: "GET", path: finding.endpoint })),
   });
-  state = reduceCampaign(state, {
-    type: "request-tested",
-    request: {
-      agentId: "explorer-1",
-      path: finding.endpoint,
-      method: "GET",
-      actorId: "ordinary-user",
-      status: 200,
-    },
-  });
-  state = reduceCampaign(state, { type: "finding", finding });
-  state = reduceCampaign(state, { type: "phase", phase: "validating" });
-  state = reduceCampaign(state, {
-    type: "validation",
-    validation: {
-      fingerprint: state.findings[0]!.fingerprint,
-      status: "confirmed",
-      evidence: "canary matched",
-      proof: {
-        predicate: "canary-retrieval",
-        passed: true,
-        summary: "canary matched",
-        checks: [],
+  for (const finding of findings) {
+    state = reduceCampaign(state, {
+      type: "request-tested",
+      request: {
+        agentId: "explorer-1",
+        path: finding.endpoint,
+        method: "GET",
+        actorId: "ordinary-user",
+        status: 200,
       },
-      observations: [],
-      reviewer: { assessment: "supported", evidence: "replay matched" },
-    },
-  });
+    });
+    state = reduceCampaign(state, { type: "finding", finding });
+  }
+  state = reduceCampaign(state, { type: "phase", phase: "validating" });
+  for (const finding of state.findings) {
+    state = reduceCampaign(state, {
+      type: "validation",
+      validation: {
+        fingerprint: finding.fingerprint,
+        status: "confirmed",
+        evidence: "proof matched",
+        proof: {
+          predicate: finding.proof.type,
+          passed: true,
+          summary: "proof matched",
+          checks: [],
+        },
+        observations: [],
+        reviewer: { assessment: "supported", evidence: "replay matched" },
+      },
+    });
+  }
   state = reduceCampaign(state, { type: "phase", phase: "complete" });
   return {
     profileId: "held-out",
