@@ -264,4 +264,16 @@ bun run test:integration  # live crawl and authentication checks against crAPI
 bun run test:all          # fast and live HTTP suites
 bun run evals             # isolated live GLM trial (set XBOW_EVAL_TRIALS to repeat)
 bun run verify            # formatting, linting, types, and fast tests
+bun run security:secrets  # scan committable files for credentials (requires Docker)
 ```
+
+## Security and disclosure
+
+Keep API keys in the environment; local `.env*` files, private-key formats,
+databases, logs, and generated campaign artifacts are excluded from Git. The
+recommended `.prototype/` report location is intentionally ignored.
+
+Campaign reports can still contain target application data even after
+credential redaction. Inspect every report before sharing it, and never commit
+output from a real assessment. Report vulnerabilities privately as described
+in [SECURITY.md](SECURITY.md).
