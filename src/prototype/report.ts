@@ -191,6 +191,8 @@ function isCredentialField(name: string): boolean {
 }
 
 export function renderMarkdownReport(report: RunReport): string {
+  const namedActorIds = reproductionActorIds(report);
+  const actorVariables = credentialVariables(namedActorIds);
   const lines = [
     "# Quiver security campaign report",
     "",
@@ -231,25 +233,22 @@ export function renderMarkdownReport(report: RunReport): string {
     );
   }
 
-  if (
-    report.reproductionAuthentication &&
-    report.findings.some(
-      (finding) =>
-        finding.reproduction.some((request) => request.actorId !== actorIds.anonymous) ||
-        (finding.validation?.replayedProof?.type === "browser-visible-effect" &&
-          finding.validation.replayedProof.pageActorId !== actorIds.anonymous),
-    )
-  ) {
+  if (namedActorIds.length > 0) {
     lines.push(
       "## Authentication for reproduction",
       "",
-      report.reproductionAuthentication.description,
-      "",
-      "Set the target and obtain `$QUIVER_TOKEN` before running authenticated reproduction commands:",
+      ...(report.reproductionAuthentication
+        ? [report.reproductionAuthentication.description, ""]
+        : []),
+      "Prepare one credential variable for each named actor used by the reproduction:",
       "",
       "```sh",
       `export QUIVER_TARGET=${shellQuote(new URL(report.target).origin)}`,
-      ...report.reproductionAuthentication.commands,
+      ...actorAuthenticationCommands(
+        namedActorIds,
+        actorVariables,
+        report.reproductionAuthentication,
+      ),
       "```",
       "",
     );
@@ -330,7 +329,7 @@ export function renderMarkdownReport(report: RunReport): string {
         const url = new URL(request.path, report.target).href;
         const auth =
           request.actorId !== actorIds.anonymous
-            ? " --header 'Authorization: Bearer $QUIVER_TOKEN'"
+            ? ` --header 'Authorization: Bearer '"$${actorVariables.get(request.actorId)}"`
             : "";
         const method = request.method ?? "GET";
         const headers = Object.entries(request.headers ?? {})
@@ -431,6 +430,56 @@ export function renderMarkdownReport(report: RunReport): string {
   lines.push("");
 
   return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function reproductionActorIds(report: RunReport): string[] {
+  const actorIdsUsed = report.findings.flatMap((finding) => [
+    ...finding.reproduction.map(({ actorId }) => actorId),
+    ...(finding.validation?.reproduction?.map(({ actorId }) => actorId) ?? []),
+    ...(finding.validation?.replayedProof?.type === "browser-visible-effect"
+      ? [finding.validation.replayedProof.pageActorId]
+      : []),
+  ]);
+  return [...new Set(actorIdsUsed)].filter((actorId) => actorId !== actorIds.anonymous);
+}
+
+function credentialVariables(actorIdsUsed: readonly string[]): Map<string, string> {
+  const variables = new Map<string, string>();
+  const claimed = new Set<string>();
+  for (const actorId of actorIdsUsed) {
+    const base = `QUIVER_TOKEN_${actorId.toUpperCase().replaceAll(/[^A-Z0-9]+/g, "_")}`;
+    let variable = base;
+    let suffix = 2;
+    while (claimed.has(variable)) variable = `${base}_${suffix++}`;
+    claimed.add(variable);
+    variables.set(actorId, variable);
+  }
+  return variables;
+}
+
+function actorAuthenticationCommands(
+  actorIdsUsed: readonly string[],
+  variables: ReadonlyMap<string, string>,
+  authentication: RunReport["reproductionAuthentication"],
+): string[] {
+  const fallbackActor = actorIdsUsed.includes(actorIds.ordinary)
+    ? actorIds.ordinary
+    : actorIdsUsed[0];
+  return actorIdsUsed.flatMap((actorId) => {
+    const variable = variables.get(actorId)!;
+    const configured = authentication?.actors?.[actorId];
+    if (configured) {
+      return [
+        `# ${actorId}: ${configured.description}`,
+        ...configured.commands,
+        `export ${variable}="$QUIVER_TOKEN"`,
+      ];
+    }
+    if (authentication && actorId === fallbackActor) {
+      return [`# ${actorId}`, ...authentication.commands, `export ${variable}="$QUIVER_TOKEN"`];
+    }
+    return [`: "\${${variable}:?Set ${variable} for actor ${actorId}}"`];
+  });
 }
 
 export async function writeRunReport(path: string, report: RunReport): Promise<string> {

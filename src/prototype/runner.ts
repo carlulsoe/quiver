@@ -115,6 +115,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       ],
     ]);
   let state = campaignStore.load(campaignId);
+  assertFreshCampaign(state, campaignId, options.target);
   const budget = state.budget;
   const dispatch = (action: CampaignAction) => {
     campaignStore.apply(action);
@@ -432,4 +433,26 @@ function isRequestBudgetExhausted(error: unknown): boolean {
     error instanceof ReplayBudgetExceededError ||
     String(error).includes("Request budget exhausted")
   );
+}
+
+function assertFreshCampaign(state: CampaignState, campaignId: string, target: URL): void {
+  const expectedTarget = `${target.origin}${target.pathname}${target.search}`;
+  const hasPriorWork =
+    state.requests.total !== 0 ||
+    state.requests.exploration !== 0 ||
+    state.requests.validation !== 0 ||
+    state.testedRequests.length !== 0 ||
+    state.findings.length !== 0 ||
+    state.validations.length !== 0 ||
+    state.exploitChains.length !== 0 ||
+    state.exploitChainValidations.length !== 0 ||
+    state.agents.some(({ status }) => status !== "queued");
+  if (state.phase !== "starting" || hasPriorWork) {
+    throw new Error(
+      `Campaign ${campaignId} is not a fresh starting checkpoint; campaign resume is not supported`,
+    );
+  }
+  if (state.target !== expectedTarget) {
+    throw new Error(`Campaign ${campaignId} targets ${state.target}, not ${expectedTarget}`);
+  }
 }

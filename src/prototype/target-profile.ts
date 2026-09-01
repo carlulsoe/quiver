@@ -4,7 +4,10 @@ import type { ActorId } from "./sessions.ts";
 
 export interface ReproductionAuthentication {
   description: string;
+  /** Legacy single-actor commands. They must export QUIVER_TOKEN. */
   commands: string[];
+  /** Optional per-actor commands. Each command set must export QUIVER_TOKEN. */
+  actors?: Record<string, { description: string; commands: string[] }>;
 }
 
 interface ProofPolicyRule {

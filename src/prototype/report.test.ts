@@ -131,6 +131,7 @@ describe("campaign report", () => {
               private_key: "body-key",
             }),
           },
+          { path: "/vehicles/second/location", actorId: "second-user" },
         ],
         proof: {
           type: "cross-principal-access",
@@ -188,6 +189,12 @@ describe("campaign report", () => {
       reproductionAuthentication: {
         description: "Log in as an ordinary test user.",
         commands: ["export QUIVER_TOKEN='example-token'"],
+        actors: {
+          "second-user": {
+            description: "Log in as the second fixture user.",
+            commands: ["export QUIVER_TOKEN='second-example-token'"],
+          },
+        },
       },
       model: "openrouter/z-ai/glm-5.3-flash",
       durationMs: 1234,
@@ -230,7 +237,10 @@ describe("campaign report", () => {
     expect(markdown).toContain("## Authentication for reproduction");
     expect(markdown).toContain("export QUIVER_TARGET='http://127.0.0.1:8888'");
     expect(markdown).toContain("export QUIVER_TOKEN='example-token'");
-    expect(markdown).toContain("--header 'Authorization: Bearer $QUIVER_TOKEN'");
+    expect(markdown).toContain('export QUIVER_TOKEN_ORDINARY_USER="$QUIVER_TOKEN"');
+    expect(markdown).toContain('export QUIVER_TOKEN_SECOND_USER="$QUIVER_TOKEN"');
+    expect(markdown).toContain(`--header 'Authorization: Bearer '"$QUIVER_TOKEN_ORDINARY_USER"`);
+    expect(markdown).toContain(`--header 'Authorization: Bearer '"$QUIVER_TOKEN_SECOND_USER"`);
     expect(markdown).toContain("--header 'accept: application/json'");
     expect(markdown).toContain(`--header 'x-api-key: '"$QUIVER_HEADER_X_API_KEY"`);
     expect(markdown).toContain(`--header '\`id\`-auth: '"$QUIVER_HEADER_ID_AUTH"`);
@@ -238,7 +248,7 @@ describe("campaign report", () => {
     const customHeaderCommand = markdown
       .split("\n")
       .find((line) => line.startsWith("curl ") && line.includes("/vehicles/vehicle-2/location"))!;
-    expect(customHeaderCommand.match(/Authorization: Bearer \$QUIVER_TOKEN/g)).toHaveLength(1);
+    expect(customHeaderCommand.match(/Authorization: Bearer/g)).toHaveLength(1);
     expect(markdown).not.toContain("authorization: [REDACTED]");
     expect(JSON.stringify(report)).not.toContain("report-secret");
     expect(JSON.stringify(report)).not.toContain("body-secret");
