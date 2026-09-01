@@ -9,7 +9,11 @@ export interface HeldOutFixture {
   fetch(request: Request): Promise<Response>;
 }
 
-const authorization = "Bearer quiver-showcase-user";
+const authorizations = {
+  "Bearer quiver-showcase-user": "user-a",
+  "Bearer quiver-showcase-user-b": "user-b",
+  "Bearer quiver-showcase-admin": "administrator",
+} as const;
 
 export function createHeldOutFixture(seed: string): HeldOutFixture {
   if (!seed.trim()) throw new Error("Held-out seed must not be empty");
@@ -17,6 +21,7 @@ export function createHeldOutFixture(seed: string): HeldOutFixture {
   const asset = `bundle-${token(seed, "asset")}.js`;
   const actorId = uuid(seed, "actor");
   const foreignOwnerId = uuid(seed, "owner");
+  const administratorId = uuid(seed, "administrator");
   const ownedVaultId = uuid(seed, "owned-vault");
   const foreignVaultId = uuid(seed, "foreign-vault");
   const canary = heldOutCanary(seed);
@@ -32,14 +37,13 @@ export function createHeldOutFixture(seed: string): HeldOutFixture {
     canary,
     async fetch(request) {
       const url = new URL(request.url);
-      if (request.method !== "GET") return json({ error: "method-not-allowed" }, 405);
-      if (url.pathname === "/") {
+      if (request.method === "GET" && url.pathname === "/") {
         return new Response(
           `<!doctype html><html><head><title>Ledgerly</title></head><body><main>Ledgerly workspace</main><button id="audit">Load audit</button><script src="/assets/${asset}"></script></body></html>`,
           { headers: { "content-type": "text/html" } },
         );
       }
-      if (url.pathname === `/assets/${asset}`) {
+      if (request.method === "GET" && url.pathname === `/assets/${asset}`) {
         return new Response(
           [
             `const token="quiver-showcase-user";`,
@@ -51,12 +55,30 @@ export function createHeldOutFixture(seed: string): HeldOutFixture {
           { headers: { "content-type": "application/javascript" } },
         );
       }
-      if (!isAuthorized(request)) return json({ error: "unauthorized" }, 401);
+      const principal = authenticate(request);
+      if (!principal) return json({ error: "unauthorized" }, 401);
+      if (url.pathname === `${api}/audit`) {
+        if (request.method !== "POST") return json({ error: "method-not-allowed" }, 405);
+        return principal === "administrator"
+          ? json({ accepted: true })
+          : json({ error: "forbidden" }, 403);
+      }
+      if (request.method !== "GET") return json({ error: "method-not-allowed" }, 405);
+      const principalId =
+        principal === "user-a"
+          ? actorId
+          : principal === "user-b"
+            ? foreignOwnerId
+            : administratorId;
       if (url.pathname === `${api}/session`) {
-        return json({ principal: { id: actorId, email: "showcase-user@ledgerly.test" } });
+        return json({ principal: { id: principalId, role: principal } });
       }
       if (url.pathname === `${api}/vaults`) {
-        return json({ vaults: [{ id: ownedVaultId, ownerId: actorId, label: "My records" }] });
+        const vaults =
+          principal === "user-b"
+            ? [{ id: foreignVaultId, ownerId: foreignOwnerId, label: "My records" }]
+            : [{ id: ownedVaultId, ownerId: actorId, label: "My records" }];
+        return json({ vaults });
       }
       if (url.pathname === `${api}/directory`) {
         return json({
@@ -85,8 +107,8 @@ export function createHeldOutFixture(seed: string): HeldOutFixture {
       }
       if (url.pathname.startsWith(`${api}/profiles/`)) {
         const requestedPrincipal = url.pathname.slice(`${api}/profiles/`.length);
-        return requestedPrincipal === actorId
-          ? json({ id: actorId, email: "showcase-user@ledgerly.test" })
+        return requestedPrincipal === principalId || principal === "administrator"
+          ? json({ id: requestedPrincipal, role: principal })
           : json({ error: "forbidden" }, 403);
       }
       return json({ error: "not-found" }, 404);
@@ -98,8 +120,11 @@ export function heldOutCanary(seed: string): string {
   return `QUIVER-CANARY-${token(seed, "canary").toUpperCase()}`;
 }
 
-function isAuthorized(request: Request): boolean {
-  return request.headers.get("authorization") === authorization;
+function authenticate(
+  request: Request,
+): (typeof authorizations)[keyof typeof authorizations] | undefined {
+  const authorization = request.headers.get("authorization");
+  return authorization ? authorizations[authorization as keyof typeof authorizations] : undefined;
 }
 
 function json(body: unknown, status = 200): Response {

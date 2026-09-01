@@ -8,14 +8,84 @@ surface. A persistent decision engine retains campaign memory while short-lived 
 specialists turn over. Fresh validators independently replay findings as exploration continues, while
 code-owned proof predicates—not an LLM decision—determine confirmation.
 
-The campaign engine is target-agnostic. A small `TargetProfile` supplies target
-setup such as authentication, allowed setup operations, and explicitly denied operations. The CLI ships
+The campaign engine is target-agnostic. A declarative `TargetManifest` supplies scope,
+identities, authentication, protected operations, and explicitly denied operations. A thin
+`TargetProfile` adapter exposes that manifest to the runtime. The CLI ships
 profiles for OWASP crAPI, Broken Crystals, OWASP VulnerableApp, VAmPI's vulnerable
 and secure modes, and a randomized held-out target; campaign state, mapping,
 deterministic validation, and reporting contain no target route inventory.
 Target-owned policies bind higher-impact validators to specific operations and
 synthetic fixtures, while the shared engine contains vulnerability-specific
 validation logic.
+
+## Target manifests and principals
+
+Each manifest declares anonymous access plus any independently authenticated principals that a
+campaign may compare. Quiver has stable actor references for user A (`ordinary-user`), user B
+(`second-user`), and administrator (`privileged-user`). The role and display label remain explicit in
+the manifest, so a target may use different application usernames without changing findings or
+replay data.
+
+Authentication is data rather than target-specific setup code. The built-in adapters cover bearer or
+custom header tokens, HTTP/browser cookies, and login responses that must be materialized into browser
+headers, storage, or cookies. Login and refresh exchanges are restricted to `scope.setupOperations`,
+charged to the same campaign request budget as every other target request, and may read credentials
+only from a declared response header, JSON pointer, literal, or environment reference. Expiring tokens
+are refreshed per actor with concurrent refreshes coalesced.
+Browser-state strings may interpolate credentials with `{{credential}}` and environment-backed
+identity metadata with `{{env:NAME}}` or `{{env:NAME|fallback}}`.
+Authentication request paths are static so tokens and environment secrets cannot enter request-event
+telemetry; refresh credentials belong in declared headers or bodies.
+
+```ts
+const manifest = {
+  schemaVersion: 1,
+  id: "example",
+  displayName: "Example",
+  objective: "Test object and function authorization.",
+  scope: {
+    setupOperations: [{ method: "POST", path: "/login" }],
+    protectedOperations: [
+      {
+        method: "GET",
+        path: "/accounts/{id}",
+        authorizedActors: [actorIds.userA, actorIds.userB, actorIds.administrator],
+      },
+      {
+        method: "POST",
+        path: "/admin/reindex",
+        authorizedActors: [actorIds.administrator],
+      },
+    ],
+  },
+  identities: [
+    { id: actorIds.anonymous, label: "Anonymous", role: "anonymous" },
+    {
+      id: actorIds.userA,
+      label: "User A",
+      role: "user",
+      authentication: {
+        kind: "header-token",
+        login: {
+          request: {
+            method: "POST",
+            path: "/login",
+            body: { email: { env: "EXAMPLE_USER_A" }, password: { env: "EXAMPLE_PASSWORD_A" } },
+          },
+          credential: { location: "body", pointer: "/accessToken" },
+        },
+      },
+    },
+  ],
+} satisfies TargetManifest;
+
+export const exampleProfile = createTargetProfile(manifest);
+```
+
+Exploration and validation targets instantiate these adapters independently. Validators therefore log
+in afresh and never reuse exploration tokens, cookies, refresh state, or browser storage. A protected
+operation declares intended access for authorization testing; it does not suppress requests from other
+actors, because observing the target's own denial or bypass is the point of BOLA and privilege tests.
 
 This is not a general-purpose vulnerability scanner. Only test systems you own
 or are explicitly authorized to assess.
@@ -140,9 +210,10 @@ Findings carry severity, CWE, impact, mitigation, a safe impact-demonstration le
 containing exact REST methods, bodies, headers, and authentication mode, and one
 structured proof predicate. Vulnerability-specific validators cover authorization
 and data exposure, browser-visible XSS effects, HTTP OAST callbacks, verifier-only
-canary retrieval, and exact before/after state transitions. Response and timing
-differentials are retained as supporting evidence but cannot independently
-confirm injection. BOLA proofs require different actor and resource-owner
+canary retrieval, exact before/after state transitions, target-owned SQL semantic
+differentials, and fresh computed command-execution challenges. Generic response
+and timing differentials remain supporting evidence, and SSRF OAST callbacks do
+not confirm command execution. BOLA proofs require different actor and resource-owner
 identities plus concrete impact fields in a successful access response.
 
 Impact levels are derived by code: `observation` for read-only HTTP evidence,
@@ -204,14 +275,13 @@ host-gateway mapping) so the target can reach the campaign-local listener.
 
 The live-model suite uses Flue through a `vitest-evals` harness. By default one
 trial covers crAPI, VAmPI's vulnerable and secure modes, VulnerableApp, and the
-randomized held-out fixture. Start the Docker-backed targets and keep the
-held-out server running in another terminal:
+randomized held-out fixture. Start the Docker-backed targets; the eval harness
+starts an isolated held-out fixture for each matrix trial:
 
 ```sh
 bun run target:up
 bun run target:vampi:up
 bun run target:vulnerableapp:up
-bun run target:held-out
 bun run evals
 ```
 
@@ -255,11 +325,17 @@ profile is selected. Quiver writes merged viewer input to
 `.prototype/eval-summary.json` and `.prototype/eval-summary.md`: success rate,
 per-profile and aggregate coverage, precision, validation completeness,
 false-positive rate, requests per true positive, duration, token usage, failures,
-and approximate model cost.
+and approximate model cost. Full failure messages remain in the per-trial JSON
+artifacts; the aggregate, per-profile, and per-run summaries classify them as
+model, infrastructure, budget, mapping, or validation failures and keep only a
+concise error reason.
 
 Trials are sequential by default. Set `XBOW_EVAL_CONCURRENCY=2` to use two
 isolated worker processes when the local target and model provider can support
-the extra load.
+the extra load. Every held-out trial receives a distinct seed derived from a
+random run seed. Set `XBOW_EVAL_SEED` to reproduce the same held-out fixtures;
+the effective run seed and each held-out trial seed are recorded in the generated
+output.
 
 See the committed [10-trial crAPI results](docs/showcase/crapi-10-trial-results.md)
 for the full strict-pass baseline and the

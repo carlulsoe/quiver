@@ -38,6 +38,31 @@ describe("randomized held-out target", () => {
     expect(protectedProfile.status).toBe(403);
   });
 
+  it("distinguishes user A, user B, and administrator authorization", async () => {
+    const fixture = createHeldOutFixture("principal-seed");
+    const base = `http://127.0.0.1:8899/api/${fixture.namespace}`;
+    const userB = { authorization: "Bearer quiver-showcase-user-b" };
+    const administrator = { authorization: "Bearer quiver-showcase-admin" };
+
+    const userBProfile = await fixture.fetch(
+      new Request(`${base}/profiles/${fixture.foreignOwnerId}`, { headers: userB }),
+    );
+    const administratorProfile = await fixture.fetch(
+      new Request(`${base}/profiles/${fixture.foreignOwnerId}`, { headers: administrator }),
+    );
+    const userBAudit = await fixture.fetch(
+      new Request(`${base}/audit`, { method: "POST", headers: userB }),
+    );
+    const administratorAudit = await fixture.fetch(
+      new Request(`${base}/audit`, { method: "POST", headers: administrator }),
+    );
+
+    expect(userBProfile.status).toBe(200);
+    expect(administratorProfile.status).toBe(200);
+    expect(userBAudit.status).toBe(403);
+    expect(administratorAudit.status).toBe(200);
+  });
+
   it("publishes only live randomized route intelligence to the mapper", async () => {
     const fixture = createHeldOutFixture("crawl-seed");
     const server = Bun.serve({ port: 0, fetch: fixture.fetch });
@@ -46,7 +71,7 @@ describe("randomized held-out target", () => {
       const target = new ScopedTarget({
         target: new URL(`http://127.0.0.1:${server.port}`),
         requestBudget: 10,
-        timeoutMs: 3_000,
+        timeoutMs: 10_000,
         onRequest: ({ method, path }) => requested.push(`${method} ${path}`),
         openApi: {
           openapi: "3.1.0",

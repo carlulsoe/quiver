@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  conciseEvalFailure,
   findSecurityEvalOutput,
   renderRepeatedEvalSummary,
   summarizeRepeatedEvals,
@@ -24,6 +25,7 @@ function output(overrides: Partial<SecurityEvalOutput> = {}): SecurityEvalOutput
     validationCompleteness: 1,
     tokens: 1_000,
     failures: [],
+    failureClassifications: [],
     failureCount: 0,
     scoreKind: "crapi-read-only",
     scoreDetails: {},
@@ -46,6 +48,7 @@ function output(overrides: Partial<SecurityEvalOutput> = {}): SecurityEvalOutput
     modelTokens: 1_000,
     approximateModelCost: 0.02,
     error: null,
+    heldOutSeed: null,
     ...overrides,
   };
 }
@@ -81,6 +84,7 @@ describe("repeated eval summary", () => {
         },
       ],
       new Date("2026-08-31T00:00:00.000Z"),
+      "repeated-test-seed",
     );
 
     expect(summary).toMatchObject({
@@ -101,6 +105,7 @@ describe("repeated eval summary", () => {
       totalApproximateModelCost: 0.06,
       meanApproximateModelCost: 0.03,
       costedTrials: 2,
+      runSeed: "repeated-test-seed",
     });
     expect(renderRepeatedEvalSummary(summary)).toContain("| Profile runs passed | 1/2 |");
   });
@@ -114,5 +119,20 @@ describe("repeated eval summary", () => {
         { type: "message", role: "assistant", content: expected },
       ]),
     ).toBe(expected);
+  });
+
+  it("keeps judge errors concise while preserving the actionable reason", () => {
+    const verboseOutput = `Output: ${"missed item ".repeat(500)}`;
+    expect(
+      conciseEvalFailure([
+        "Error: Score: 0.00 below threshold: 1.00",
+        verboseOutput,
+        "CampaignContractJudge [0.0]",
+        "reason  vulnerableapp completed with zero native coverage.",
+        "    at evaluator.ts:1:1",
+      ]),
+    ).toBe(
+      "Error: Score: 0.00 below threshold: 1.00\nreason  vulnerableapp completed with zero native coverage.",
+    );
   });
 });

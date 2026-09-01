@@ -2,6 +2,13 @@ import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
 import type { ActorId } from "./sessions.ts";
 import type { AttackSurfaceOrigin } from "./attack-surface.ts";
+import {
+  assertValidTargetManifest,
+  authenticateTargetManifest,
+  manifestActorIds,
+  type ProtectedOperationManifest,
+  type TargetManifest,
+} from "./target-manifest.ts";
 
 export interface ReproductionAuthentication {
   description: string;
@@ -59,11 +66,45 @@ export interface OastProofPolicy extends ProofPolicyRule {
   challenge: ChallengeMutation;
 }
 
+export interface SqlSemanticDifferentialProofPolicy extends ProofPolicyRule {
+  kind: "sql-semantic-differential";
+  category: "sql-injection";
+  endpoint: string;
+  method: string;
+  mutation: {
+    location: "query" | "json-body";
+    parameter: string;
+    controlValue: string;
+    probeValue: string;
+  };
+  response: {
+    jsonPointer: string;
+    controlValue: ProofScalar;
+    probeValue: ProofScalar;
+  };
+}
+
+export interface CommandExecutionChallengeProofPolicy extends ProofPolicyRule {
+  kind: "command-execution-challenge";
+  category: "command-injection";
+  endpoint: string;
+  method: string;
+  challenge: ChallengeMutation;
+  outputJsonPointer: string;
+  outputPrefix: string;
+  multiplier: number;
+  addend: number;
+  challengeMinimum: number;
+  challengeMaximum: number;
+}
+
 export type ProofPolicy =
   | CanaryProofPolicy
   | StateTransitionProofPolicy
   | BrowserEffectProofPolicy
-  | OastProofPolicy;
+  | OastProofPolicy
+  | SqlSemanticDifferentialProofPolicy
+  | CommandExecutionChallengeProofPolicy;
 
 export interface TargetProfile {
   id: string;
@@ -72,8 +113,12 @@ export interface TargetProfile {
   /** Extra browser discovery origins, each explicitly active or passive. */
   attackSurfaceOrigins?: AttackSurfaceOrigin[];
   allowedRequests?: AllowedRequest[];
+  setupRequests?: AllowedRequest[];
   deniedRequests?: DeniedRequest[];
-  authenticate?: (target: ScopedTarget) => Promise<{ authContext: string }>;
+  authenticate?: (
+    target: ScopedTarget,
+    actorIds?: readonly ActorId[],
+  ) => Promise<{ authContext: string }>;
   /** Actor references made available to campaign agents. Anonymous is always available. */
   actorIds?: ActorId[];
   reproductionAuthentication?: ReproductionAuthentication;
@@ -83,9 +128,64 @@ export interface TargetProfile {
   validationResetRequestBudget?: number;
   /** Hard ceiling for code-derived proof impact. Defaults to observation. */
   maximumImpactLevel?: ImpactLevel;
+  /** Declarative source used by bundled and external target adapters. */
+  manifest?: TargetManifest;
+  protectedOperations?: ProtectedOperationManifest[];
+}
+
+export type TargetProfileExtensions = Pick<
+  TargetProfile,
+  "attackSurfaceOrigins" | "proofPolicies" | "prepareValidation" | "validationResetRequestBudget"
+>;
+
+/** Builds the runtime profile API from a declarative onboarding manifest. */
+export function createTargetProfile(
+  manifest: TargetManifest,
+  extensions: TargetProfileExtensions = {},
+): TargetProfile {
+  assertValidTargetManifest(manifest);
+  const actorIds = manifestActorIds(manifest);
+  const setupRequests = [...(manifest.scope.setupOperations ?? [])];
+  const allowedRequests = uniqueOperations([
+    ...setupRequests,
+    ...(manifest.scope.protectedOperations ?? []).map(({ method, path }) => ({ method, path })),
+  ]);
+  return {
+    id: manifest.id,
+    displayName: manifest.displayName,
+    objective: manifest.objective,
+    allowedRequests: allowedRequests.length > 0 ? allowedRequests : undefined,
+    setupRequests: setupRequests.length > 0 ? setupRequests : undefined,
+    deniedRequests: manifest.scope.deniedOperations
+      ? [...manifest.scope.deniedOperations]
+      : undefined,
+    protectedOperations: manifest.scope.protectedOperations
+      ? [...manifest.scope.protectedOperations]
+      : undefined,
+    maximumImpactLevel: manifest.scope.maximumImpactLevel,
+    actorIds,
+    reproductionAuthentication: manifest.reproductionAuthentication,
+    ...(actorIds.length > 0
+      ? {
+          authenticate: (target: ScopedTarget, requestedActorIds?: readonly ActorId[]) =>
+            authenticateTargetManifest(target, manifest, { actorIds: requestedActorIds }),
+        }
+      : {}),
+    manifest,
+    ...extensions,
+  };
+}
+
+function uniqueOperations(operations: AllowedRequest[]): AllowedRequest[] {
+  return [
+    ...new Map(
+      operations.map((operation) => [`${operation.method} ${operation.path}`, operation]),
+    ).values(),
+  ];
 }
 
 export function assertValidTargetProfile(profile: TargetProfile): void {
+  if (profile.manifest) assertValidTargetManifest(profile.manifest);
   if (
     profile.prepareValidation &&
     (!Number.isInteger(profile.validationResetRequestBudget) ||
@@ -104,6 +204,33 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
     }
     if (policy.kind === "oast" && policy.challenge.template.split("{{challenge}}").length !== 2) {
       throw new Error(`OAST policy ${policy.id} challenge must substitute the callback once`);
+    }
+    if (
+      policy.kind === "sql-semantic-differential" &&
+      (policy.mutation.controlValue === policy.mutation.probeValue ||
+        Object.is(policy.response.controlValue, policy.response.probeValue))
+    ) {
+      throw new Error(
+        `SQL semantic-differential policy ${policy.id} must use distinct request and response values`,
+      );
+    }
+    if (
+      policy.kind === "command-execution-challenge" &&
+      (policy.challenge.template.split("{{challenge}}").length !== 2 ||
+        !Number.isSafeInteger(policy.multiplier) ||
+        policy.multiplier === 0 ||
+        !Number.isSafeInteger(policy.addend) ||
+        !Number.isSafeInteger(policy.challengeMinimum) ||
+        !Number.isSafeInteger(policy.challengeMaximum) ||
+        policy.challengeMinimum < 1 ||
+        policy.challengeMinimum >= policy.challengeMaximum ||
+        !Number.isSafeInteger(policy.challengeMinimum * policy.multiplier + policy.addend) ||
+        !Number.isSafeInteger(policy.challengeMaximum * policy.multiplier + policy.addend) ||
+        policy.outputPrefix.length === 0)
+    ) {
+      throw new Error(
+        `Command-execution policy ${policy.id} must declare one bounded arithmetic challenge`,
+      );
     }
     if (
       policy.kind === "browser-effect" &&
