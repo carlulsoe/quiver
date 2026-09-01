@@ -3,6 +3,7 @@ import { start } from "@flue/runtime/node";
 import { PersistentCoordinator } from "./adaptive-coordinator.ts";
 import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
+import { InMemoryCampaignStore, type CampaignStore } from "./campaign-store.ts";
 import { ChainBudgetExceededError, replayExploitChain } from "./exploit-chain.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import { ProofArtifactStore } from "./proof-artifacts.ts";
@@ -10,7 +11,6 @@ import { RequestBudgetExceededError, ScopedTarget } from "./scoped-target.ts";
 import {
   createCampaignBudget,
   createCampaignState,
-  reduceCampaign,
   type CampaignAction,
   type CampaignState,
 } from "./state.ts";
@@ -26,6 +26,8 @@ export interface RunCampaignOptions {
   onState?: (state: CampaignState, action?: CampaignAction) => void;
   openApi?: unknown;
   context?: string;
+  campaignId?: string;
+  campaignStore?: CampaignStore;
 }
 
 export interface CampaignRun {
@@ -50,7 +52,6 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
   await using artifacts = new ProofArtifactStore();
   const verification = new DefaultVerificationEngine(options.profile, artifacts);
   const startedAt = performance.now();
-  const budget = createCampaignBudget(options.requestBudget ?? 30);
   const explorerCount = options.explorerCount ?? 2;
   const events: RunEvent[] = [];
   const usage = emptyUsage();
@@ -100,13 +101,24 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     usage.cost.cacheWrite += value.cost.cacheWrite;
     usage.cost.total += value.cost.total;
   };
-  let state = createCampaignState(
-    `${options.target.origin}${options.target.pathname}${options.target.search}`,
-    budget,
-    explorerCount,
-  );
+  const campaignId = options.campaignId ?? options.profile.id;
+  const campaignStore =
+    options.campaignStore ??
+    new InMemoryCampaignStore([
+      [
+        campaignId,
+        createCampaignState(
+          `${options.target.origin}${options.target.pathname}${options.target.search}`,
+          createCampaignBudget(options.requestBudget ?? 30),
+          explorerCount,
+        ),
+      ],
+    ]);
+  let state = campaignStore.load(campaignId);
+  const budget = state.budget;
   const dispatch = (action: CampaignAction) => {
-    state = reduceCampaign(state, action);
+    campaignStore.apply(action);
+    state = campaignStore.checkpoint();
     record("state", {
       action: action.type,
       phase: state.phase,
