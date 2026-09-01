@@ -123,9 +123,10 @@ Findings carry severity, CWE, impact, mitigation, a safe impact-demonstration le
 containing exact REST methods, bodies, headers, and authentication mode, and one
 structured proof predicate. Vulnerability-specific validators cover authorization
 and data exposure, browser-visible XSS effects, HTTP OAST callbacks, verifier-only
-canary retrieval, and exact before/after state transitions. Response and timing
-differentials are retained as supporting evidence but cannot independently
-confirm injection. BOLA proofs require different actor and resource-owner
+canary retrieval, exact before/after state transitions, target-owned SQL semantic
+differentials, and fresh computed command-execution challenges. Generic response
+and timing differentials remain supporting evidence, and SSRF OAST callbacks do
+not confirm command execution. BOLA proofs require different actor and resource-owner
 identities plus concrete impact fields in a successful access response.
 
 Impact levels are derived by code: `observation` for read-only HTTP evidence,

@@ -58,11 +58,45 @@ export interface OastProofPolicy extends ProofPolicyRule {
   challenge: ChallengeMutation;
 }
 
+export interface SqlSemanticDifferentialProofPolicy extends ProofPolicyRule {
+  kind: "sql-semantic-differential";
+  category: "sql-injection";
+  endpoint: string;
+  method: string;
+  mutation: {
+    location: "query" | "json-body";
+    parameter: string;
+    controlValue: string;
+    probeValue: string;
+  };
+  response: {
+    jsonPointer: string;
+    controlValue: ProofScalar;
+    probeValue: ProofScalar;
+  };
+}
+
+export interface CommandExecutionChallengeProofPolicy extends ProofPolicyRule {
+  kind: "command-execution-challenge";
+  category: "command-injection";
+  endpoint: string;
+  method: string;
+  challenge: ChallengeMutation;
+  outputJsonPointer: string;
+  outputPrefix: string;
+  multiplier: number;
+  addend: number;
+  challengeMinimum: number;
+  challengeMaximum: number;
+}
+
 export type ProofPolicy =
   | CanaryProofPolicy
   | StateTransitionProofPolicy
   | BrowserEffectProofPolicy
-  | OastProofPolicy;
+  | OastProofPolicy
+  | SqlSemanticDifferentialProofPolicy
+  | CommandExecutionChallengeProofPolicy;
 
 export interface TargetProfile {
   id: string;
@@ -101,6 +135,33 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
     }
     if (policy.kind === "oast" && policy.challenge.template.split("{{challenge}}").length !== 2) {
       throw new Error(`OAST policy ${policy.id} challenge must substitute the callback once`);
+    }
+    if (
+      policy.kind === "sql-semantic-differential" &&
+      (policy.mutation.controlValue === policy.mutation.probeValue ||
+        Object.is(policy.response.controlValue, policy.response.probeValue))
+    ) {
+      throw new Error(
+        `SQL semantic-differential policy ${policy.id} must use distinct request and response values`,
+      );
+    }
+    if (
+      policy.kind === "command-execution-challenge" &&
+      (policy.challenge.template.split("{{challenge}}").length !== 2 ||
+        !Number.isSafeInteger(policy.multiplier) ||
+        policy.multiplier === 0 ||
+        !Number.isSafeInteger(policy.addend) ||
+        !Number.isSafeInteger(policy.challengeMinimum) ||
+        !Number.isSafeInteger(policy.challengeMaximum) ||
+        policy.challengeMinimum < 1 ||
+        policy.challengeMinimum >= policy.challengeMaximum ||
+        !Number.isSafeInteger(policy.challengeMinimum * policy.multiplier + policy.addend) ||
+        !Number.isSafeInteger(policy.challengeMaximum * policy.multiplier + policy.addend) ||
+        policy.outputPrefix.length === 0)
+    ) {
+      throw new Error(
+        `Command-execution policy ${policy.id} must declare one bounded arithmetic challenge`,
+      );
     }
     if (
       policy.kind === "browser-effect" &&

@@ -31,8 +31,8 @@ export const compatiblePredicates: Record<FindingCategory, readonly ProofPredica
     "canary-retrieval",
   ],
   "cross-site-scripting": ["browser-visible-effect"],
-  "sql-injection": [],
-  "command-injection": [],
+  "sql-injection": ["sql-semantic-differential"],
+  "command-injection": ["command-execution-challenge"],
   "server-side-request-forgery": ["oast-callback"],
   "path-traversal": ["canary-retrieval"],
   "open-redirect": [],
@@ -244,6 +244,139 @@ export function evaluateProof(
           delta,
         ),
         ...timingDifferentialSecurityChecks(finding, observations),
+      );
+      break;
+    }
+    case "sql-semantic-differential": {
+      const proof = finding.proof;
+      const policy = policyFor(context.policies, proof.policyId, "sql-semantic-differential");
+      const controlRequest = finding.reproduction[proof.controlRequestIndex];
+      const probeRequest = finding.reproduction[proof.probeRequestIndex];
+      const controlObservation = observations[proof.controlRequestIndex];
+      const probeObservation = observations[proof.probeRequestIndex];
+      const controlResult = policy
+        ? selectedAt(observations, proof.controlRequestIndex, policy.response.jsonPointer)
+        : { found: false };
+      const probeResult = policy
+        ? selectedAt(observations, proof.probeRequestIndex, policy.response.jsonPointer)
+        : { found: false };
+      checks.push(
+        check(
+          policy?.category === finding.category,
+          "target policy authorizes this SQL semantic differential",
+        ),
+        check(
+          policy !== undefined &&
+            finding.reproduction.length === 2 &&
+            proof.controlRequestIndex === 0 &&
+            proof.probeRequestIndex === 1,
+          "SQL proof is one closed adjacent control-probe pair",
+        ),
+        check(
+          policy !== undefined &&
+            [controlRequest, probeRequest].every(
+              (request) =>
+                request !== undefined &&
+                (request.method ?? "GET") === policy.method &&
+                endpointMatchesRequest(policy.endpoint, request.path) &&
+                affectedOperationMatches(finding, request),
+            ),
+          "SQL control and probe match the policy-bound affected operation",
+        ),
+        check(
+          policy !== undefined &&
+            requestMutationValue(controlRequest, policy.mutation) ===
+              policy.mutation.controlValue &&
+            requestMutationValue(probeRequest, policy.mutation) === policy.mutation.probeValue,
+          "SQL requests use the target-owned control and probe predicates",
+        ),
+        check(
+          policy !== undefined &&
+            requestsShareMutationShape(controlRequest, probeRequest, policy.mutation),
+          "SQL control and probe differ only by the policy-owned mutation",
+        ),
+        check(
+          controlObservation !== undefined &&
+            probeObservation !== undefined &&
+            isSuccess(controlObservation.status) &&
+            isSuccess(probeObservation.status),
+          "SQL control and probe both returned successful responses",
+        ),
+        check(
+          policy !== undefined &&
+            controlResult.found &&
+            sameValue(controlResult.value, policy.response.controlValue),
+          "SQL control produced the target-owned semantic result",
+          controlResult.value,
+        ),
+        check(
+          policy !== undefined &&
+            probeResult.found &&
+            sameValue(probeResult.value, policy.response.probeValue),
+          "SQL probe produced the target-owned semantic result",
+          probeResult.value,
+        ),
+      );
+      break;
+    }
+    case "command-execution-challenge": {
+      const proof = finding.proof;
+      const policy = policyFor(context.policies, proof.policyId, "command-execution-challenge");
+      const request = finding.reproduction[proof.requestIndex];
+      const observation = observations[proof.requestIndex];
+      const selected = policy
+        ? selectedAt(observations, proof.requestIndex, policy.outputJsonPointer)
+        : { found: false };
+      const expectedOutput = policy ? commandChallengeOutput(policy, proof.challenge) : undefined;
+      checks.push(
+        check(
+          policy?.category === finding.category,
+          "target policy authorizes this command-execution challenge",
+        ),
+        check(
+          policy !== undefined &&
+            Number.isSafeInteger(proof.challenge) &&
+            proof.challenge >= policy.challengeMinimum &&
+            proof.challenge <= policy.challengeMaximum &&
+            expectedOutput !== undefined,
+          "command challenge is a bounded policy-owned arithmetic input",
+          proof.challenge,
+        ),
+        check(
+          policy !== undefined &&
+            finding.reproduction.length === 1 &&
+            proof.requestIndex === 0 &&
+            request !== undefined &&
+            (request.method ?? "GET") === policy.method &&
+            endpointMatchesRequest(policy.endpoint, request.path) &&
+            affectedOperationMatches(finding, request),
+          "command challenge is one policy-bound affected operation",
+        ),
+        check(
+          policy !== undefined &&
+            challengeRequestMatches(request, policy.challenge, String(proof.challenge)),
+          "request uses the target-owned command template",
+        ),
+        check(
+          observation !== undefined && isSuccess(observation.status),
+          "command challenge returned a successful response",
+          observation?.status,
+        ),
+        check(
+          selected.found &&
+            typeof selected.value === "string" &&
+            expectedOutput !== undefined &&
+            selected.value.includes(expectedOutput),
+          "response contains the computed command-execution result",
+          selected.value,
+        ),
+        check(
+          request !== undefined &&
+            expectedOutput !== undefined &&
+            !requestContains(request, expectedOutput),
+          "computed command result was not present in the request",
+          expectedOutput,
+        ),
       );
       break;
     }
@@ -611,6 +744,14 @@ function verifyCanary(policy: Extract<ProofPolicy, { kind: "canary" }>, value: s
   } catch {
     return false;
   }
+}
+
+function commandChallengeOutput(
+  policy: Extract<ProofPolicy, { kind: "command-execution-challenge" }>,
+  challenge: number,
+): string | undefined {
+  const result = challenge * policy.multiplier + policy.addend;
+  return Number.isSafeInteger(result) ? `${policy.outputPrefix}${result}` : undefined;
 }
 
 function challengeRequestMatches(

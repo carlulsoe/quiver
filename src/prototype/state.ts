@@ -126,6 +126,18 @@ export type ProofPredicate =
       mutation: RequestMutation;
     }
   | {
+      type: "sql-semantic-differential";
+      policyId: string;
+      controlRequestIndex: number;
+      probeRequestIndex: number;
+    }
+  | {
+      type: "command-execution-challenge";
+      policyId: string;
+      requestIndex: number;
+      challenge: number;
+    }
+  | {
       type: "canary-retrieval";
       policyId: string;
       requestIndex: number;
@@ -496,7 +508,9 @@ export function deriveImpactLevel(
   ) {
     return "state-change";
   }
-  return ["browser-visible-effect", "oast-callback"].includes(finding.proof.type)
+  return ["browser-visible-effect", "oast-callback", "command-execution-challenge"].includes(
+    finding.proof.type,
+  )
     ? "bounded"
     : "observation";
 }
