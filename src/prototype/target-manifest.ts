@@ -244,6 +244,9 @@ function assertValidSessionAdapter(actorId: ActorId, adapter: SessionAdapterMani
   for (const exchange of [adapter.login, adapter.refresh].filter(
     (candidate): candidate is AuthenticationExchangeManifest => candidate !== undefined,
   )) {
+    if (exchange.request.path.includes("{{")) {
+      throw new Error(`Actor ${actorId} authentication request paths must be static`);
+    }
     if (exchange.expiresAfterMs !== undefined && exchange.expiresAfterMs <= 0) {
       throw new Error(`Actor ${actorId} expiresAfterMs must be positive`);
     }
@@ -312,7 +315,7 @@ async function runExchange(
   const context: CredentialContext = previous ?? { credential: "" };
   const observation = await target.setupRequest({
     method: exchange.request.method,
-    path: renderTemplate(exchange.request.path, context),
+    path: exchange.request.path,
     headers: exchange.request.headers
       ? Object.fromEntries(
           Object.entries(exchange.request.headers).map(([name, value]) => [

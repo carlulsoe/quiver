@@ -34,6 +34,8 @@ only from a declared response header, JSON pointer, literal, or environment refe
 are refreshed per actor with concurrent refreshes coalesced.
 Browser-state strings may interpolate credentials with `{{credential}}` and environment-backed
 identity metadata with `{{env:NAME}}` or `{{env:NAME|fallback}}`.
+Authentication request paths are static so tokens and environment secrets cannot enter request-event
+telemetry; refresh credentials belong in declared headers or bodies.
 
 ```ts
 const manifest = {

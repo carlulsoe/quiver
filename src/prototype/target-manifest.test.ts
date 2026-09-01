@@ -222,5 +222,17 @@ describe("declarative target onboarding", () => {
     expect(() => assertValidTargetManifest(manifest)).toThrow(
       "Authentication operation POST /refresh/a must be declared",
     );
+
+    const unsafePath = multiPrincipalManifest();
+    const userA = unsafePath.identities.find(({ id }) => id === actorIds.userA);
+    if (!userA?.authentication?.refresh) throw new Error("Expected user A refresh fixture");
+    userA.authentication.refresh.request.path = "/refresh/a?token={{refreshCredential}}";
+    unsafePath.scope.setupOperations = [
+      ...(unsafePath.scope.setupOperations ?? []),
+      { method: "POST", path: userA.authentication.refresh.request.path },
+    ];
+    expect(() => assertValidTargetManifest(unsafePath)).toThrow(
+      "authentication request paths must be static",
+    );
   });
 });
