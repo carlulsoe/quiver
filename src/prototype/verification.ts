@@ -5,7 +5,7 @@ import type { ProofArtifactStore } from "./proof-artifacts.ts";
 import { evaluateProof } from "./proof.ts";
 import { ReplayBudgetExceededError, replayFinding, replayRequestBudget } from "./replay.ts";
 import type { ScopedTarget } from "./scoped-target.ts";
-import { actorIds } from "./sessions.ts";
+import { actorIds, type ActorId } from "./sessions.ts";
 import type {
   Finding,
   FindingInput,
@@ -51,6 +51,7 @@ export class DefaultVerificationEngine implements VerificationEngine {
   readonly #profile: TargetProfile;
   readonly #artifacts: ProofArtifactStore;
   readonly #issueIntegerChallenge: (minimum: number, maximum: number) => number;
+  readonly #authentication = new WeakMap<ScopedTarget, Promise<void>>();
 
   constructor(
     profile: TargetProfile,
@@ -171,20 +172,39 @@ export class DefaultVerificationEngine implements VerificationEngine {
       return;
     }
     const namedActorIds = [...actorIdsUsed].filter((actorId) => actorId !== actorIds.anonymous);
-    const acquired = await Promise.all(
-      namedActorIds.map(async (actorId) => {
-        try {
-          await target.sessions.acquire(actorId);
-          return true;
-        } catch {
-          return false;
-        }
-      }),
-    );
-    const missingActorIds = namedActorIds.filter((_, index) => !acquired[index]);
+    const missingActorIds = await missingSessions(target, namedActorIds);
     if (missingActorIds.length === 0) return;
-    await target.runProfileSetup(() => this.#profile.authenticate!(target, missingActorIds));
+    const previous = this.#authentication.get(target) ?? Promise.resolve();
+    const authentication = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const stillMissing = await missingSessions(target, missingActorIds);
+        if (stillMissing.length === 0) return;
+        await target.runProfileSetup(() => this.#profile.authenticate!(target, stillMissing));
+      });
+    this.#authentication.set(target, authentication);
+    try {
+      await authentication;
+    } finally {
+      if (this.#authentication.get(target) === authentication) {
+        this.#authentication.delete(target);
+      }
+    }
   }
+}
+
+async function missingSessions(target: ScopedTarget, actorIdsToCheck: readonly ActorId[]) {
+  const acquired = await Promise.all(
+    actorIdsToCheck.map(async (actorId) => {
+      try {
+        await target.sessions.acquire(actorId);
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return actorIdsToCheck.filter((_, index) => !acquired[index]);
 }
 
 const indexSchema = v.pipe(v.number(), v.integer(), v.minValue(0));

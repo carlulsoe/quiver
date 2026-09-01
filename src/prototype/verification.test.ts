@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ProofArtifactStore } from "./proof-artifacts.ts";
 import { ScopedTarget } from "./scoped-target.ts";
+import { actorIds } from "./sessions.ts";
 import type { Finding, ValidationObservation } from "./state.ts";
 import { DefaultVerificationEngine, type VerificationEngine } from "./verification.ts";
 import { vulnerableAppProfile } from "../targets/vulnerableapp.ts";
@@ -66,6 +67,57 @@ describe("verification engine", () => {
       proof: { passed: true, predicate: "unauthenticated-success" },
       observations: [{ actorId: "anonymous", body: { build: "internal-42" } }],
     });
+  });
+
+  it("coalesces concurrent first-use authentication on one validation target", async () => {
+    await using artifacts = new ProofArtifactStore();
+    let authenticationCount = 0;
+    let releaseAuthentication!: () => void;
+    let authenticationStarted!: () => void;
+    const authenticationGate = new Promise<void>((resolve) => {
+      releaseAuthentication = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      authenticationStarted = resolve;
+    });
+    const verification = new DefaultVerificationEngine(
+      {
+        id: "concurrent-authentication",
+        displayName: "Concurrent authentication",
+        objective: "Coalesce validation login.",
+        actorIds: [actorIds.userA],
+        authenticate: async (target, requestedActorIds) => {
+          authenticationCount += 1;
+          authenticationStarted();
+          await authenticationGate;
+          for (const actorId of requestedActorIds ?? [actorIds.userA]) {
+            target.setSession(actorId, { headers: { authorization: "Bearer validation" } });
+          }
+          return { authContext: "validation-user-a" };
+        },
+      },
+      artifacts,
+    );
+    const authenticatedFinding: Finding = {
+      ...finding,
+      fingerprint: "security-misconfiguration:GET:/authenticated-health",
+      reproduction: [{ path: "/authenticated-health", actorId: actorIds.userA }],
+    };
+    const target = new ScopedTarget({
+      target: new URL("http://127.0.0.1:8888"),
+      requestBudget: 2,
+      transport: async () => Response.json({ build: "internal-42" }),
+    });
+
+    const firstReplay = verification.replay(authenticatedFinding, target);
+    const secondReplay = verification.replay(authenticatedFinding, target);
+    await started;
+    expect(authenticationCount).toBe(1);
+    releaseAuthentication();
+
+    await expect(Promise.all([firstReplay, secondReplay])).resolves.toHaveLength(2);
+    expect(authenticationCount).toBe(1);
+    expect(target.requestsUsed).toBe(2);
   });
 
   it("confirms a target-owned SQL semantic differential", async () => {
