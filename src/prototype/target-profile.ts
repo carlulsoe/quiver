@@ -1,6 +1,13 @@
 import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts";
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
 import type { ActorId } from "./sessions.ts";
+import {
+  assertValidTargetManifest,
+  authenticateTargetManifest,
+  manifestActorIds,
+  type ProtectedOperationManifest,
+  type TargetManifest,
+} from "./target-manifest.ts";
 
 export interface ReproductionAuthentication {
   description: string;
@@ -69,8 +76,12 @@ export interface TargetProfile {
   displayName: string;
   objective: string;
   allowedRequests?: AllowedRequest[];
+  setupRequests?: AllowedRequest[];
   deniedRequests?: DeniedRequest[];
-  authenticate?: (target: ScopedTarget) => Promise<{ authContext: string }>;
+  authenticate?: (
+    target: ScopedTarget,
+    actorIds?: readonly ActorId[],
+  ) => Promise<{ authContext: string }>;
   /** Actor references made available to campaign agents. Anonymous is always available. */
   actorIds?: ActorId[];
   reproductionAuthentication?: ReproductionAuthentication;
@@ -80,9 +91,64 @@ export interface TargetProfile {
   validationResetRequestBudget?: number;
   /** Hard ceiling for code-derived proof impact. Defaults to observation. */
   maximumImpactLevel?: ImpactLevel;
+  /** Declarative source used by bundled and external target adapters. */
+  manifest?: TargetManifest;
+  protectedOperations?: ProtectedOperationManifest[];
+}
+
+export type TargetProfileExtensions = Pick<
+  TargetProfile,
+  "proofPolicies" | "prepareValidation" | "validationResetRequestBudget"
+>;
+
+/** Builds the runtime profile API from a declarative onboarding manifest. */
+export function createTargetProfile(
+  manifest: TargetManifest,
+  extensions: TargetProfileExtensions = {},
+): TargetProfile {
+  assertValidTargetManifest(manifest);
+  const actorIds = manifestActorIds(manifest);
+  const setupRequests = [...(manifest.scope.setupOperations ?? [])];
+  const allowedRequests = uniqueOperations([
+    ...setupRequests,
+    ...(manifest.scope.protectedOperations ?? []).map(({ method, path }) => ({ method, path })),
+  ]);
+  return {
+    id: manifest.id,
+    displayName: manifest.displayName,
+    objective: manifest.objective,
+    allowedRequests: allowedRequests.length > 0 ? allowedRequests : undefined,
+    setupRequests: setupRequests.length > 0 ? setupRequests : undefined,
+    deniedRequests: manifest.scope.deniedOperations
+      ? [...manifest.scope.deniedOperations]
+      : undefined,
+    protectedOperations: manifest.scope.protectedOperations
+      ? [...manifest.scope.protectedOperations]
+      : undefined,
+    maximumImpactLevel: manifest.scope.maximumImpactLevel,
+    actorIds,
+    reproductionAuthentication: manifest.reproductionAuthentication,
+    ...(actorIds.length > 0
+      ? {
+          authenticate: (target: ScopedTarget, requestedActorIds?: readonly ActorId[]) =>
+            authenticateTargetManifest(target, manifest, { actorIds: requestedActorIds }),
+        }
+      : {}),
+    manifest,
+    ...extensions,
+  };
+}
+
+function uniqueOperations(operations: AllowedRequest[]): AllowedRequest[] {
+  return [
+    ...new Map(
+      operations.map((operation) => [`${operation.method} ${operation.path}`, operation]),
+    ).values(),
+  ];
 }
 
 export function assertValidTargetProfile(profile: TargetProfile): void {
+  if (profile.manifest) assertValidTargetManifest(profile.manifest);
   if (
     profile.prepareValidation &&
     (!Number.isInteger(profile.validationResetRequestBudget) ||

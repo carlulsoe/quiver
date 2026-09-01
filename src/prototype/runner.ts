@@ -145,6 +145,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       target: options.target,
       requestBudget: budget.exploration,
       allowedRequests: options.profile.allowedRequests,
+      setupRequests: options.profile.setupRequests,
       deniedRequests: options.profile.deniedRequests,
       onRequest: (request) => {
         coordinator.observeBudgetUse();
@@ -212,6 +213,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       target: options.target,
       requestBudget: budget.validation,
       allowedRequests: options.profile.allowedRequests,
+      setupRequests: options.profile.setupRequests,
       deniedRequests: options.profile.deniedRequests,
       onRequest: (request) => {
         record("request", { phase: "validation", ...request });

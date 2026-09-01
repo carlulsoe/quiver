@@ -11,6 +11,7 @@ import {
   actorIds,
   InMemorySessions,
   type ActorId,
+  type SessionProvider,
   type Sessions,
   type StoredSession,
 } from "./sessions.ts";
@@ -60,6 +61,8 @@ export interface ScopedTargetOptions {
   target: URL;
   requestBudget: number;
   allowedRequests?: AllowedRequest[];
+  /** Operations reserved for trusted profile/session setup. Defaults to allowedRequests. */
+  setupRequests?: AllowedRequest[];
   deniedRequests?: DeniedRequest[];
   onRequest?: (request: TargetRequestEvent) => void;
   transport?: HttpTransport;
@@ -135,6 +138,7 @@ export class ScopedTarget {
   readonly #startPath: string;
   #requestBudget: number;
   readonly #allowedRequests: Set<string>;
+  readonly #setupRequests: Set<string>;
   readonly #browserAllowedOperations: Set<string>;
   readonly #mappedOperations = new Set<string>();
   readonly #deniedRequests: Set<string>;
@@ -169,6 +173,11 @@ export class ScopedTarget {
     this.#requestBudget = options.requestBudget;
     this.#allowedRequests = new Set(
       options.allowedRequests?.map(({ method, path }) => operationKey(method, path)) ?? [],
+    );
+    this.#setupRequests = new Set(
+      (options.setupRequests ?? options.allowedRequests)?.map(({ method, path }) =>
+        operationKey(method, path),
+      ) ?? [],
     );
     this.#browserAllowedOperations = new Set(this.#allowedRequests);
     this.#deniedRequests = new Set(
@@ -259,6 +268,16 @@ export class ScopedTarget {
     }
   }
 
+  setSessionProvider(actorId: ActorId, provider: SessionProvider): void {
+    if (!this.#inMemorySessions) {
+      throw new Error("Sessions are managed by the configured session adapter");
+    }
+    this.#inMemorySessions.setProvider(actorId, provider);
+    if (this.#browserActorId === actorIds.anonymous && actorId !== actorIds.anonymous) {
+      this.#browserActorId = actorId;
+    }
+  }
+
   async request(request: ScopedRequest): Promise<HttpObservation> {
     return (await this.#request(request, this.#maxResponseChars)) as HttpObservation;
   }
@@ -266,7 +285,7 @@ export class ScopedTarget {
   async setupRequest(request: ScopedRequest): Promise<SetupHttpObservation> {
     const method = request.method ?? "GET";
     const url = this.#resolvePath(request.path);
-    if (!operationAllowed(this.#allowedRequests, method, url.pathname)) {
+    if (!operationAllowed(this.#setupRequests, method, url.pathname)) {
       throw new TargetScopeError(
         `${method} ${url.pathname} is not an allowed profile setup request`,
       );
@@ -310,7 +329,7 @@ export class ScopedTarget {
     const method = request.method ?? "GET";
     const url = this.#resolvePath(request.path);
     if (this.#setupAccess || includeResponseHeaders) {
-      if (!operationAllowed(this.#allowedRequests, method, url.pathname)) {
+      if (!operationAllowed(this.#setupRequests, method, url.pathname)) {
         throw new TargetScopeError(`${method} ${url.pathname} is not a profile setup operation`);
       }
     } else {

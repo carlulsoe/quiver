@@ -2,8 +2,14 @@ import type { BrowserCookie } from "./attack-surface.ts";
 
 export const actorIds = {
   anonymous: "anonymous",
+  userA: "ordinary-user",
+  userB: "second-user",
+  administrator: "privileged-user",
+  /** @deprecated Use userA. */
   ordinary: "ordinary-user",
+  /** @deprecated Use userB. */
   second: "second-user",
+  /** @deprecated Use administrator. */
   privileged: "privileged-user",
 } as const;
 
@@ -33,9 +39,12 @@ export interface StoredSession {
   browserState?: Omit<BrowserState, "headers">;
 }
 
+export type SessionProvider = () => Promise<StoredSession>;
+
 /** Current process-local session adapter used by scoped targets. */
 export class InMemorySessions implements Sessions {
   readonly #sessions = new Map<ActorId, StoredSession>();
+  readonly #providers = new Map<ActorId, SessionProvider>();
 
   constructor() {
     this.#sessions.set(actorIds.anonymous, {});
@@ -48,18 +57,25 @@ export class InMemorySessions implements Sessions {
     this.#sessions.set(actorId, cloneStoredSession(session));
   }
 
+  setProvider(actorId: ActorId, provider: SessionProvider): void {
+    if (actorId === actorIds.anonymous) {
+      throw new Error("The anonymous actor cannot use an authentication provider");
+    }
+    this.#providers.set(actorId, provider);
+  }
+
   has(actorId: ActorId): boolean {
     return this.#sessions.has(actorId);
   }
 
   async acquire(actorId: ActorId): Promise<ActorSession> {
-    const session = this.#sessions.get(actorId);
+    const session = await this.#resolve(actorId);
     if (!session) throw new Error(`This target has no session for actor ${actorId}`);
     return { actorId, headers: session.headers ? { ...session.headers } : {} };
   }
 
   async browserState(actorId: ActorId): Promise<BrowserState> {
-    const session = this.#sessions.get(actorId);
+    const session = await this.#resolve(actorId);
     if (!session) throw new Error(`This target has no browser session for actor ${actorId}`);
     return {
       ...(session.headers ? { headers: { ...session.headers } } : {}),
@@ -71,6 +87,14 @@ export class InMemorySessions implements Sessions {
         : {}),
       cookies: session.browserState?.cookies?.map((cookie) => ({ ...cookie })),
     };
+  }
+
+  async #resolve(actorId: ActorId): Promise<StoredSession | undefined> {
+    const provider = this.#providers.get(actorId);
+    if (!provider) return this.#sessions.get(actorId);
+    const session = cloneStoredSession(await provider());
+    this.#sessions.set(actorId, session);
+    return session;
   }
 }
 

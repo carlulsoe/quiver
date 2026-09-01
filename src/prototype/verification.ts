@@ -41,7 +41,6 @@ export interface VerificationEngine {
 export class DefaultVerificationEngine implements VerificationEngine {
   readonly #profile: TargetProfile;
   readonly #artifacts: ProofArtifactStore;
-  readonly #authentication = new WeakMap<ScopedTarget, Promise<unknown>>();
 
   constructor(profile: TargetProfile, artifacts: ProofArtifactStore) {
     this.#profile = profile;
@@ -115,18 +114,9 @@ export class DefaultVerificationEngine implements VerificationEngine {
         }
       }),
     );
-    if (acquired.every(Boolean)) return;
-    let authentication = this.#authentication.get(target);
-    if (!authentication) {
-      authentication = target.runProfileSetup(() => this.#profile.authenticate!(target));
-      this.#authentication.set(target, authentication);
-    }
-    try {
-      await authentication;
-    } catch (error) {
-      this.#authentication.delete(target);
-      throw error;
-    }
+    const missingActorIds = namedActorIds.filter((_, index) => !acquired[index]);
+    if (missingActorIds.length === 0) return;
+    await target.runProfileSetup(() => this.#profile.authenticate!(target, missingActorIds));
   }
 }
 
