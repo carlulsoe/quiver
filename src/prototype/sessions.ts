@@ -30,7 +30,7 @@ export interface BrowserState {
 
 /** Resolves opaque actor references into protocol-specific session material. */
 export interface Sessions {
-  acquire(actorId: ActorId): Promise<ActorSession>;
+  acquire(actorId: ActorId, requestUrl?: URL): Promise<ActorSession>;
   browserState(actorId: ActorId): Promise<BrowserState>;
 }
 
@@ -68,10 +68,18 @@ export class InMemorySessions implements Sessions {
     return this.#sessions.has(actorId);
   }
 
-  async acquire(actorId: ActorId): Promise<ActorSession> {
+  async acquire(actorId: ActorId, requestUrl?: URL): Promise<ActorSession> {
     const session = await this.#resolve(actorId);
     if (!session) throw new Error(`This target has no session for actor ${actorId}`);
-    return { actorId, headers: session.headers ? { ...session.headers } : {} };
+    const headers = session.headers ? { ...session.headers } : {};
+    if (requestUrl && !Object.keys(headers).some((name) => name.toLowerCase() === "cookie")) {
+      const cookie = session.browserState?.cookies
+        ?.filter((candidate) => cookieMatchesRequest(candidate, requestUrl))
+        .map(({ name, value }) => `${name}=${value}`)
+        .join("; ");
+      if (cookie) headers.cookie = cookie;
+    }
+    return { actorId, headers };
   }
 
   async browserState(actorId: ActorId): Promise<BrowserState> {
@@ -96,6 +104,33 @@ export class InMemorySessions implements Sessions {
     this.#sessions.set(actorId, session);
     return session;
   }
+}
+
+function cookieMatchesRequest(cookie: BrowserCookie, requestUrl: URL): boolean {
+  if (cookie.secure && requestUrl.protocol !== "https:") return false;
+  if (cookie.expires !== undefined && cookie.expires >= 0 && cookie.expires <= Date.now() / 1_000) {
+    return false;
+  }
+  if ("url" in cookie && cookie.url) {
+    const cookieUrl = new URL(cookie.url);
+    return (
+      cookieUrl.origin === requestUrl.origin && pathMatches(cookieUrl.pathname, requestUrl.pathname)
+    );
+  }
+  const domain = cookie.domain?.replace(/^\./, "").toLowerCase();
+  const hostname = requestUrl.hostname.toLowerCase();
+  if (domain && hostname !== domain && !hostname.endsWith(`.${domain}`)) return false;
+  return pathMatches(cookie.path ?? "/", requestUrl.pathname);
+}
+
+function pathMatches(cookiePath: string, requestPath: string): boolean {
+  if (cookiePath === "/") return true;
+  if (!requestPath.startsWith(cookiePath)) return false;
+  return (
+    requestPath.length === cookiePath.length ||
+    cookiePath.endsWith("/") ||
+    requestPath[cookiePath.length] === "/"
+  );
 }
 
 function cloneStoredSession(session: StoredSession): StoredSession {

@@ -349,7 +349,7 @@ export class ScopedTarget {
       );
     }
     const actorId = request.actorId ?? actorIds.anonymous;
-    const session = await this.#sessions.acquire(actorId);
+    const session = await this.#sessions.acquire(actorId, url);
     if (hasPotentialScopeOverrideHeaders(request.headers)) {
       throw new TargetScopeError(
         "Request headers may not override the scoped method or target path",

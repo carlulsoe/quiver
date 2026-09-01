@@ -382,7 +382,6 @@ function materializeSession(
   }
   if (adapter.kind === "cookie") {
     return {
-      headers: { cookie: `${adapter.cookie.name}=${credentials.credential}` },
       browserState: {
         cookies: [materializeCookie(adapter.cookie, credentials.credential, origin)],
       },
@@ -406,9 +405,18 @@ function materializeCookie(
   origin: string,
 ): BrowserCookie {
   if (/[;\r\n]/.test(value)) throw new Error("Cookie credentials may not contain separators");
-  if ("url" in cookie || "domain" in cookie) return { ...cookie, value } as BrowserCookie;
-  const { path: _path, ...rest } = cookie as Omit<BrowserCookie, "value"> & { path?: string };
-  return { ...rest, name: cookie.name, value, url: origin } as BrowserCookie;
+  if (("url" in cookie && cookie.url) || ("domain" in cookie && cookie.domain)) {
+    return { ...cookie, value } as BrowserCookie;
+  }
+  const target = new URL(origin);
+  return {
+    ...cookie,
+    name: cookie.name,
+    value,
+    domain: target.hostname,
+    path: cookie.path ?? "/",
+    secure: cookie.secure ?? target.protocol === "https:",
+  } as BrowserCookie;
 }
 
 function renderRecord(

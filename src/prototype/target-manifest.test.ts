@@ -67,7 +67,7 @@ function multiPrincipalManifest(): TargetManifest {
             request: { method: "POST", path: "/login/b" },
             credential: { location: "cookie", name: "session" },
           },
-          cookie: { name: "session", path: "/" },
+          cookie: { name: "session", path: "/app" },
         },
       },
       {
@@ -81,12 +81,12 @@ function multiPrincipalManifest(): TargetManifest {
             credential: { location: "header", name: "authorization" },
           },
           session: {
-            headers: { authorization: "{{credential}}" },
             localStorage: {
               role: "administrator",
               token: "{{credential}}",
               email: "{{env:QUIVER_MANIFEST_TEST_EMAIL|default@example.test}}",
             },
+            cookies: [{ name: "admin_session", value: "{{credential}}", path: "/admin" }],
           },
         },
       },
@@ -132,12 +132,18 @@ describe("declarative target onboarding", () => {
       },
     );
     await target.request({ path: "/resource", actorId: actorIds.userA });
-    await target.request({ path: "/resource", actorId: actorIds.userB });
+    await target.request({ path: "/app/resource", actorId: actorIds.userB });
     await expect(target.sessions.browserState(actorIds.userB)).resolves.toMatchObject({
-      cookies: [{ name: "session", value: "b-cookie", url: "http://127.0.0.1:8080" }],
+      cookies: [
+        {
+          name: "session",
+          value: "b-cookie",
+          domain: "127.0.0.1",
+          path: "/app",
+        },
+      ],
     });
     await expect(target.sessions.browserState(actorIds.administrator)).resolves.toMatchObject({
-      headers: { authorization: "Admin admin-token" },
       localStorage: {
         role: "administrator",
         token: "Admin admin-token",
@@ -146,6 +152,11 @@ describe("declarative target onboarding", () => {
     });
     expect(requests.at(-2)?.headers.get("authorization")).toBe("Bearer a-1");
     expect(requests.at(-1)?.headers.get("cookie")).toBe("session=b-cookie");
+
+    await target.request({ path: "/application", actorId: actorIds.userB });
+    expect(requests.at(-1)?.headers.get("cookie")).toBeNull();
+    await target.request({ path: "/admin/resource", actorId: actorIds.administrator });
+    expect(requests.at(-1)?.headers.get("cookie")).toBe("admin_session=Admin admin-token");
 
     now = 100;
     await target.request({ path: "/resource", actorId: actorIds.userA });
