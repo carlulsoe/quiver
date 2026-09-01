@@ -3,6 +3,7 @@ import type { FindingCategory } from "../prototype/state.ts";
 import type { RestMethod } from "../prototype/scoped-target.ts";
 import type { TargetProfileId } from "../targets/profiles.ts";
 import { compareVampiPair } from "./vampi-oracle.ts";
+import type { EvalFailure } from "./failure-classification.ts";
 
 export const SECURITY_EVAL_PROFILE_IDS = [
   "crapi",
@@ -26,6 +27,7 @@ export interface SecurityEvalInput {
   target?: string;
   requestBudget: number;
   explorerCount?: number;
+  heldOutSeed?: string;
 }
 
 export interface EvalFinding extends Record<string, JsonValue> {
@@ -55,6 +57,7 @@ export interface SecurityEvalOutput extends Record<string, JsonValue> {
   durationMs: number;
   tokens: number;
   failures: string[];
+  failureClassifications: EvalFailure[];
   failureCount: number;
   scoreKind: ScoreKind;
   scoreDetails: Record<string, JsonValue>;
@@ -76,6 +79,7 @@ export interface SecurityEvalOutput extends Record<string, JsonValue> {
   modelTokens: number;
   approximateModelCost: number;
   error: string | null;
+  heldOutSeed: string | null;
 }
 
 interface DifferentialScore {

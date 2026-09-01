@@ -24,4 +24,25 @@ describe("VAmPI vulnerable/secure differential oracle", () => {
       secureOnly: [],
     });
   });
+
+  it("deduplicates confirmations while retaining secure-only findings", () => {
+    const vulnerableOnly = {
+      category: "broken-object-authorization" as const,
+      endpoint: "/books/v1/foreign-title/",
+      method: "GET" as const,
+    };
+    const secureOnly = {
+      category: "security-misconfiguration" as const,
+      endpoint: "/users/v1",
+      method: "POST" as const,
+    };
+
+    expect(compareVampiPair([vulnerableOnly, vulnerableOnly], [secureOnly])).toMatchObject({
+      vulnerableOnlyCount: 1,
+      secureAlsoCount: 0,
+      secureOnlyCount: 1,
+      vulnerableOnly: ["broken-object-authorization:GET:/books/v1/foreign-title"],
+      secureOnly: ["security-misconfiguration:POST:/users/v1"],
+    });
+  });
 });

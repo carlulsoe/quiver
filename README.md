@@ -256,14 +256,13 @@ host-gateway mapping) so the target can reach the campaign-local listener.
 
 The live-model suite uses Flue through a `vitest-evals` harness. By default one
 trial covers crAPI, VAmPI's vulnerable and secure modes, VulnerableApp, and the
-randomized held-out fixture. Start the Docker-backed targets and keep the
-held-out server running in another terminal:
+randomized held-out fixture. Start the Docker-backed targets; the eval harness
+starts an isolated held-out fixture for each matrix trial:
 
 ```sh
 bun run target:up
 bun run target:vampi:up
 bun run target:vulnerableapp:up
-bun run target:held-out
 bun run evals
 ```
 
@@ -307,11 +306,17 @@ profile is selected. Quiver writes merged viewer input to
 `.prototype/eval-summary.json` and `.prototype/eval-summary.md`: success rate,
 per-profile and aggregate coverage, precision, validation completeness,
 false-positive rate, requests per true positive, duration, token usage, failures,
-and approximate model cost.
+and approximate model cost. Full failure messages remain in the per-trial JSON
+artifacts; the aggregate, per-profile, and per-run summaries classify them as
+model, infrastructure, budget, mapping, or validation failures and keep only a
+concise error reason.
 
 Trials are sequential by default. Set `XBOW_EVAL_CONCURRENCY=2` to use two
 isolated worker processes when the local target and model provider can support
-the extra load.
+the extra load. Every held-out trial receives a distinct seed derived from a
+random run seed. Set `XBOW_EVAL_SEED` to reproduce the same held-out fixtures;
+the effective run seed and each held-out trial seed are recorded in the generated
+output.
 
 See the committed [10-trial crAPI results](docs/showcase/crapi-10-trial-results.md)
 for the full strict-pass baseline and the

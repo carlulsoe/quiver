@@ -5,7 +5,6 @@ import type { TargetManifest } from "../prototype/target-manifest.ts";
 import { heldOutCanary } from "./held-out-fixture.ts";
 
 const configuredSeed = process.env.QUIVER_HELD_OUT_SEED ?? readPublishedSeed();
-const configuredCanary = configuredSeed ? heldOutCanary(configuredSeed) : undefined;
 
 export const heldOutManifest = {
   schemaVersion: 1,
@@ -75,23 +74,28 @@ export const heldOutManifest = {
   },
 } satisfies TargetManifest;
 
-export const heldOutProfile = createTargetProfile(heldOutManifest, {
-  proofPolicies: configuredCanary
-    ? [
-        {
-          id: "held-out-record-canary",
-          kind: "canary",
-          category: "sensitive-data-exposure",
-          description: "The seeded foreign record contains a verifier-only synthetic canary.",
-          endpoint: "/api/{namespace}/vaults/{id}",
-          method: "GET",
-          verify: (value: string) => value === configuredCanary,
-          source: "immutable-fixture",
-          jsonPointer: "/record/canary",
-        },
-      ]
-    : [],
-});
+export const heldOutProfile = createHeldOutProfile(configuredSeed);
+
+export function createHeldOutProfile(seed: string | undefined) {
+  const canary = seed ? heldOutCanary(seed) : undefined;
+  return createTargetProfile(heldOutManifest, {
+    proofPolicies: canary
+      ? [
+          {
+            id: "held-out-record-canary",
+            kind: "canary",
+            category: "sensitive-data-exposure",
+            description: "The seeded foreign record contains a verifier-only synthetic canary.",
+            endpoint: "/api/{namespace}/vaults/{id}",
+            method: "GET",
+            verify: (value: string) => value === canary,
+            source: "immutable-fixture",
+            jsonPointer: "/record/canary",
+          },
+        ]
+      : [],
+  });
+}
 
 function readPublishedSeed(): string | undefined {
   try {

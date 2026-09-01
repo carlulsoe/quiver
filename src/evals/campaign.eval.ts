@@ -25,7 +25,10 @@ const CampaignContractJudge = createJudge<SecurityEvalInput, SecurityEvalOutput>
 );
 
 const profileId = parseProfileId(process.env.QUIVER_EVAL_PROFILE ?? "crapi");
-const target = process.env.XBOW_TARGET ?? getDefaultTarget(profileId).href;
+const target =
+  process.env.XBOW_TARGET ??
+  (profileId === "held-out" ? undefined : getDefaultTarget(profileId).href);
+const heldOutSeed = profileId === "held-out" ? process.env.QUIVER_EVAL_HELD_OUT_SEED : undefined;
 const trialIndex = Number.parseInt(process.env.QUIVER_EVAL_TRIAL_INDEX ?? "1", 10);
 const trialTotal = Number.parseInt(process.env.QUIVER_EVAL_TRIAL_TOTAL ?? "1", 10);
 const requestBudget: Record<SecurityEvalProfileId, number> = {
@@ -42,7 +45,8 @@ describeEval(`${profileId} vulnerability campaign`, { harness: securityHarness }
   }) => {
     const result = await run({
       profileId,
-      target,
+      ...(target ? { target } : {}),
+      ...(heldOutSeed ? { heldOutSeed } : {}),
       requestBudget: requestBudget[profileId],
       explorerCount: 3,
     });

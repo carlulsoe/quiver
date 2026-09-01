@@ -1,4 +1,9 @@
 import type { SecurityEvalOutput } from "./harness.ts";
+import {
+  EVAL_FAILURE_KINDS,
+  type EvalFailure,
+  type EvalFailureKind,
+} from "./failure-classification.ts";
 
 export interface RepeatedEvalTrial {
   index: number;
@@ -8,11 +13,14 @@ export interface RepeatedEvalTrial {
   output?: SecurityEvalOutput;
   error?: string;
   artifactPath: string;
+  heldOutSeed?: string;
+  failureClassifications?: EvalFailure[];
 }
 
 export interface RepeatedEvalSummary {
-  schemaVersion: 2;
+  schemaVersion: 3;
   generatedAt: string;
+  runSeed: string | null;
   requestedTrials: number;
   passedTrials: number;
   completedTrials: number;
@@ -27,6 +35,7 @@ export interface RepeatedEvalSummary {
   totalTokens: number;
   meanTokens: number;
   totalFailures: number;
+  failureCounts: Record<EvalFailureKind, number>;
   totalApproximateModelCost: number;
   meanApproximateModelCost: number;
   costedTrials: number;
@@ -44,11 +53,13 @@ export interface RepeatedEvalProfileSummary {
   meanDurationMs: number;
   totalTokens: number;
   totalFailures: number;
+  failureCounts: Record<EvalFailureKind, number>;
 }
 
 export function summarizeRepeatedEvals(
   trials: RepeatedEvalTrial[],
   generatedAt = new Date(),
+  runSeed: string | null = null,
 ): RepeatedEvalSummary {
   if (trials.length === 0) throw new Error("At least one eval trial is required");
   const outputs = trials.flatMap(({ output }) => (output ? [output] : []));
@@ -70,8 +81,9 @@ export function summarizeRepeatedEvals(
   );
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: generatedAt.toISOString(),
+    runSeed,
     requestedTrials: trials.length,
     passedTrials: trials.filter(({ passed }) => passed).length,
     completedTrials: outputs.length,
@@ -94,7 +106,8 @@ export function summarizeRepeatedEvals(
       ) / trials.length,
     totalTokens: outputs.reduce((total, output) => total + output.tokens, 0),
     meanTokens: meanOrZero(outputs.map(({ tokens }) => tokens)),
-    totalFailures: outputs.reduce((total, output) => total + output.failureCount, 0),
+    totalFailures: trials.reduce((total, trial) => total + trialFailures(trial).length, 0),
+    failureCounts: countFailures(trials),
     totalApproximateModelCost,
     meanApproximateModelCost: outputs.length === 0 ? 0 : totalApproximateModelCost / outputs.length,
     costedTrials: outputs.length,
@@ -110,6 +123,7 @@ export function renderRepeatedEvalSummary(summary: RepeatedEvalSummary): string 
     "# Quiver repeated eval results",
     "",
     `Generated: ${summary.generatedAt}`,
+    `Run seed: ${summary.runSeed ?? "not recorded"}`,
     "",
     "## Aggregate",
     "",
@@ -126,27 +140,28 @@ export function renderRepeatedEvalSummary(summary: RepeatedEvalSummary): string 
     `| Mean duration | ${(summary.meanDurationMs / 1_000).toFixed(1)}s |`,
     `| Model tokens | ${summary.totalTokens} total (${summary.meanTokens.toFixed(0)} mean) |`,
     `| Recorded failures | ${summary.totalFailures} |`,
+    `| Failure classes | ${renderFailureCounts(summary.failureCounts)} |`,
     `| Approximate model cost (known total) | $${summary.totalApproximateModelCost.toFixed(4)} (${summary.costedTrials}/${summary.requestedTrials} trials reported usage) |`,
     `| Approximate model cost (mean of reported) | $${summary.meanApproximateModelCost.toFixed(4)} |`,
     "",
     "## Profiles",
     "",
-    "| Profile | Passed | Coverage | Precision | Validation | Duration | Tokens | Failures |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Profile | Passed | Coverage | Precision | Validation | Duration | Tokens | Failures | Failure classes |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ...summary.profiles.map(
       (profile) =>
-        `| ${profile.profileId} | ${profile.passed}/${profile.runs} | ${percent(profile.meanCoverage)} | ${percent(profile.meanPrecision)} | ${percent(profile.meanValidationCompleteness)} | ${duration(profile.meanDurationMs)} | ${profile.totalTokens} | ${profile.totalFailures} |`,
+        `| ${profile.profileId} | ${profile.passed}/${profile.runs} | ${percent(profile.meanCoverage)} | ${percent(profile.meanPrecision)} | ${percent(profile.meanValidationCompleteness)} | ${duration(profile.meanDurationMs)} | ${profile.totalTokens} | ${profile.totalFailures} | ${renderFailureCounts(profile.failureCounts)} |`,
     ),
     "",
     "## Runs",
     "",
-    "| Trial | Profile | Result | Coverage | Precision | Validation | Tokens | Failures | Duration | Cost |",
-    "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Trial | Profile | Seed | Result | Coverage | Precision | Validation | Tokens | Failures | Duration | Cost |",
+    "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |",
   ];
   for (const trial of summary.trials) {
     const output = trial.output;
     lines.push(
-      `| ${trial.index} | ${output?.profileId ?? trial.profileId ?? "—"} | ${trial.passed ? "PASS" : "FAIL"} | ${output ? percent(output.coverage) : "—"} | ${output ? percent(output.precision) : "—"} | ${output ? percent(output.validationCompleteness) : "—"} | ${output?.tokens ?? "—"} | ${output?.failureCount ?? "—"} | ${duration(output?.durationMs ?? trial.wallDurationMs)} | ${output ? `$${output.approximateModelCost.toFixed(4)}` : "—"} |`,
+      `| ${trial.index} | ${output?.profileId ?? trial.profileId ?? "—"} | ${trial.heldOutSeed ?? "—"} | ${trial.passed ? "PASS" : "FAIL"} | ${output ? percent(output.coverage) : "—"} | ${output ? percent(output.precision) : "—"} | ${output ? percent(output.validationCompleteness) : "—"} | ${output?.tokens ?? "—"} | ${renderTrialFailures(trial)} | ${duration(output?.durationMs ?? trial.wallDurationMs)} | ${output ? `$${output.approximateModelCost.toFixed(4)}` : "—"} |`,
     );
     if (trial.error) {
       lines.push(
@@ -172,6 +187,27 @@ export function findSecurityEvalOutput(events: readonly unknown[]): SecurityEval
     }
   }
   return undefined;
+}
+
+export function conciseEvalFailure(messages: readonly string[], maxLength = 1_200): string {
+  const message = messages.join("\n").trim();
+  if (!message) return "Eval process failed without an assertion message";
+  const lines = message.split("\n");
+  const judgeIndex = lines.findLastIndex((line) => line.startsWith("CampaignContractJudge ["));
+  if (judgeIndex >= 0) {
+    const reasonIndex = lines.findIndex(
+      (line, index) => index > judgeIndex && line.trimStart().startsWith("reason "),
+    );
+    if (reasonIndex >= 0) {
+      const reason: string[] = [];
+      for (const line of lines.slice(reasonIndex)) {
+        if (line.trimStart().startsWith("at ")) break;
+        reason.push(line.trim());
+      }
+      return truncateFailure(`${lines[0]}\n${reason.join(" ")}`, maxLength);
+    }
+  }
+  return truncateFailure(message, maxLength);
 }
 
 function mean(values: readonly number[]): number | null {
@@ -202,8 +238,36 @@ function summarizeProfile(
       trials.map(({ output, wallDurationMs }) => output?.durationMs ?? wallDurationMs ?? 0),
     ),
     totalTokens: outputs.reduce((total, { tokens }) => total + tokens, 0),
-    totalFailures: outputs.reduce((total, { failureCount }) => total + failureCount, 0),
+    totalFailures: trials.reduce((total, trial) => total + trialFailures(trial).length, 0),
+    failureCounts: countFailures(trials),
   };
+}
+
+function countFailures(trials: readonly RepeatedEvalTrial[]): Record<EvalFailureKind, number> {
+  const counts = Object.fromEntries(EVAL_FAILURE_KINDS.map((kind) => [kind, 0])) as Record<
+    EvalFailureKind,
+    number
+  >;
+  for (const trial of trials) {
+    for (const failure of trialFailures(trial)) counts[failure.kind] += 1;
+  }
+  return counts;
+}
+
+function renderFailureCounts(counts: Record<EvalFailureKind, number>): string {
+  const populated = EVAL_FAILURE_KINDS.filter((kind) => counts[kind] > 0).map(
+    (kind) => `${kind}=${counts[kind]}`,
+  );
+  return populated.length === 0 ? "—" : populated.join(", ");
+}
+
+function renderTrialFailures(trial: RepeatedEvalTrial): string {
+  const counts = countFailures([trial]);
+  return renderFailureCounts(counts);
+}
+
+function trialFailures(trial: RepeatedEvalTrial): readonly EvalFailure[] {
+  return trial.failureClassifications ?? trial.output?.failureClassifications ?? [];
 }
 
 function percent(value: number): string {
@@ -216,6 +280,11 @@ function numberOrDash(value: number | null | undefined): string {
 
 function duration(value: number | undefined): string {
   return value === undefined ? "—" : `${(value / 1_000).toFixed(1)}s`;
+}
+
+function truncateFailure(message: string, maxLength: number): string {
+  if (message.length <= maxLength) return message;
+  return `${message.slice(0, maxLength).trimEnd()}… (full message in trial artifact)`;
 }
 
 function isSecurityEvalOutput(value: unknown): value is SecurityEvalOutput {
@@ -233,6 +302,7 @@ function isSecurityEvalOutput(value: unknown): value is SecurityEvalOutput {
     typeof output.durationMs === "number" &&
     typeof output.tokens === "number" &&
     Array.isArray(output.failures) &&
+    Array.isArray(output.failureClassifications) &&
     typeof output.approximateModelCost === "number"
   );
 }

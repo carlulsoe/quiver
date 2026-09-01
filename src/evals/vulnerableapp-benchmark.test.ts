@@ -46,4 +46,23 @@ describe("VulnerableApp native benchmark adapter", () => {
       }),
     ).rejects.toThrow("restricted to loopback targets");
   });
+
+  it("rejects internally inconsistent native benchmark results", async () => {
+    await expect(
+      scoreVulnerableAppBenchmark({
+        target: new URL("http://127.0.0.1:9090/VulnerableApp/"),
+        confirmedFindings: [],
+        transport: async () =>
+          Response.json({
+            coverage: 75,
+            totalExpected: 8,
+            detected: 2,
+            missed: 5,
+            unmatched: 0,
+            missedItems: [],
+            unmatchedItems: [],
+          }),
+      }),
+    ).rejects.toThrow("detected + missed must equal totalExpected");
+  });
 });
