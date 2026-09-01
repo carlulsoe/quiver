@@ -6,7 +6,6 @@ import { CampaignLedger } from "./campaign-ledger.ts";
 import { ChainBudgetExceededError, replayExploitChain } from "./exploit-chain.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import { ProofArtifactStore } from "./proof-artifacts.ts";
-import { ReplayBudgetExceededError, replayRequestBudget } from "./replay.ts";
 import { RequestBudgetExceededError, ScopedTarget } from "./scoped-target.ts";
 import {
   createCampaignBudget,
@@ -17,6 +16,7 @@ import {
 } from "./state.ts";
 import { assertValidTargetProfile, type TargetProfile } from "./target-profile.ts";
 import { actorIds } from "./sessions.ts";
+import { DefaultVerificationEngine, ReplayBudgetExceededError } from "./verification.ts";
 
 export interface RunCampaignOptions {
   target: URL;
@@ -48,6 +48,7 @@ export interface RunEvent {
 export async function runCampaign(options: RunCampaignOptions): Promise<CampaignRun> {
   assertValidTargetProfile(options.profile);
   await using artifacts = new ProofArtifactStore();
+  const verification = new DefaultVerificationEngine(options.profile, artifacts);
   const startedAt = performance.now();
   const budget = createCampaignBudget(options.requestBudget ?? 30);
   const explorerCount = options.explorerCount ?? 2;
@@ -173,6 +174,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         ledger,
         coordinator,
         artifacts,
+        verification,
         dispatch,
         options.context,
       ),
@@ -188,6 +190,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         ledger,
         coordinator,
         artifacts,
+        verification,
         dispatch,
         options.context,
       );
@@ -207,7 +210,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       () => state.findings,
       () => validationTarget,
       options.profile,
-      artifacts,
+      verification,
       (action, mission) => {
         if (action.type === "validation") {
           coordinator.recordValidation(
@@ -220,19 +223,6 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       },
       "validator",
     );
-    let validationAuthentication: Promise<unknown> | undefined;
-    const authenticateValidationTarget = async () => {
-      if (!options.profile.authenticate) return;
-      validationAuthentication ??= validationTarget.runProfileSetup(() =>
-        options.profile.authenticate!(validationTarget),
-      );
-      try {
-        await validationAuthentication;
-      } catch (error) {
-        validationAuthentication = undefined;
-        throw error;
-      }
-    };
     let validationMissionIndex = 0;
     let validationChain = Promise.resolve();
     const validateFinding = async (fingerprint: string) => {
@@ -241,30 +231,6 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       }
       const finding = state.findings.find((item) => item.fingerprint === fingerprint);
       if (!finding) return;
-      validationTarget.allowRequests(
-        finding.reproduction.map(({ method = "GET", path }) => ({ method, path })),
-      );
-      if (
-        options.profile.authenticate &&
-        (finding.reproduction.some((request) => request.actorId !== actorIds.anonymous) ||
-          (finding.proof.type === "browser-visible-effect" &&
-            finding.proof.pageActorId !== actorIds.anonymous))
-      ) {
-        try {
-          await authenticateValidationTarget();
-        } catch (error) {
-          if (isRequestBudgetExhausted(error)) return;
-          throw error;
-        }
-      }
-      const requiredRequests =
-        replayRequestBudget(finding) +
-        (finding.proof.type === "state-transition"
-          ? (options.profile.validationResetRequestBudget ?? 0)
-          : 0);
-      if (validationTarget.remainingRequests < requiredRequests) {
-        return;
-      }
       const validatorId =
         validationMissionIndex === 0 ? "validator" : `validator-${validationMissionIndex + 1}`;
       validationMissionIndex += 1;
@@ -382,7 +348,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
             chain,
             state.findings,
             options.profile,
-            artifacts,
+            verification,
           ),
         });
       } catch (error) {

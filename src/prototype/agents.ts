@@ -5,8 +5,6 @@ import type { CampaignLedger } from "./campaign-ledger.ts";
 import { chainInputFingerprint, evaluateExploitChain } from "./exploit-chain.ts";
 import { GLM_FLASH_MODEL } from "./models.ts";
 import type { ProofArtifactStore } from "./proof-artifacts.ts";
-import { evaluateProof } from "./proof.ts";
-import { ReplayBudgetExceededError, replayFinding, replayRequestBudget } from "./replay.ts";
 import type { ScopedTarget } from "./scoped-target.ts";
 import { createSerialExecutor } from "./serial-executor.ts";
 import {
@@ -16,9 +14,15 @@ import {
   type FindingInput,
   type FindingValidation,
   type ExploitChainInput,
+  type ProofResult,
 } from "./state.ts";
 import { browserPolicyPath, type TargetProfile } from "./target-profile.ts";
 import { actorIds } from "./sessions.ts";
+import {
+  proofPredicateSchema,
+  type VerificationEngine,
+  type VerificationReplay,
+} from "./verification.ts";
 
 const categorySchema = v.picklist([
   "broken-object-authorization",
@@ -50,77 +54,6 @@ const jsonPointerSchema = v.pipe(
   v.string(),
   v.regex(/^(?:\/[^/]*)*$/, "Use an RFC 6901 JSON pointer such as /user/email"),
 );
-const evidenceSelectorSchema = v.object({
-  requestIndex: indexSchema,
-  jsonPointer: jsonPointerSchema,
-});
-const challengeMutationSchema = v.object({
-  location: v.picklist(["query", "json-body"]),
-  parameter: v.pipe(v.string(), v.minLength(1)),
-  template: v.pipe(v.string(), v.includes("{{challenge}}")),
-});
-const proofSchema = v.variant("type", [
-  v.object({
-    type: v.literal("cross-principal-access"),
-    actor: evidenceSelectorSchema,
-    resourceOwner: evidenceSelectorSchema,
-    accessRequestIndex: indexSchema,
-    evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
-  }),
-  v.object({
-    type: v.literal("unauthenticated-success"),
-    requestIndex: indexSchema,
-    evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
-  }),
-  v.object({
-    type: v.literal("cross-principal-data-exposure"),
-    actor: evidenceSelectorSchema,
-    exposedSubject: evidenceSelectorSchema,
-    responseRequestIndex: indexSchema,
-    evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
-  }),
-  v.object({
-    type: v.literal("internal-field-exposure"),
-    requestIndex: indexSchema,
-    evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
-  }),
-  v.object({
-    type: v.literal("canary-retrieval"),
-    policyId: v.string(),
-    requestIndex: indexSchema,
-    jsonPointer: jsonPointerSchema,
-  }),
-  v.object({
-    type: v.literal("state-transition"),
-    policyId: v.string(),
-    transitionRequestIndex: indexSchema,
-    beforeRequestIndex: indexSchema,
-    afterRequestIndex: indexSchema,
-  }),
-  v.object({
-    type: v.literal("browser-visible-effect"),
-    policyId: v.string(),
-    probeId: v.string(),
-    marker: v.string(),
-    requestIndex: indexSchema,
-    pagePath: v.string(),
-    kind: v.literal("dialog"),
-    challenge: challengeMutationSchema,
-    pageActorId: v.string(),
-    pageChallenge: v.optional(challengeMutationSchema),
-    collectorRequestBudget: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(20)),
-  }),
-  v.object({
-    type: v.literal("oast-callback"),
-    policyId: v.string(),
-    probeId: v.string(),
-    token: v.string(),
-    requestIndex: indexSchema,
-    callbackUrl: v.string(),
-    challenge: challengeMutationSchema,
-  }),
-]);
-
 function useUsageMetadata() {
   useResponseFinish(({ response }) => ({ quiverUsage: response.usage }));
 }
@@ -132,6 +65,7 @@ function explorationTools(
   ledger: CampaignLedger,
   coordinator: AdaptiveCoordinator,
   artifacts: ProofArtifactStore,
+  verification: VerificationEngine,
   dispatch: (action: CampaignAction) => void,
 ) {
   const mapAttackSurface = defineTool({
@@ -343,6 +277,7 @@ export function createExplorerAgent(
   ledger: CampaignLedger,
   coordinator: AdaptiveCoordinator,
   artifacts: ProofArtifactStore,
+  verification: VerificationEngine,
   dispatch: (action: CampaignAction) => void,
   suppliedContext?: string,
 ) {
@@ -353,6 +288,7 @@ export function createExplorerAgent(
     ledger,
     coordinator,
     artifacts,
+    verification,
     dispatch,
   );
   const submit = defineTool({
@@ -381,7 +317,7 @@ export function createExplorerAgent(
           sampleId: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(80))),
         }),
       ),
-      proof: proofSchema,
+      proof: proofPredicateSchema,
     }),
     run({ data }) {
       const finding: FindingInput = { agentId, ...data };
@@ -398,19 +334,14 @@ export function createExplorerAgent(
           },
         };
       }
-      const proof = evaluateProof(finding, observations, {
-        policies: profile.proofPolicies,
-        artifacts: artifacts.snapshot(),
-        stateResetAvailable: profile.prepareValidation !== undefined,
-        maximumImpactLevel: profile.maximumImpactLevel ?? "observation",
-      });
-      if (!proof.passed) {
+      const preflight = verification.preflight(finding, { observations });
+      if (!preflight.accepted) {
         return {
           output: {
             accepted: false,
             fingerprint,
             error: "The deterministic proof does not pass against exploration observations",
-            deterministicProof: proofOutput(proof),
+            deterministicProof: proofOutput(preflight.proof),
           },
         };
       }
@@ -419,7 +350,7 @@ export function createExplorerAgent(
         output: {
           ...recorded,
           error: null,
-          deterministicProof: proofOutput(proof),
+          deterministicProof: proofOutput(preflight.proof),
         },
       };
     },
@@ -557,11 +488,11 @@ export function createValidatorAgent(
   getFindings: () => Finding[],
   getTarget: () => ScopedTarget,
   profile: TargetProfile,
-  artifacts: ProofArtifactStore,
+  verification: VerificationEngine,
   dispatch: (action: CampaignAction, mission: ValidatorMission) => void,
   validatorId = "validator",
 ) {
-  const replays = new Map<string, Awaited<ReturnType<typeof replayFinding>>>();
+  const replays = new Map<string, VerificationReplay>();
   const serializeReplay = createSerialExecutor();
 
   return Object.assign(
@@ -596,26 +527,8 @@ export function createValidatorAgent(
           }
           return serializeReplay(async () => {
             const target = getTarget();
-            if (finding.proof.type === "state-transition") {
-              const requiredRequests =
-                replayRequestBudget(finding) + (profile.validationResetRequestBudget ?? 0);
-              if (target.remainingRequests < requiredRequests) {
-                throw new ReplayBudgetExceededError(
-                  `Validation requires ${requiredRequests} requests but only ${target.remainingRequests} remain`,
-                );
-              }
-              if (profile.prepareValidation) {
-                await target.runProfileSetup(() => profile.prepareValidation!(target));
-              }
-            }
-            const result = await replayFinding(target, finding, artifacts, profile.proofPolicies);
+            const result = await verification.replay(finding, target);
             replays.set(mission.validatorId, result);
-            const proof = evaluateProof(result.replayedFinding, result.observations, {
-              policies: profile.proofPolicies,
-              artifacts: result.artifacts,
-              stateResetAvailable: profile.prepareValidation !== undefined,
-              maximumImpactLevel: profile.maximumImpactLevel ?? "observation",
-            });
             return {
               output: {
                 error: null,
@@ -630,7 +543,7 @@ export function createValidatorAgent(
                     ? {}
                     : { durationMs: observation.durationMs }),
                 })),
-                deterministicProof: proofOutput(proof),
+                deterministicProof: proofOutput(result.proof),
               },
             };
           });
@@ -670,12 +583,7 @@ export function createValidatorAgent(
               },
             };
           }
-          const proof = evaluateProof(replayResult.replayedFinding, replayResult.observations, {
-            policies: profile.proofPolicies,
-            artifacts: replayResult.artifacts,
-            stateResetAvailable: profile.prepareValidation !== undefined,
-            maximumImpactLevel: profile.maximumImpactLevel ?? "observation",
-          });
+          const proof = replayResult.proof;
           const validation: FindingValidation = {
             fingerprint: data.fingerprint,
             status: proof.passed ? "confirmed" : "rejected",
@@ -731,7 +639,7 @@ const validatorMissionSchema = v.object({
 
 type ValidatorMission = v.InferOutput<typeof validatorMissionSchema>;
 
-function proofOutput(proof: ReturnType<typeof evaluateProof>) {
+function proofOutput(proof: ProofResult) {
   return {
     predicate: proof.predicate,
     passed: proof.passed,
