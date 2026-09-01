@@ -453,7 +453,16 @@ function isEnvironmentValue(value: unknown): value is ManifestEnvironmentValue {
 function renderTemplate(value: string, context: CredentialContext): string {
   return value
     .replaceAll("{{credential}}", context.credential)
-    .replaceAll("{{refreshCredential}}", context.refreshCredential ?? "");
+    .replaceAll("{{refreshCredential}}", context.refreshCredential ?? "")
+    .replace(
+      /\{\{env:([A-Z_][A-Z0-9_]*)(?:\|([^}]*))?\}\}/g,
+      (_match, name: string, fallback: string | undefined) => {
+        const resolved = process.env[name] ?? fallback;
+        if (resolved === undefined)
+          throw new Error(`Required environment variable ${name} is not set`);
+        return resolved;
+      },
+    );
 }
 
 function readJsonPointer(value: unknown, pointer: string): unknown {

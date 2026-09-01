@@ -59,7 +59,7 @@ export const crapiManifest = {
                 accessToken: "{{credential}}",
                 id: "",
                 name: "",
-                email: "test@example.com",
+                email: "{{env:CRAPI_TEST_EMAIL|test@example.com}}",
                 number: "",
                 role: "ROLE_USER",
                 available_credit: 0,

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScopedTarget } from "./scoped-target.ts";
 import { actorIds } from "./sessions.ts";
 import {
@@ -6,6 +6,8 @@ import {
   authenticateTargetManifest,
   type TargetManifest,
 } from "./target-manifest.ts";
+
+afterEach(() => vi.unstubAllEnvs());
 
 function multiPrincipalManifest(): TargetManifest {
   return {
@@ -80,7 +82,11 @@ function multiPrincipalManifest(): TargetManifest {
           },
           session: {
             headers: { authorization: "{{credential}}" },
-            localStorage: { role: "administrator", token: "{{credential}}" },
+            localStorage: {
+              role: "administrator",
+              token: "{{credential}}",
+              email: "{{env:QUIVER_MANIFEST_TEST_EMAIL|default@example.test}}",
+            },
           },
         },
       },
@@ -91,6 +97,7 @@ function multiPrincipalManifest(): TargetManifest {
 describe("declarative target onboarding", () => {
   it("materializes header-token, cookie, and browser-login sessions for four actor roles", async () => {
     const manifest = multiPrincipalManifest();
+    vi.stubEnv("QUIVER_MANIFEST_TEST_EMAIL", "configured@example.test");
     let now = 0;
     const requests: Array<{ path: string; headers: Headers; body: string }> = [];
     const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -131,7 +138,11 @@ describe("declarative target onboarding", () => {
     });
     await expect(target.sessions.browserState(actorIds.administrator)).resolves.toMatchObject({
       headers: { authorization: "Admin admin-token" },
-      localStorage: { role: "administrator", token: "Admin admin-token" },
+      localStorage: {
+        role: "administrator",
+        token: "Admin admin-token",
+        email: "configured@example.test",
+      },
     });
     expect(requests.at(-2)?.headers.get("authorization")).toBe("Bearer a-1");
     expect(requests.at(-1)?.headers.get("cookie")).toBe("session=b-cookie");

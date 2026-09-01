@@ -32,6 +32,8 @@ headers, storage, or cookies. Login and refresh exchanges are restricted to `sco
 charged to the same campaign request budget as every other target request, and may read credentials
 only from a declared response header, JSON pointer, literal, or environment reference. Expiring tokens
 are refreshed per actor with concurrent refreshes coalesced.
+Browser-state strings may interpolate credentials with `{{credential}}` and environment-backed
+identity metadata with `{{env:NAME}}` or `{{env:NAME|fallback}}`.
 
 ```ts
 const manifest = {
