@@ -1444,7 +1444,7 @@ async function inspectForms(page: Page): Promise<FormCandidate[]> {
           enctype,
           intent,
           destructive:
-            /\b(delete|destroy|remove|revoke|logout|sign\s*out|unsubscribe|purchase|pay|checkout|transfer|reset|wipe)\b/i.test(
+            /\b(delete|destroy|remove|revoke|logout|sign\s*out|unsubscribe|purchase|pay|checkout|transfer|reset|wipe|cancel|close|deactivate|disable|terminate|suspend|archive|erase|purge)\b/i.test(
               `${intent} ${action}`,
             ),
           purposeful:

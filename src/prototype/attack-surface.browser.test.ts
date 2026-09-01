@@ -21,6 +21,7 @@ describe("browser stateful discovery", () => {
     let secondaryVisibleCookie: string | null = null;
     let secondarySocketConnections = 0;
     let primaryLogoutRequests = 0;
+    let destructiveWorkflowRequests = 0;
     let activeVisitOnlyGets = 0;
     let wrongSearchActions = 0;
     let searchSubmitterValue: string | null = null;
@@ -118,6 +119,22 @@ describe("browser stateful discovery", () => {
               <input name="confirm">
               <button type="submit">Delete</button>
             </form>
+            <form aria-label="Continue account cancellation" action="/cancel-account" method="post">
+              <input name="confirm">
+              <button type="submit">Continue</button>
+            </form>
+            <form aria-label="Close workspace" action="/close-workspace" method="post">
+              <input name="confirm">
+              <button type="submit">Continue</button>
+            </form>
+            <form aria-label="Deactivate profile" action="/deactivate-profile" method="post">
+              <input name="confirm">
+              <button type="submit">Continue</button>
+            </form>
+            <form aria-label="Terminate subscription" action="/terminate-subscription" method="post">
+              <input name="confirm">
+              <button type="submit">Continue</button>
+            </form>
             <form action="/logout" method="get">
               <input name="confirm">
               <button type="submit">Submit</button>
@@ -139,6 +156,15 @@ describe("browser stateful discovery", () => {
         if (url.pathname === "/blocked-workflow") blockedWorkflowRequests += 1;
         if (url.pathname === "/wrong-search-action") wrongSearchActions += 1;
         if (url.pathname === "/logout") primaryLogoutRequests += 1;
+        if (
+          [
+            "/cancel-account",
+            "/close-workspace",
+            "/deactivate-profile",
+            "/terminate-subscription",
+          ].includes(url.pathname)
+        )
+          destructiveWorkflowRequests += 1;
         return new Response("ok");
       },
     });
@@ -182,6 +208,7 @@ describe("browser stateful discovery", () => {
     expect(secondaryVisibleCookie).toBe("");
     expect(secondarySocketConnections).toBe(0);
     expect(primaryLogoutRequests).toBe(0);
+    expect(destructiveWorkflowRequests).toBe(0);
     expect(activeVisitOnlyGets).toBe(0);
     expect(wrongSearchActions).toBe(0);
     expect(searchSubmitterValue).toBe("inventory-search");
@@ -204,6 +231,10 @@ describe("browser stateful discovery", () => {
           submitted: false,
         }),
         expect.objectContaining({ action: `${origin}/logout`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/cancel-account`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/close-workspace`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/deactivate-profile`, submitted: false }),
+        expect.objectContaining({ action: `${origin}/terminate-subscription`, submitted: false }),
         expect.objectContaining({
           action: `${origin}/blocked-workflow`,
           attempted: true,
