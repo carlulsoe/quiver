@@ -104,6 +104,18 @@ export class DefaultVerificationEngine implements VerificationEngine {
     ) {
       return;
     }
+    const namedActorIds = [...actorIdsUsed].filter((actorId) => actorId !== actorIds.anonymous);
+    const acquired = await Promise.all(
+      namedActorIds.map(async (actorId) => {
+        try {
+          await target.sessions.acquire(actorId);
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    if (acquired.every(Boolean)) return;
     let authentication = this.#authentication.get(target);
     if (!authentication) {
       authentication = target.runProfileSetup(() => this.#profile.authenticate!(target));
