@@ -170,7 +170,7 @@ function heldOutFinding(): FindingInput {
     rationale: "The response contains another principal's canary.",
     impact: "A user can read another user's record.",
     mitigation: "Enforce ownership.",
-    reproduction: [{ path: "/api/random/vaults/foreign", authenticated: true }],
+    reproduction: [{ path: "/api/random/vaults/foreign", actorId: "ordinary-user" }],
     proof: {
       type: "canary-retrieval",
       policyId: "held-out-record-canary",
@@ -206,7 +206,7 @@ function campaignRun(finding: FindingInput): CampaignRun {
       agentId: "explorer-1",
       path: finding.endpoint,
       method: "GET",
-      authenticated: true,
+      actorId: "ordinary-user",
       status: 200,
     },
   });
