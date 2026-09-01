@@ -355,7 +355,7 @@ export class ScopedTarget {
         "Request headers may not override the scoped method or target path",
       );
     }
-    if (hasPotentialAuthenticationHeaders(request.headers)) {
+    if (!includeResponseHeaders && hasPotentialAuthenticationHeaders(request.headers)) {
       throw new TargetScopeError(
         actorId !== actorIds.anonymous
           ? "Actor requests may not override the session adapter's credential headers"

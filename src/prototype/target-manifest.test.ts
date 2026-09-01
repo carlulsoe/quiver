@@ -49,7 +49,7 @@ function multiPrincipalManifest(): TargetManifest {
             request: {
               method: "POST",
               path: "/refresh/a",
-              body: { refresh: "{{refreshCredential}}" },
+              headers: { authorization: "Refresh {{refreshCredential}}" },
             },
             credential: { location: "body", pointer: "/access" },
             expectedStatuses: [200],
@@ -160,8 +160,8 @@ describe("declarative target onboarding", () => {
 
     now = 100;
     await target.request({ path: "/resource", actorId: actorIds.userA });
-    expect(requests.find(({ path }) => path === "/refresh/a")?.body).toBe(
-      JSON.stringify({ refresh: "refresh-a" }),
+    expect(requests.find(({ path }) => path === "/refresh/a")?.headers.get("authorization")).toBe(
+      "Refresh refresh-a",
     );
     expect(requests.at(-1)?.headers.get("authorization")).toBe("Bearer a-2");
   });

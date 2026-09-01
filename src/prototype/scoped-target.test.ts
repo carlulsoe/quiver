@@ -27,22 +27,35 @@ describe("scoped target", () => {
   });
 
   it("allows profile-only setup requests to read authentication response headers", async () => {
+    let setupAuthorization: string | null = null;
     const target = new ScopedTarget({
       target: new URL("http://localhost:8888"),
       requestBudget: 2,
       allowedRequests: [{ method: "POST", path: "/login" }],
       deniedRequests: [{ method: "POST", path: "/login" }],
-      transport: async () =>
-        new Response("{}", { status: 200, headers: { authorization: "Bearer setup-token" } }),
+      transport: async (_input, init) => {
+        setupAuthorization = new Headers(init?.headers).get("authorization");
+        return new Response("{}", {
+          status: 200,
+          headers: { authorization: "Bearer setup-token" },
+        });
+      },
     });
 
     await expect(target.request({ path: "/login", method: "POST" })).rejects.toThrow(
       "denied by the target profile",
     );
-    await expect(target.setupRequest({ path: "/login", method: "POST" })).resolves.toMatchObject({
+    await expect(
+      target.setupRequest({
+        path: "/login",
+        method: "POST",
+        headers: { authorization: "Refresh profile-token" },
+      }),
+    ).resolves.toMatchObject({
       status: 200,
       headers: { authorization: "Bearer setup-token" },
     });
+    expect(setupAuthorization).toBe("Refresh profile-token");
     await expect(target.setupRequest({ path: "/other" })).rejects.toThrow(
       "is not an allowed profile setup request",
     );
