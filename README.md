@@ -214,7 +214,13 @@ canary retrieval, exact before/after state transitions, target-owned SQL semanti
 differentials, and fresh computed command-execution challenges. Generic response
 and timing differentials remain supporting evidence, and SSRF OAST callbacks do
 not confirm command execution. BOLA proofs require different actor and resource-owner
-identities plus concrete impact fields in a successful access response.
+identities plus concrete impact fields in a successful access response. Authentication-bypass
+proofs replay one manifest-protected operation as both an authorized actor and anonymous, while
+role/privilege proofs replay it as an authorized higher-role actor and an unauthorized lower-role
+actor. The paired requests may differ only by actor session and must return the same declared scalar
+evidence. This grounds missing function-level authorization and cross-role business-action findings
+in the target's declared access policy instead of treating any successful public or same-role request
+as a bypass.
 
 Impact levels are derived by code: `observation` for read-only HTTP evidence,
 `bounded` for read-only browser/OAST collectors, and `state-change` for any

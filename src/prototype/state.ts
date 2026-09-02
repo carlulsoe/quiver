@@ -91,6 +91,18 @@ export type ProofPredicate =
       evidencePointers: string[];
     }
   | {
+      type: "authentication-bypass";
+      authenticatedRequestIndex: number;
+      anonymousRequestIndex: number;
+      evidencePointers: string[];
+    }
+  | {
+      type: "role-privilege-differential";
+      authorizedRequestIndex: number;
+      lessPrivilegedRequestIndex: number;
+      evidencePointers: string[];
+    }
+  | {
       type: "unauthenticated-success";
       requestIndex: number;
       evidencePointers: string[];

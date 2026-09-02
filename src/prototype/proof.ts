@@ -14,12 +14,17 @@ import { impactSafetyChecks } from "./impact.ts";
 import type { ImpactLevel } from "./state.ts";
 import { endpointMatchesRequest } from "./endpoint.ts";
 import { actorIds, type ActorId } from "./sessions.ts";
+import type { ProtectedOperationManifest, TargetIdentityManifest } from "./target-manifest.ts";
 
 /** Code-owned compatibility is the first vulnerability-specific validation boundary. */
 export const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["type"][]> = {
   "broken-object-authorization": ["cross-principal-access", "unauthenticated-success"],
-  "broken-function-authorization": ["cross-principal-access", "unauthenticated-success"],
-  "authentication-bypass": [],
+  "broken-function-authorization": [
+    "cross-principal-access",
+    "unauthenticated-success",
+    "role-privilege-differential",
+  ],
+  "authentication-bypass": ["authentication-bypass"],
   "excessive-data-exposure": [
     "cross-principal-data-exposure",
     "internal-field-exposure",
@@ -37,13 +42,15 @@ export const compatiblePredicates: Record<FindingCategory, readonly ProofPredica
   "path-traversal": ["canary-retrieval"],
   "open-redirect": [],
   "cross-site-request-forgery": [],
-  "business-logic": ["state-transition"],
+  "business-logic": ["state-transition", "role-privilege-differential"],
   "security-misconfiguration": ["unauthenticated-success"],
   other: [],
 };
 
 export interface ProofEvaluationContext {
   policies?: readonly ProofPolicy[];
+  identities?: readonly TargetIdentityManifest[];
+  protectedOperations?: readonly ProtectedOperationManifest[];
   artifacts?: ProofArtifacts;
   stateResetAvailable?: boolean;
   maximumImpactLevel?: ImpactLevel;
@@ -118,6 +125,167 @@ export function evaluateProof(
           "cross-principal access used the identified actor session",
         ),
         ...pointerChecks(access, finding.proof.evidencePointers),
+      );
+      break;
+    }
+    case "authentication-bypass": {
+      const proof = finding.proof;
+      const authenticatedRequest = finding.reproduction[proof.authenticatedRequestIndex];
+      const anonymousRequest = finding.reproduction[proof.anonymousRequestIndex];
+      const authenticatedObservation = observations[proof.authenticatedRequestIndex];
+      const anonymousObservation = observations[proof.anonymousRequestIndex];
+      const operation = protectedOperationFor(context.protectedOperations, authenticatedRequest);
+      const anonymousOperation = protectedOperationFor(
+        context.protectedOperations,
+        anonymousRequest,
+      );
+      const authenticatedIdentity = identityFor(context.identities, authenticatedRequest?.actorId);
+      const anonymousIdentity = identityFor(context.identities, anonymousRequest?.actorId);
+      checks.push(
+        check(
+          finding.reproduction.length === 2 &&
+            proof.authenticatedRequestIndex !== proof.anonymousRequestIndex,
+          "authentication bypass is one closed authenticated-anonymous request pair",
+        ),
+        check(
+          authenticatedRequest !== undefined &&
+            authenticatedRequest.actorId !== actorIds.anonymous &&
+            anonymousRequest?.actorId === actorIds.anonymous,
+          "control is authenticated and bypass probe is anonymous",
+        ),
+        check(
+          authenticatedIdentity !== undefined &&
+            authenticatedIdentity.role !== "anonymous" &&
+            anonymousIdentity?.role === "anonymous",
+          "authenticated and anonymous actors are declared by the target manifest",
+        ),
+        check(
+          operation !== undefined &&
+            operation === anonymousOperation &&
+            authenticatedRequest !== undefined &&
+            operation.authorizedActors.includes(authenticatedRequest.actorId) &&
+            !operation.authorizedActors.includes(actorIds.anonymous),
+          "target policy requires authentication for the affected operation",
+        ),
+        check(
+          affectedOperationMatches(finding, authenticatedRequest) &&
+            affectedOperationMatches(finding, anonymousRequest),
+          "authenticated control and anonymous probe match the affected operation",
+        ),
+        check(
+          sameRequestAcrossActors(authenticatedRequest, anonymousRequest),
+          "authenticated control and anonymous probe differ only by actor session",
+        ),
+        check(
+          !hasPotentialAuthenticationHeaders(authenticatedRequest?.headers) &&
+            !hasPotentialAuthenticationHeaders(anonymousRequest?.headers),
+          "authentication differential relies only on declared actor sessions",
+        ),
+        check(
+          authenticatedObservation !== undefined && isSuccess(authenticatedObservation.status),
+          "authenticated control returned a successful response",
+          authenticatedObservation?.status,
+        ),
+        check(
+          anonymousObservation !== undefined && isSuccess(anonymousObservation.status),
+          "anonymous bypass probe returned a successful response",
+          anonymousObservation?.status,
+        ),
+        ...differentialPointerChecks(
+          authenticatedObservation,
+          anonymousObservation,
+          proof.evidencePointers,
+          "authenticated control",
+          "anonymous bypass probe",
+        ),
+      );
+      break;
+    }
+    case "role-privilege-differential": {
+      const proof = finding.proof;
+      const authorizedRequest = finding.reproduction[proof.authorizedRequestIndex];
+      const lessPrivilegedRequest = finding.reproduction[proof.lessPrivilegedRequestIndex];
+      const authorizedObservation = observations[proof.authorizedRequestIndex];
+      const lessPrivilegedObservation = observations[proof.lessPrivilegedRequestIndex];
+      const authorizedIdentity = identityFor(context.identities, authorizedRequest?.actorId);
+      const lessPrivilegedIdentity = identityFor(
+        context.identities,
+        lessPrivilegedRequest?.actorId,
+      );
+      const operation = protectedOperationFor(context.protectedOperations, authorizedRequest);
+      const lessPrivilegedOperation = protectedOperationFor(
+        context.protectedOperations,
+        lessPrivilegedRequest,
+      );
+      const method = authorizedRequest?.method ?? "GET";
+      checks.push(
+        check(
+          finding.reproduction.length === 2 &&
+            proof.authorizedRequestIndex !== proof.lessPrivilegedRequestIndex,
+          "role differential is one closed authorized-less-privileged request pair",
+        ),
+        check(
+          authorizedRequest !== undefined &&
+            lessPrivilegedRequest !== undefined &&
+            authorizedRequest.actorId !== actorIds.anonymous &&
+            lessPrivilegedRequest.actorId !== actorIds.anonymous &&
+            authorizedRequest.actorId !== lessPrivilegedRequest.actorId,
+          "role differential uses two distinct authenticated actors",
+        ),
+        check(
+          authorizedIdentity !== undefined &&
+            lessPrivilegedIdentity !== undefined &&
+            roleRank(authorizedIdentity.role) > roleRank(lessPrivilegedIdentity.role),
+          "control actor has a more privileged declared role than the probe actor",
+          authorizedIdentity && lessPrivilegedIdentity
+            ? `${authorizedIdentity.role} > ${lessPrivilegedIdentity.role}`
+            : undefined,
+        ),
+        check(
+          operation !== undefined &&
+            operation === lessPrivilegedOperation &&
+            authorizedRequest !== undefined &&
+            lessPrivilegedRequest !== undefined &&
+            operation.authorizedActors.includes(authorizedRequest.actorId) &&
+            !operation.authorizedActors.includes(lessPrivilegedRequest.actorId),
+          "target policy authorizes the control actor but not the less-privileged actor",
+        ),
+        check(
+          affectedOperationMatches(finding, authorizedRequest) &&
+            affectedOperationMatches(finding, lessPrivilegedRequest),
+          "authorized control and less-privileged probe match the affected operation",
+        ),
+        check(
+          sameRequestAcrossActors(authorizedRequest, lessPrivilegedRequest),
+          "authorized control and less-privileged probe differ only by actor session",
+        ),
+        check(
+          !hasPotentialAuthenticationHeaders(authorizedRequest?.headers) &&
+            !hasPotentialAuthenticationHeaders(lessPrivilegedRequest?.headers),
+          "role differential relies only on declared actor sessions",
+        ),
+        check(
+          finding.category !== "business-logic" || ["POST", "PUT", "PATCH"].includes(method),
+          "cross-role business action uses a state-changing method",
+          method,
+        ),
+        check(
+          authorizedObservation !== undefined && isSuccess(authorizedObservation.status),
+          "authorized control returned a successful response",
+          authorizedObservation?.status,
+        ),
+        check(
+          lessPrivilegedObservation !== undefined && isSuccess(lessPrivilegedObservation.status),
+          "less-privileged probe returned a successful response",
+          lessPrivilegedObservation?.status,
+        ),
+        ...differentialPointerChecks(
+          authorizedObservation,
+          lessPrivilegedObservation,
+          proof.evidencePointers,
+          "authorized control",
+          "less-privileged probe",
+        ),
       );
       break;
     }
@@ -718,6 +886,61 @@ function affectedOperationMatches(
   );
 }
 
+function protectedOperationFor(
+  operations: readonly ProtectedOperationManifest[] | undefined,
+  request: Pick<ProofRequest, "path" | "method"> | undefined,
+): ProtectedOperationManifest | undefined {
+  if (!request) return undefined;
+  const matches = (operations ?? []).filter(
+    (operation) =>
+      operation.method === (request.method ?? "GET") &&
+      endpointMatchesRequest(operation.path, request.path),
+  );
+  const highestSpecificity = Math.max(...matches.map(({ path }) => operationSpecificity(path)));
+  const mostSpecific = matches.filter(
+    ({ path }) => operationSpecificity(path) === highestSpecificity,
+  );
+  const [selected] = mostSpecific;
+  return selected &&
+    mostSpecific.every(({ authorizedActors }) =>
+      sameActorSet(authorizedActors, selected.authorizedActors),
+    )
+    ? selected
+    : undefined;
+}
+
+function operationSpecificity(path: string): number {
+  return new URL(path, "http://proof.invalid").pathname
+    .split("/")
+    .filter(
+      (segment) =>
+        segment.length > 0 &&
+        !/^(?:<[^>]+>|\{[^}]+\}|:[A-Za-z_$][\w$]*)$/.test(decodeURIComponent(segment)),
+    ).length;
+}
+
+function sameActorSet(left: readonly ActorId[], right: readonly ActorId[]): boolean {
+  return left.length === right.length && left.every((actorId) => right.includes(actorId));
+}
+
+function identityFor(
+  identities: readonly TargetIdentityManifest[] | undefined,
+  actorId: ActorId | undefined,
+): TargetIdentityManifest | undefined {
+  return identities?.find((identity) => identity.id === actorId);
+}
+
+function roleRank(role: TargetIdentityManifest["role"]): number {
+  switch (role) {
+    case "anonymous":
+      return 0;
+    case "user":
+      return 1;
+    case "administrator":
+      return 2;
+  }
+}
+
 function policyFor<K extends ProofPolicy["kind"]>(
   policies: readonly ProofPolicy[] | undefined,
   id: string,
@@ -817,6 +1040,27 @@ function sameConcreteRequest(
     canonicalJson({ ...left, path: canonicalRequestPath(left.path), sampleId: undefined }) ===
     canonicalJson({ ...right, path: canonicalRequestPath(right.path), sampleId: undefined })
   );
+}
+
+function sameRequestAcrossActors(
+  left: Finding["reproduction"][number] | undefined,
+  right: Finding["reproduction"][number] | undefined,
+): boolean {
+  if (
+    !left ||
+    !right ||
+    !hasUniqueHeaderNames(left.headers) ||
+    !hasUniqueHeaderNames(right.headers)
+  ) {
+    return false;
+  }
+  const normalized = (request: Finding["reproduction"][number]) => ({
+    path: canonicalRequestPath(request.path),
+    method: request.method ?? "GET",
+    headers: normalizeHeaders(request.headers),
+    body: request.body,
+  });
+  return canonicalJson(normalized(left)) === canonicalJson(normalized(right));
 }
 
 function canonicalRequestPath(path: string): string {
@@ -981,6 +1225,44 @@ function pointerChecks(
     const selected = observation ? jsonPointer(observation.body, pointer) : { found: false };
     return check(selected.found, `response contains ${pointer}`, selected.value);
   });
+}
+
+function differentialPointerChecks(
+  control: ValidationObservation | undefined,
+  probe: ValidationObservation | undefined,
+  pointers: readonly string[],
+  controlLabel: string,
+  probeLabel: string,
+): ProofCheck[] {
+  return [
+    check(pointers.length > 0, "at least one differential evidence field was declared"),
+    ...pointers.flatMap((pointer) => {
+      const controlValue = control ? jsonPointer(control.body, pointer) : { found: false };
+      const probeValue = probe ? jsonPointer(probe.body, pointer) : { found: false };
+      return [
+        check(
+          controlValue.found && isScalar(controlValue.value),
+          `${controlLabel} contains scalar ${pointer}`,
+          controlValue.value,
+        ),
+        check(
+          probeValue.found && isScalar(probeValue.value),
+          `${probeLabel} contains scalar ${pointer}`,
+          probeValue.value,
+        ),
+        check(
+          controlValue.found &&
+            probeValue.found &&
+            isScalar(controlValue.value) &&
+            sameValue(controlValue.value, probeValue.value),
+          `${controlLabel} and ${probeLabel} match at ${pointer}`,
+          controlValue.found && probeValue.found
+            ? `${String(controlValue.value)} == ${String(probeValue.value)}`
+            : undefined,
+        ),
+      ];
+    }),
+  ];
 }
 
 function selectedValue(

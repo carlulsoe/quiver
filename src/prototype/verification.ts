@@ -67,6 +67,8 @@ export class DefaultVerificationEngine implements VerificationEngine {
   preflight(submission: FindingInput, context: VerificationContext): PreflightResult {
     const proof = evaluateProof(submission, context.observations, {
       policies: this.#profile.proofPolicies,
+      identities: this.#profile.manifest?.identities,
+      protectedOperations: this.#profile.protectedOperations,
       artifacts: this.#artifacts.snapshot(),
       stateResetAvailable: this.#profile.prepareValidation !== undefined,
       maximumImpactLevel: this.#profile.maximumImpactLevel ?? "observation",
@@ -123,6 +125,8 @@ export class DefaultVerificationEngine implements VerificationEngine {
     );
     const proof = evaluateProof(replay.replayedFinding, replay.observations, {
       policies: this.#profile.proofPolicies,
+      identities: this.#profile.manifest?.identities,
+      protectedOperations: this.#profile.protectedOperations,
       artifacts: replay.artifacts,
       stateResetAvailable: this.#profile.prepareValidation !== undefined,
       maximumImpactLevel: this.#profile.maximumImpactLevel ?? "observation",
@@ -232,6 +236,18 @@ export const proofPredicateSchema = v.variant("type", [
     evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
   }),
   v.object({
+    type: v.literal("authentication-bypass"),
+    authenticatedRequestIndex: indexSchema,
+    anonymousRequestIndex: indexSchema,
+    evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
+  }),
+  v.object({
+    type: v.literal("role-privilege-differential"),
+    authorizedRequestIndex: indexSchema,
+    lessPrivilegedRequestIndex: indexSchema,
+    evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
+  }),
+  v.object({
     type: v.literal("unauthenticated-success"),
     requestIndex: indexSchema,
     evidencePointers: v.pipe(v.array(jsonPointerSchema), v.minLength(1)),
@@ -299,6 +315,8 @@ export const proofPredicateSchema = v.variant("type", [
 
 export const verificationInstructions = `Every finding must declare a machine-checkable proof predicate using zero-based reproduction request indexes and RFC 6901 JSON pointers into parsed response bodies:
 - cross-principal-access: identify the named actor and the accessed resource owner in replay responses; they must differ, the access response must succeed, and each evidence pointer must exist in that access response.
+- authentication-bypass: replay the same protected operation once as an actor authorized by the target manifest and once anonymously. Both requests must succeed and return matching scalar evidence fields.
+- role-privilege-differential: replay the same protected operation as an authorized higher-role actor and an unauthorized lower-role actor. Both requests must succeed and return matching scalar evidence fields. Use this for missing function-level authorization, or for a POST/PUT/PATCH cross-role business action.
 - unauthenticated-success: identify an anonymous request whose successful response contains each declared evidence field.
 - cross-principal-data-exposure: identify the named actor and a different subject whose fields appear in the successful response, plus every concrete exposed field.
 - internal-field-exposure: identify a successful response and implementation-only fields whose presence alone violates the response contract. Use this only for unmistakable internal/debug/configuration properties—not normal fields from the caller's own resource.

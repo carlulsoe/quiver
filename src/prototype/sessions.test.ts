@@ -28,4 +28,41 @@ describe("actor sessions", () => {
       localStorage: { role: "admin" },
     });
   });
+
+  it("does not leak mutable session material between callers or principals", async () => {
+    const sessions = new InMemorySessions();
+    sessions.set(actorIds.userA, {
+      headers: { authorization: "Bearer user-a" },
+      browserState: {
+        localStorage: { principal: "user-a" },
+        cookies: [{ name: "session", value: "cookie-a", domain: "localhost", path: "/" }],
+      },
+    });
+    sessions.set(actorIds.userB, {
+      headers: { authorization: "Bearer user-b" },
+      browserState: {
+        localStorage: { principal: "user-b" },
+        cookies: [{ name: "session", value: "cookie-b", domain: "localhost", path: "/" }],
+      },
+    });
+
+    const acquiredA = await sessions.acquire(actorIds.userA);
+    const browserA = await sessions.browserState(actorIds.userA);
+    acquiredA.headers.authorization = "Bearer overwritten";
+    browserA.localStorage!.principal = "overwritten";
+    browserA.cookies![0]!.value = "overwritten";
+
+    await expect(sessions.acquire(actorIds.userA)).resolves.toMatchObject({
+      headers: { authorization: "Bearer user-a" },
+    });
+    await expect(sessions.browserState(actorIds.userA)).resolves.toMatchObject({
+      localStorage: { principal: "user-a" },
+      cookies: [{ value: "cookie-a" }],
+    });
+    await expect(sessions.browserState(actorIds.userB)).resolves.toMatchObject({
+      headers: { authorization: "Bearer user-b" },
+      localStorage: { principal: "user-b" },
+      cookies: [{ value: "cookie-b" }],
+    });
+  });
 });

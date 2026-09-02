@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { evaluateProof } from "./proof.ts";
+import { actorIds } from "./sessions.ts";
 import type { Finding, ValidationObservation } from "./state.ts";
+
+const identities = [
+  { id: actorIds.anonymous, label: "Anonymous", role: "anonymous" as const },
+  { id: actorIds.userA, label: "User A", role: "user" as const },
+  { id: actorIds.userB, label: "User B", role: "user" as const },
+  { id: actorIds.administrator, label: "Administrator", role: "administrator" as const },
+];
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -76,6 +84,244 @@ describe("deterministic finding proof", () => {
         "cross-principal request returned a successful response",
       ]),
     );
+  });
+
+  it("proves authentication bypass against a manifest-declared protected operation", () => {
+    const bypass = finding({
+      fingerprint: "authentication-bypass:GET:/account",
+      category: "authentication-bypass",
+      endpoint: "/account",
+      reproduction: [
+        { path: "/account", actorId: actorIds.userA },
+        { path: "/account", actorId: actorIds.anonymous },
+      ],
+      proof: {
+        type: "authentication-bypass",
+        authenticatedRequestIndex: 0,
+        anonymousRequestIndex: 1,
+        evidencePointers: ["/account/id", "/account/plan"],
+      },
+    });
+    const context = {
+      identities,
+      protectedOperations: [
+        {
+          method: "GET" as const,
+          path: "/{resource}",
+          authorizedActors: [actorIds.administrator],
+        },
+        {
+          method: "GET" as const,
+          path: "/account",
+          authorizedActors: [actorIds.userA, actorIds.administrator],
+        },
+      ],
+    };
+    const observations = [
+      observation(
+        "/account",
+        { account: { id: "account-7", plan: "internal" } },
+        { actorId: actorIds.userA },
+      ),
+      observation(
+        "/account",
+        { account: { id: "account-7", plan: "internal" } },
+        { actorId: actorIds.anonymous },
+      ),
+    ];
+
+    expect(evaluateProof(bypass, observations, context)).toMatchObject({
+      passed: true,
+      predicate: "authentication-bypass",
+    });
+    expect(
+      evaluateProof(
+        bypass,
+        [observations[0]!, { ...observations[1]!, body: { account: { id: "public" } } }],
+        context,
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(bypass, observations, { identities, protectedOperations: [] }).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof(bypass, observations, {
+        identities,
+        protectedOperations: [
+          {
+            method: "GET",
+            path: "/{resource}",
+            authorizedActors: [actorIds.userA],
+          },
+          {
+            method: "GET",
+            path: "/:resource",
+            authorizedActors: [actorIds.administrator],
+          },
+        ],
+      }).passed,
+    ).toBe(false);
+    expect(
+      evaluateProof({ ...bypass, endpoint: "/{resource}" }, observations, {
+        identities,
+        protectedOperations: [
+          {
+            method: "GET",
+            path: "/{resource}",
+            authorizedActors: [actorIds.userA],
+          },
+          {
+            method: "GET",
+            path: "/account",
+            authorizedActors: [actorIds.administrator],
+          },
+        ],
+      }).passed,
+    ).toBe(false);
+  });
+
+  it("proves missing function-level authorization with a cross-role differential", () => {
+    const bypass = finding({
+      fingerprint: "broken-function-authorization:GET:/admin/audit",
+      category: "broken-function-authorization",
+      endpoint: "/admin/audit",
+      reproduction: [
+        { path: "/admin/audit?range=today", actorId: actorIds.administrator },
+        { path: "/admin/audit?range=today", actorId: actorIds.userA },
+      ],
+      proof: {
+        type: "role-privilege-differential",
+        authorizedRequestIndex: 0,
+        lessPrivilegedRequestIndex: 1,
+        evidencePointers: ["/report/id"],
+      },
+    });
+    const context = {
+      identities,
+      protectedOperations: [
+        {
+          method: "GET" as const,
+          path: "/admin/audit",
+          authorizedActors: [actorIds.administrator],
+        },
+      ],
+    };
+    const observations = [
+      observation(
+        "/admin/audit?range=today",
+        { report: { id: "audit-today" } },
+        { actorId: actorIds.administrator },
+      ),
+      observation(
+        "/admin/audit?range=today",
+        { report: { id: "audit-today" } },
+        { actorId: actorIds.userA },
+      ),
+    ];
+
+    expect(evaluateProof(bypass, observations, context)).toMatchObject({
+      passed: true,
+      predicate: "role-privilege-differential",
+    });
+    expect(
+      evaluateProof(
+        {
+          ...bypass,
+          reproduction: [
+            { ...bypass.reproduction[0]!, actorId: actorIds.userB },
+            bypass.reproduction[1]!,
+          ],
+        },
+        [{ ...observations[0]!, actorId: actorIds.userB }, observations[1]!],
+        {
+          identities,
+          protectedOperations: [
+            {
+              method: "GET",
+              path: "/admin/audit",
+              authorizedActors: [actorIds.userB],
+            },
+          ],
+        },
+      ).passed,
+    ).toBe(false);
+  });
+
+  it("proves a cross-role business action only for a state-changing protected operation", () => {
+    const businessAction = finding({
+      fingerprint: "business-logic:POST:/admin/reindex",
+      category: "business-logic",
+      endpoint: "/admin/reindex",
+      method: "POST",
+      reproduction: [
+        {
+          path: "/admin/reindex",
+          method: "POST",
+          body: '{"scope":"catalog"}',
+          actorId: actorIds.administrator,
+        },
+        {
+          path: "/admin/reindex",
+          method: "POST",
+          body: '{"scope":"catalog"}',
+          actorId: actorIds.userA,
+        },
+      ],
+      proof: {
+        type: "role-privilege-differential",
+        authorizedRequestIndex: 0,
+        lessPrivilegedRequestIndex: 1,
+        evidencePointers: ["/job/type"],
+      },
+    });
+    const context = {
+      identities,
+      protectedOperations: [
+        {
+          method: "POST" as const,
+          path: "/admin/reindex",
+          authorizedActors: [actorIds.administrator],
+        },
+      ],
+    };
+    const observations = [
+      observation(
+        "/admin/reindex",
+        { job: { type: "catalog-reindex" } },
+        { actorId: actorIds.administrator, method: "POST" },
+      ),
+      observation(
+        "/admin/reindex",
+        { job: { type: "catalog-reindex" } },
+        { actorId: actorIds.userA, method: "POST" },
+      ),
+    ];
+
+    expect(evaluateProof(businessAction, observations, context).passed).toBe(true);
+    expect(
+      evaluateProof(
+        {
+          ...businessAction,
+          method: "GET",
+          reproduction: businessAction.reproduction.map((request) => ({
+            ...request,
+            method: "GET" as const,
+            body: undefined,
+          })),
+        },
+        observations.map((item) => ({ ...item, method: "GET" as const })),
+        {
+          identities,
+          protectedOperations: [
+            {
+              method: "GET",
+              path: "/admin/reindex",
+              authorizedActors: [actorIds.administrator],
+            },
+          ],
+        },
+      ).passed,
+    ).toBe(false);
   });
 
   it("confirms anonymous success only for an actually anonymous request with declared fields", () => {
