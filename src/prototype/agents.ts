@@ -180,6 +180,11 @@ function explorationTools(
           path: result.path,
           body: JSON.stringify(result.body),
           truncated: result.truncated ?? false,
+          ...(result.contentType === undefined ? {} : { contentType: result.contentType }),
+          ...(result.redirectLocation === undefined
+            ? {}
+            : { redirectLocation: result.redirectLocation }),
+          ...(result.redirected === undefined ? {} : { redirected: result.redirected }),
           ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }),
           reused,
         },
@@ -294,6 +299,37 @@ function explorationTools(
       };
     },
   });
+  const observeBrowserStateTransition = defineTool({
+    name: "observe_browser_state_transition",
+    description:
+      "Run one policy-owned cross-origin browser page with victim cookies and record only its exact state-changing request.",
+    input: v.object({ policyId: v.string() }),
+    async run({ data }) {
+      const policy = profile.proofPolicies?.find(
+        (candidate) =>
+          candidate.kind === "browser-state-transition" && candidate.id === data.policyId,
+      );
+      if (policy?.kind !== "browser-state-transition") {
+        throw new Error("Unknown browser-state-transition proof policy");
+      }
+      const evidence = await target.observeBrowserStateTransition({
+        policyId: policy.id,
+        sourceOrigin: policy.sourceOrigin,
+        sourcePath: policy.sourcePath,
+        targetPath: policy.endpoint,
+        method: policy.method,
+        actorId: policy.pageActorId,
+        requestBudget: policy.requestBudget,
+      });
+      if (evidence) artifacts.recordBrowserStateTransition(evidence);
+      return {
+        output: {
+          observed: evidence !== undefined,
+          evidence: evidence ? { ...evidence } : null,
+        },
+      };
+    },
+  });
   return {
     mapAttackSurface,
     request,
@@ -302,6 +338,7 @@ function explorationTools(
     createBrowserProbe,
     pollOastProbe,
     observeBrowserEffect,
+    observeBrowserStateTransition,
   };
 }
 
@@ -481,6 +518,7 @@ export function createExplorerAgent(
       useTool(tools.createBrowserProbe);
       useTool(tools.pollOastProbe);
       useTool(tools.observeBrowserEffect);
+      useTool(tools.observeBrowserStateTransition);
       useTool(submit);
       useTool(submitExploitChain);
       useTool(finish);
@@ -512,10 +550,14 @@ The reproduction list must contain the ordered REST requests an independent vali
 - cross-principal-data-exposure: identify the authenticated actor and a different subject whose fields appear in the successful response, plus every concrete exposed field.
 - internal-field-exposure: identify a successful response and implementation-only fields whose presence alone violates the response contract. Use this only for unmistakable internal/debug/configuration properties—not normal fields from the caller's own resource. Owner access to their own identifiers, credentials, location, or profile data is not evidence of excessive exposure.
 - canary-retrieval: select a value from a replay response that matches a target-owned canary policy.
+- file-content-retrieval: for path traversal, require the policy's exact traversal value plus a successful raw non-JSON body whose media type and full content pass the immutable-fixture verifier.
+- redirect-destination: require one 3xx response with automatic following disabled and a Location value exactly equal to the policy destination.
 - sql-semantic-differential: use the exact target-policy control and probe values in one adjacent request pair. The responses must equal the policy's false/true semantic values and the requests may differ only by that mutation.
 - command-execution-challenge: use the exact target-policy command template with a bounded integer challenge. The response must contain the policy-derived arithmetic output, which is absent from the request. Validation replaces your integer with a fresh challenge; an OAST callback is only SSRF evidence and cannot prove command execution.
 - state-transition: for business-logic findings, identify before, protected transition, and after requests matching a target-owned state policy. Use distinct sampleIds on the otherwise identical before/after reads so the ledger does not reuse the first observation. The code-owned policy supplies the protected pointer and exact before/after values.
-- browser-visible-effect and oast-callback require fresh collector artifacts and a matching target-owned policy; use them only after the corresponding evidence tool returns an observed artifact.
+- browser-visible-effect requires a fresh collector artifact and the policy's explicit stored-write or fragment-only DOM workflow.
+- browser-state-transition requires exact policy-backed before/after reads around observe_browser_state_transition, which drives a cookie-authenticated mutation from a configured cross-origin page.
+- oast-callback is explicitly SSRF evidence. It cannot classify command execution; only command-execution-challenge can do that.
 
 Choose a predicate compatible with the vulnerability-specific category and point only to values you observed. Generic categories cannot stand in for a more precise class. Categories with no compatible authoritative predicate cannot yet be submitted. Generic response/timing differentials remain supporting evidence; only target-policy semantic SQL pairs and fresh computed command challenges confirm injection. submit_finding first runs the predicate against the shared exploration observations; if a selector or condition fails, inspect its deterministicProof checks, correct the finding, and resubmit. The same predicate must later pass against a fresh replay. The deterministic predicate, not the validation model's opinion, decides confirmation. submit_finding reports whether the shared campaign accepted or had already recorded the fingerprint; it does not end the campaign. Continue testing other operations and vulnerability classes. A showcase-strength campaign should support at least three distinct machine-proven findings when the target and budget permit; if the shared ledger has fewer, keep testing unexamined actionable operations. Never submit guesses. Call finish_exploration only when further testing is not useful or the request allocation is exhausted. Its debrief is mandatory: summarize completed work and include only concrete, untested hypotheses worth handing to a fresh specialist. Set exhausted=true only when no useful lead remains.
 
@@ -684,6 +726,7 @@ type ValidatorMission = v.InferOutput<typeof validatorMissionSchema>;
 function proofOutput(proof: ProofResult) {
   return {
     predicate: proof.predicate,
+    classification: proof.classification ?? null,
     passed: proof.passed,
     summary: proof.summary,
     checks: proof.checks.map((item) => ({

@@ -101,19 +101,33 @@ export class DefaultVerificationEngine implements VerificationEngine {
     target.allowRequests(
       challengedFinding.reproduction.map(({ method = "GET", path }) => ({ method, path })),
     );
+    if (challengedFinding.proof.type === "browser-state-transition") {
+      const proof = challengedFinding.proof;
+      const policy = this.#profile.proofPolicies?.find(
+        (candidate) =>
+          candidate.kind === "browser-state-transition" && candidate.id === proof.policyId,
+      );
+      if (policy?.kind === "browser-state-transition") {
+        target.allowRequests([{ method: policy.method, path: policy.endpoint }]);
+      }
+    }
     await this.#prepareSessions(challengedFinding, target);
 
-    const resetRequests =
-      challengedFinding.proof.type === "state-transition"
-        ? (this.#profile.validationResetRequestBudget ?? 0)
-        : 0;
+    const resetRequests = ["state-transition", "browser-state-transition"].includes(
+      challengedFinding.proof.type,
+    )
+      ? (this.#profile.validationResetRequestBudget ?? 0)
+      : 0;
     const requiredRequests = replayRequestBudget(challengedFinding) + resetRequests;
     if (target.remainingRequests < requiredRequests) {
       throw new ReplayBudgetExceededError(
         `Validation requires ${requiredRequests} requests but only ${target.remainingRequests} remain`,
       );
     }
-    if (challengedFinding.proof.type === "state-transition" && this.#profile.prepareValidation) {
+    if (
+      ["state-transition", "browser-state-transition"].includes(challengedFinding.proof.type) &&
+      this.#profile.prepareValidation
+    ) {
       await target.runProfileSetup(() => this.#profile.prepareValidation!(target));
     }
 
@@ -167,6 +181,9 @@ export class DefaultVerificationEngine implements VerificationEngine {
   async #prepareSessions(finding: Finding, target: ScopedTarget): Promise<void> {
     const actorIdsUsed = new Set(finding.reproduction.map(({ actorId }) => actorId));
     if (finding.proof.type === "browser-visible-effect") {
+      actorIdsUsed.add(finding.proof.pageActorId);
+    }
+    if (finding.proof.type === "browser-state-transition") {
       actorIdsUsed.add(finding.proof.pageActorId);
     }
     if (
@@ -225,6 +242,11 @@ const challengeMutationSchema = v.object({
   parameter: v.pipe(v.string(), v.minLength(1)),
   template: v.pipe(v.string(), v.includes("{{challenge}}")),
 });
+const browserChallengeMutationSchema = v.object({
+  location: v.picklist(["query", "json-body", "fragment"]),
+  parameter: v.pipe(v.string(), v.minLength(1)),
+  template: v.pipe(v.string(), v.includes("{{challenge}}")),
+});
 
 /** Runtime schema kept with the engine so proof-pack additions do not edit agent orchestration. */
 export const proofPredicateSchema = v.variant("type", [
@@ -271,6 +293,17 @@ export const proofPredicateSchema = v.variant("type", [
     jsonPointer: jsonPointerSchema,
   }),
   v.object({
+    type: v.literal("file-content-retrieval"),
+    policyId: v.string(),
+    requestIndex: indexSchema,
+  }),
+  v.object({
+    type: v.literal("redirect-destination"),
+    policyId: v.string(),
+    requestIndex: indexSchema,
+    destination: v.string(),
+  }),
+  v.object({
     type: v.literal("sql-semantic-differential"),
     policyId: v.string(),
     controlRequestIndex: indexSchema,
@@ -297,10 +330,18 @@ export const proofPredicateSchema = v.variant("type", [
     requestIndex: indexSchema,
     pagePath: v.string(),
     kind: v.literal("dialog"),
-    challenge: challengeMutationSchema,
+    challenge: browserChallengeMutationSchema,
     pageActorId: v.string(),
-    pageChallenge: v.optional(challengeMutationSchema),
+    pageChallenge: v.optional(browserChallengeMutationSchema),
     collectorRequestBudget: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(20)),
+  }),
+  v.object({
+    type: v.literal("browser-state-transition"),
+    policyId: v.string(),
+    beforeRequestIndex: indexSchema,
+    afterRequestIndex: indexSchema,
+    pageActorId: v.string(),
+    collectorRequestBudget: v.pipe(v.number(), v.integer(), v.minValue(2), v.maxValue(20)),
   }),
   v.object({
     type: v.literal("oast-callback"),
@@ -321,10 +362,14 @@ export const verificationInstructions = `Every finding must declare a machine-ch
 - cross-principal-data-exposure: identify the named actor and a different subject whose fields appear in the successful response, plus every concrete exposed field.
 - internal-field-exposure: identify a successful response and implementation-only fields whose presence alone violates the response contract. Use this only for unmistakable internal/debug/configuration properties—not normal fields from the caller's own resource.
 - canary-retrieval: select a value from a replay response that matches a target-owned canary policy.
+- file-content-retrieval: match a raw, non-JSON response body and media type against a verifier-only immutable-file policy; the request must contain the exact policy-owned traversal value.
+- redirect-destination: require one manual HTTP redirect response whose Location exactly equals the policy destination; redirects are never followed automatically.
 - sql-semantic-differential: replay the target policy's exact false/true SQL predicates and select the control and probe requests. Both responses must match the target-owned semantic values while the requests differ only by that mutation.
 - command-execution-challenge: use the target policy's bounded arithmetic command template and declare its integer challenge. Confirmation replaces it with a fresh challenge and requires the computed output, which is never present in the request; generic OAST callbacks cannot satisfy this proof.
 - state-transition: identify before, protected transition, and after requests matching a target-owned state policy. Use distinct sampleIds on otherwise identical before/after reads.
-- browser-visible-effect and oast-callback require fresh collector artifacts and a matching target-owned policy.
+- browser-visible-effect: use the policy's explicit stored-write or fragment-only DOM workflow and a fresh browser artifact.
+- browser-state-transition: identify exact before/after reads around a cookie-authenticated mutation initiated by a configured cross-origin policy page.
+- oast-callback is SSRF-only network-request evidence. It can never prove command execution; command-execution-challenge is the only command-execution predicate.
 
 Choose a predicate compatible with the vulnerability-specific category and point only to values you observed. Categories with no compatible authoritative predicate cannot yet be submitted. submit_finding first runs the predicate against exploration observations; inspect failed deterministicProof checks before resubmitting. The same predicate must later pass against a fresh replay, and the deterministic result—not the validation model's opinion—decides confirmation.`;
 

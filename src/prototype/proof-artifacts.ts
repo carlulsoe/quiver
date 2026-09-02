@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
-import type { BrowserEffectEvidence, OastCallbackEvidence, ProofArtifacts } from "./state.ts";
+import type {
+  BrowserEffectEvidence,
+  BrowserStateTransitionEvidence,
+  OastCallbackEvidence,
+  ProofArtifacts,
+} from "./state.ts";
 
 export interface ProofArtifactCheckpoint {
   browserEffects: number;
+  browserStateTransitions: number;
   oastCallbacks: number;
 }
 
@@ -26,6 +32,7 @@ export interface ProofArtifactStoreOptions {
 /** Owns fresh, campaign-local execution artifacts. It never accepts arbitrary external hosts. */
 export class ProofArtifactStore implements AsyncDisposable {
   readonly #browserEffects: BrowserEffectEvidence[] = [];
+  readonly #browserStateTransitions: BrowserStateTransitionEvidence[] = [];
   readonly #oastCallbacks: OastCallbackEvidence[] = [];
   readonly #issuedOastTokens = new Map<string, string>();
   readonly #issuedBrowserMarkers = new Map<string, string>();
@@ -100,9 +107,14 @@ export class ProofArtifactStore implements AsyncDisposable {
     }
   }
 
+  recordBrowserStateTransition(evidence: BrowserStateTransitionEvidence): void {
+    this.#browserStateTransitions.push({ ...evidence });
+  }
+
   checkpoint(): ProofArtifactCheckpoint {
     return {
       browserEffects: this.#browserEffects.length,
+      browserStateTransitions: this.#browserStateTransitions.length,
       oastCallbacks: this.#oastCallbacks.length,
     };
   }
@@ -112,6 +124,9 @@ export class ProofArtifactStore implements AsyncDisposable {
       browserEffects: this.#browserEffects.slice(checkpoint.browserEffects).map((item) => ({
         ...item,
       })),
+      browserStateTransitions: this.#browserStateTransitions
+        .slice(checkpoint.browserStateTransitions)
+        .map((item) => ({ ...item })),
       oastCallbacks: this.#oastCallbacks.slice(checkpoint.oastCallbacks).map((item) => ({
         ...item,
       })),
@@ -119,7 +134,7 @@ export class ProofArtifactStore implements AsyncDisposable {
   }
 
   snapshot(): ProofArtifacts {
-    return this.artifactsSince({ browserEffects: 0, oastCallbacks: 0 });
+    return this.artifactsSince({ browserEffects: 0, browserStateTransitions: 0, oastCallbacks: 0 });
   }
 
   hasIssuedChallenge(value: string): boolean {

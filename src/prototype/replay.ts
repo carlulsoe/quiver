@@ -19,7 +19,10 @@ export class ReplayBudgetExceededError extends Error {
 export function replayRequestBudget(finding: Pick<Finding, "proof" | "reproduction">): number {
   return (
     finding.reproduction.length +
-    (finding.proof.type === "browser-visible-effect" ? finding.proof.collectorRequestBudget : 0)
+    (finding.proof.type === "browser-visible-effect" ||
+    finding.proof.type === "browser-state-transition"
+      ? finding.proof.collectorRequestBudget
+      : 0)
   );
 }
 
@@ -30,6 +33,26 @@ export async function replayFinding(
   policies: readonly ProofPolicy[] = [],
 ): Promise<ReplayResult> {
   const replayedFinding = prepareFreshChallenge(finding, artifactStore, policies);
+  const browserStateProof =
+    replayedFinding.proof.type === "browser-state-transition" ? replayedFinding.proof : undefined;
+  const browserStatePolicy = browserStateProof
+    ? policies.find(
+        (candidate) =>
+          candidate.kind === "browser-state-transition" &&
+          candidate.id === browserStateProof.policyId,
+      )
+    : undefined;
+  if (
+    browserStateProof &&
+    (browserStatePolicy?.kind !== "browser-state-transition" ||
+      replayedFinding.reproduction.length !== 2 ||
+      browserStateProof.beforeRequestIndex !== 0 ||
+      browserStateProof.afterRequestIndex !== 1 ||
+      browserStateProof.pageActorId !== browserStatePolicy.pageActorId ||
+      browserStateProof.collectorRequestBudget !== browserStatePolicy.requestBudget)
+  ) {
+    throw new Error("Invalid browser-state-transition replay contract");
+  }
   target.assertImpactLevel(requiredImpactLevel(replayedFinding));
   const requiredRequests = replayRequestBudget(replayedFinding);
   if (target.remainingRequests < requiredRequests) {
@@ -54,9 +77,29 @@ export async function replayFinding(
       actorId: request.actorId,
       body: observation.body,
       truncated: observation.truncated ?? false,
+      ...(observation.contentType === undefined ? {} : { contentType: observation.contentType }),
+      ...(observation.redirectLocation === undefined
+        ? {}
+        : { redirectLocation: observation.redirectLocation }),
+      ...(observation.redirected === undefined ? {} : { redirected: observation.redirected }),
       durationMs: observation.durationMs,
-      sampleId: request.sampleId,
+      ...(request.sampleId === undefined ? {} : { sampleId: request.sampleId }),
     });
+    if (replayedFinding.proof.type === "browser-state-transition" && observations.length === 1) {
+      if (browserStatePolicy?.kind !== "browser-state-transition") {
+        throw new Error("Invalid browser-state-transition replay contract");
+      }
+      const evidence = await target.observeBrowserStateTransition({
+        policyId: browserStatePolicy.id,
+        sourceOrigin: browserStatePolicy.sourceOrigin,
+        sourcePath: browserStatePolicy.sourcePath,
+        targetPath: browserStatePolicy.endpoint,
+        method: browserStatePolicy.method,
+        actorId: browserStatePolicy.pageActorId,
+        requestBudget: browserStatePolicy.requestBudget,
+      });
+      if (evidence) artifactStore?.recordBrowserStateTransition(evidence);
+    }
   }
   if (replayedFinding.proof.type === "browser-visible-effect" && artifactStore) {
     const evidence = await target.observeBrowserEffect({
@@ -83,7 +126,7 @@ export async function replayFinding(
     artifacts:
       artifactStore && checkpoint
         ? artifactStore.artifactsSince(checkpoint)
-        : { browserEffects: [], oastCallbacks: [] },
+        : { browserEffects: [], browserStateTransitions: [], oastCallbacks: [] },
   };
 }
 
@@ -145,7 +188,11 @@ function assertAffectedRequestIndex(finding: Finding, requestIndex: number): voi
 function replaceChallenge(
   finding: Finding,
   requestIndex: number,
-  challenge: { location: "query" | "json-body"; parameter: string; template: string },
+  challenge: {
+    location: "query" | "json-body" | "fragment";
+    parameter: string;
+    template: string;
+  },
   value: string,
   proof: Finding["proof"],
 ): Finding {
@@ -157,6 +204,13 @@ function replaceChallenge(
     const url = new URL(request.path, "http://proof.invalid");
     if (url.searchParams.getAll(challenge.parameter).length !== 1) return finding;
     url.searchParams.set(challenge.parameter, replacement);
+    nextRequest.path = `${url.pathname}${url.search}${url.hash}`;
+  } else if (challenge.location === "fragment") {
+    const url = new URL(request.path, "http://proof.invalid");
+    const fragment = new URLSearchParams(url.hash.slice(1));
+    if (fragment.getAll(challenge.parameter).length !== 1) return finding;
+    fragment.set(challenge.parameter, replacement);
+    url.hash = fragment.toString();
     nextRequest.path = `${url.pathname}${url.search}${url.hash}`;
   } else {
     try {

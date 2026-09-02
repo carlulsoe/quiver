@@ -1,6 +1,6 @@
-import type { Browser } from "playwright-core";
+import type { Browser, Request as BrowserRequest } from "playwright-core";
 import { findBrowserExecutable, launchChromium, type BrowserCookie } from "./attack-surface.ts";
-import type { BrowserEffectEvidence } from "./state.ts";
+import type { BrowserEffectEvidence, BrowserStateTransitionEvidence } from "./state.ts";
 
 export interface BrowserProofProbe {
   probeId: string;
@@ -15,6 +15,19 @@ export interface BrowserProofProbe {
   sessionStorage?: Record<string, string>;
   executablePath?: string;
   decideRequest: (method: string, path: string) => boolean;
+}
+
+export interface BrowserStateTransitionProbe {
+  policyId: string;
+  targetOrigin: string;
+  sourceOrigin: string;
+  sourcePath: string;
+  targetPath: string;
+  method: "POST";
+  timeoutMs: number;
+  cookies: BrowserCookie[];
+  executablePath?: string;
+  decideRequest: (method: string, url: URL) => boolean;
 }
 
 /** Observes a visible browser effect while blocking cross-origin and unauthorized requests. */
@@ -103,6 +116,107 @@ export async function collectBrowserEffect(
   }
 }
 
+/** Observes one cookie-authenticated mutation initiated by an exact cross-origin policy page. */
+export async function collectBrowserStateTransition(
+  probe: BrowserStateTransitionProbe,
+  launch: (executablePath: string) => Promise<Browser> = launchChromium,
+): Promise<BrowserStateTransitionEvidence | undefined> {
+  const executablePath =
+    probe.executablePath ?? process.env.QUIVER_BROWSER_PATH ?? (await findBrowserExecutable());
+  const browser = await launch(executablePath);
+  try {
+    const context = await browser.newContext({ serviceWorkers: "block" });
+    await context.addCookies(probe.cookies);
+    const page = await context.newPage();
+    context.on("page", (candidate) => {
+      if (candidate !== page) void candidate.close();
+    });
+    const sourceUrl = new URL(probe.sourcePath, probe.sourceOrigin);
+    const targetUrl = new URL(probe.targetPath, probe.targetOrigin);
+    let transitionRequest: BrowserRequest | undefined;
+    let resolveTransitionStatus!: (status: number) => void;
+    const transitionStatus = new Promise<number>((resolve) => {
+      resolveTransitionStatus = resolve;
+    });
+    const deadline = performance.now() + probe.timeoutMs;
+    await context.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const method = request.method();
+      const isTarget =
+        url.origin === targetUrl.origin &&
+        `${url.pathname}${url.search}` === `${targetUrl.pathname}${targetUrl.search}` &&
+        method === probe.method;
+      if (isTarget) {
+        let sourceDocument = false;
+        try {
+          sourceDocument = request.frame().url() === sourceUrl.href;
+        } catch {
+          // Requests without the policy page's frame are not attributable to the CSRF workflow.
+        }
+        if (
+          transitionRequest ||
+          !sourceDocument ||
+          request.headers()["origin"] !== probe.sourceOrigin ||
+          !probe.decideRequest(method, url)
+        ) {
+          await route.abort("blockedbyclient");
+          return;
+        }
+        transitionRequest = request;
+        await route.continue();
+        return;
+      }
+      const isSourceRead =
+        url.origin === sourceUrl.origin &&
+        ["GET", "HEAD"].includes(method) &&
+        (!request.isNavigationRequest() ||
+          (request.frame() === page.mainFrame() && url.href === sourceUrl.href));
+      if (!isSourceRead || !probe.decideRequest(method, url)) {
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.continue();
+    });
+    await context.routeWebSocket("**/*", (route) =>
+      route.close({ code: 1008, reason: "Quiver browser state proof blocks WebSockets" }),
+    );
+    page.on("response", (response) => {
+      if (response.request() === transitionRequest) resolveTransitionStatus(response.status());
+    });
+    try {
+      const sourceResponse = await page.goto(sourceUrl.href, {
+        waitUntil: "domcontentloaded",
+        timeout: probe.timeoutMs,
+      });
+      if (sourceResponse?.request().redirectedFrom()) return undefined;
+    } catch {
+      // An auto-submitting CSRF form can replace the source document before goto settles.
+      // Continue only when the exact, source-attributed policy transition is already underway.
+      if (!transitionRequest) return undefined;
+    }
+    const remainingMs = Math.max(0, deadline - performance.now());
+    const observedStatus = await Promise.race([
+      transitionStatus,
+      page.waitForTimeout(remainingMs).then(() => undefined),
+    ]);
+    return transitionRequest &&
+      observedStatus !== undefined &&
+      isCompletedTransition(observedStatus)
+      ? {
+          policyId: probe.policyId,
+          sourceOrigin: probe.sourceOrigin,
+          sourcePath: probe.sourcePath,
+          targetPath: probe.targetPath,
+          method: probe.method,
+          status: observedStatus,
+        }
+      : undefined;
+  } finally {
+    await browser.close();
+  }
+}
+
 export function isExpectedDocumentNavigation(
   isNavigationRequest: boolean,
   isMainFrame: boolean,
@@ -115,4 +229,8 @@ export function isExpectedDocumentNavigation(
       url.origin === expected.origin &&
       `${url.pathname}${url.search}` === `${expected.pathname}${expected.search}`)
   );
+}
+
+function isCompletedTransition(status: number): boolean {
+  return status >= 200 && status < 400;
 }

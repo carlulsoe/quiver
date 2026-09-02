@@ -1,4 +1,10 @@
-import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts";
+import type {
+  BrowserChallengeMutation,
+  ChallengeMutation,
+  FindingCategory,
+  ImpactLevel,
+  RequestMutation,
+} from "./state.ts";
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
 import type { ActorId } from "./sessions.ts";
 import type { AttackSurfaceOrigin } from "./attack-surface.ts";
@@ -48,22 +54,64 @@ export interface StateTransitionProofPolicy extends ProofPolicyRule {
 
 export interface BrowserEffectProofPolicy extends ProofPolicyRule {
   kind: "browser-effect";
+  category: "cross-site-scripting";
+  workflow: "stored" | "dom";
+  endpoint: string;
+  method: string;
   effect: "dialog";
   markerPattern: string;
   pagePath: string;
   payloadTemplate: string;
-  challenge: ChallengeMutation;
+  challenge: BrowserChallengeMutation;
+  submissionActorId: ActorId;
   pageActorId: ActorId;
-  pageChallenge?: ChallengeMutation;
+  pageChallenge?: BrowserChallengeMutation;
   requestBudget: number;
 }
 
 export interface OastProofPolicy extends ProofPolicyRule {
   kind: "oast";
+  category: "server-side-request-forgery";
   protocol: "http";
   endpoint: string;
   method: string;
   challenge: ChallengeMutation;
+}
+
+export interface FileContentProofPolicy extends ProofPolicyRule {
+  kind: "file-content";
+  category: "path-traversal";
+  endpoint: string;
+  method: string;
+  request: Pick<RequestMutation, "location" | "parameter"> & { value: string };
+  source: "immutable-fixture";
+  contentTypePattern: string;
+  verify: (content: string) => boolean;
+}
+
+export interface RedirectProofPolicy extends ProofPolicyRule {
+  kind: "redirect";
+  category: "open-redirect";
+  endpoint: string;
+  method: string;
+  challenge: ChallengeMutation;
+  destination: string;
+}
+
+export interface BrowserStateTransitionProofPolicy extends ProofPolicyRule {
+  kind: "browser-state-transition";
+  category: "cross-site-request-forgery";
+  endpoint: string;
+  method: "POST";
+  sourceOrigin: string;
+  sourcePath: string;
+  pageActorId: ActorId;
+  requestBudget: number;
+  readEndpoint: string;
+  readMethod: "GET" | "HEAD";
+  jsonPointer: string;
+  before: ProofScalar;
+  after: ProofScalar;
 }
 
 export interface SqlSemanticDifferentialProofPolicy extends ProofPolicyRule {
@@ -102,6 +150,9 @@ export type ProofPolicy =
   | CanaryProofPolicy
   | StateTransitionProofPolicy
   | BrowserEffectProofPolicy
+  | BrowserStateTransitionProofPolicy
+  | FileContentProofPolicy
+  | RedirectProofPolicy
   | OastProofPolicy
   | SqlSemanticDifferentialProofPolicy
   | CommandExecutionChallengeProofPolicy;
@@ -206,6 +257,26 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
       throw new Error(`OAST policy ${policy.id} challenge must substitute the callback once`);
     }
     if (
+      policy.kind === "redirect" &&
+      (policy.challenge.template.split("{{challenge}}").length !== 2 ||
+        !isAbsoluteHttpUrl(policy.destination))
+    ) {
+      throw new Error(
+        `Redirect policy ${policy.id} must bind one absolute HTTP(S) destination challenge`,
+      );
+    }
+    if (
+      policy.kind === "file-content" &&
+      (policy.request.value.length === 0 ||
+        (policy.request.location === "json-body" &&
+          !["POST", "PUT", "PATCH"].includes(policy.method)) ||
+        safePolicyRegex(policy.contentTypePattern) === undefined)
+    ) {
+      throw new Error(
+        `File-content policy ${policy.id} must declare a valid request and media type`,
+      );
+    }
+    if (
       policy.kind === "sql-semantic-differential" &&
       (policy.mutation.controlValue === policy.mutation.probeValue ||
         Object.is(policy.response.controlValue, policy.response.probeValue))
@@ -243,16 +314,50 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
     }
     if (
       policy.kind === "browser-effect" &&
-      policy.pageChallenge &&
-      (policy.pageChallenge.location !== "query" ||
-        !sameChallenge(policy.challenge, policy.pageChallenge) ||
-        policy.pageChallenge.template.split("{{challenge}}").length !== 2 ||
-        new URL(policy.pagePath, "http://browser-policy.invalid").searchParams.getAll(
-          policy.pageChallenge.parameter,
-        ).length !== 1)
+      ((policy.workflow === "stored" &&
+        (!["POST", "PUT", "PATCH"].includes(policy.method) ||
+          policy.challenge.location === "fragment" ||
+          policy.pageChallenge !== undefined)) ||
+        (policy.workflow === "dom" &&
+          (policy.method !== "GET" ||
+            policy.challenge.location !== "fragment" ||
+            policy.pageChallenge?.location !== "fragment")))
     ) {
       throw new Error(
-        `Browser-effect policy ${policy.id} pageChallenge must replace one declared query parameter`,
+        `Browser-effect policy ${policy.id} must declare a closed stored or fragment-only DOM workflow`,
+      );
+    }
+    if (
+      policy.kind === "browser-effect" &&
+      policy.pageChallenge &&
+      (!["query", "fragment"].includes(policy.pageChallenge.location) ||
+        !sameChallenge(policy.challenge, policy.pageChallenge) ||
+        policy.pageChallenge.template.split("{{challenge}}").length !== 2 ||
+        browserChallengeValues(policy.pagePath, policy.pageChallenge).length !== 1)
+    ) {
+      throw new Error(
+        `Browser-effect policy ${policy.id} pageChallenge must replace one declared URL parameter`,
+      );
+    }
+    if (
+      policy.kind === "browser-state-transition" &&
+      (!Number.isInteger(policy.requestBudget) ||
+        policy.requestBudget < 2 ||
+        policy.requestBudget > 20 ||
+        policy.method !== "POST" ||
+        !["GET", "HEAD"].includes(policy.readMethod) ||
+        !profile.prepareValidation ||
+        !Number.isInteger(profile.validationResetRequestBudget) ||
+        policy.pageActorId === "anonymous" ||
+        !isExactOrigin(policy.sourceOrigin) ||
+        !isOriginRelativePath(policy.sourcePath) ||
+        !profile.attackSurfaceOrigins?.some(
+          ({ origin, scope }) =>
+            new URL(origin).origin === policy.sourceOrigin && scope === "visit-only",
+        ))
+    ) {
+      throw new Error(
+        `Browser-state-transition policy ${policy.id} requires an authenticated configured visit-only origin, a fresh-state reset hook, and a request budget from 2 to 20`,
       );
     }
     if (
@@ -267,7 +372,7 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
   }
 }
 
-function sameChallenge(left: ChallengeMutation, right: ChallengeMutation): boolean {
+function sameChallenge(left: BrowserChallengeMutation, right: BrowserChallengeMutation): boolean {
   return (
     left.location === right.location &&
     left.parameter === right.parameter &&
@@ -278,18 +383,67 @@ function sameChallenge(left: ChallengeMutation, right: ChallengeMutation): boole
 export function browserPolicyPath(policy: BrowserEffectProofPolicy, marker: string): string {
   if (!policy.pageChallenge) return policy.pagePath;
   if (
-    policy.pageChallenge.location !== "query" ||
+    !["query", "fragment"].includes(policy.pageChallenge.location) ||
     policy.pageChallenge.template.split("{{challenge}}").length !== 2
   ) {
-    throw new Error("Browser page challenge must be one query substitution");
+    throw new Error("Browser page challenge must be one URL substitution");
   }
   const url = new URL(policy.pagePath, "http://browser-policy.invalid");
-  if (url.searchParams.getAll(policy.pageChallenge.parameter).length !== 1) {
-    throw new Error("Browser policy pagePath must contain its challenge query parameter once");
+  if (browserChallengeValues(policy.pagePath, policy.pageChallenge).length !== 1) {
+    throw new Error("Browser policy pagePath must contain its challenge URL parameter once");
   }
-  url.searchParams.set(
-    policy.pageChallenge.parameter,
+  setBrowserChallenge(
+    url,
+    policy.pageChallenge,
     policy.pageChallenge.template.replace("{{challenge}}", marker),
   );
   return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function browserChallengeValues(path: string, challenge: BrowserChallengeMutation): string[] {
+  const url = new URL(path, "http://browser-policy.invalid");
+  if (challenge.location === "query") return url.searchParams.getAll(challenge.parameter);
+  if (challenge.location !== "fragment") return [];
+  return new URLSearchParams(url.hash.slice(1)).getAll(challenge.parameter);
+}
+
+function setBrowserChallenge(url: URL, challenge: BrowserChallengeMutation, value: string): void {
+  if (challenge.location === "query") {
+    url.searchParams.set(challenge.parameter, value);
+    return;
+  }
+  const fragment = new URLSearchParams(url.hash.slice(1));
+  fragment.set(challenge.parameter, value);
+  url.hash = fragment.toString();
+}
+
+function safePolicyRegex(pattern: string): RegExp | undefined {
+  if (pattern.length > 256) return undefined;
+  try {
+    return new RegExp(pattern, "i");
+  } catch {
+    return undefined;
+  }
+}
+
+function isAbsoluteHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && url.href === value;
+  } catch {
+    return false;
+  }
+}
+
+function isExactOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && `${url.origin}` === value;
+  } catch {
+    return false;
+  }
+}
+
+function isOriginRelativePath(value: string): boolean {
+  return value.startsWith("/") && !value.startsWith("//");
 }

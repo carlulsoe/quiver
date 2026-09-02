@@ -40,6 +40,48 @@ describe("target profile proof policy validation", () => {
     ).toThrow("must declare validationResetRequestBudget");
   });
 
+  it("requires CSRF proof pages to be configured as visit-only origins", () => {
+    const policy = {
+      id: "email-csrf",
+      kind: "browser-state-transition",
+      category: "cross-site-request-forgery",
+      description: "Cross-origin email fixture.",
+      endpoint: "/account/email",
+      method: "POST",
+      sourceOrigin: "http://127.0.0.1:9999",
+      sourcePath: "/csrf/email",
+      pageActorId: "ordinary-user",
+      requestBudget: 2,
+      readEndpoint: "/account",
+      readMethod: "GET",
+      jsonPointer: "/email",
+      before: "before@example.test",
+      after: "after@example.test",
+    } as const;
+    const base = {
+      id: "csrf-profile",
+      displayName: "CSRF profile",
+      objective: "Exercise browser state proof validation.",
+      proofPolicies: [policy],
+    };
+
+    expect(() => assertValidTargetProfile(base)).toThrow("configured visit-only origin");
+    expect(() =>
+      assertValidTargetProfile({
+        ...base,
+        attackSurfaceOrigins: [{ origin: "http://127.0.0.1:9999", scope: "visit-only" as const }],
+      }),
+    ).toThrow("fresh-state reset hook");
+    expect(() =>
+      assertValidTargetProfile({
+        ...base,
+        attackSurfaceOrigins: [{ origin: "http://127.0.0.1:9999", scope: "visit-only" as const }],
+        prepareValidation: async () => undefined,
+        validationResetRequestBudget: 0,
+      }),
+    ).not.toThrow();
+  });
+
   it("bounds target-owned browser collector budgets", () => {
     expect(() =>
       assertValidTargetProfile({
@@ -51,6 +93,9 @@ describe("target profile proof policy validation", () => {
             id: "dialog",
             kind: "browser-effect",
             category: "cross-site-scripting",
+            workflow: "stored",
+            endpoint: "/comments",
+            method: "POST",
             description: "Synthetic dialog.",
             effect: "dialog",
             markerPattern: "^QUIVER-BROWSER-",
@@ -61,6 +106,7 @@ describe("target profile proof policy validation", () => {
               parameter: "payload",
               template: "<script>alert('{{challenge}}')</script>",
             },
+            submissionActorId: "anonymous",
             pageActorId: "anonymous",
             requestBudget: 21,
           },
@@ -69,7 +115,7 @@ describe("target profile proof policy validation", () => {
     ).toThrow("requestBudget must be from 1 to 20");
   });
 
-  it("requires reflected browser request and page mutations to be identical", () => {
+  it("requires DOM browser request and page mutations to be fragment-only and identical", () => {
     expect(() =>
       assertValidTargetProfile({
         id: "inconsistent-reflection",
@@ -80,18 +126,22 @@ describe("target profile proof policy validation", () => {
             id: "dialog",
             kind: "browser-effect",
             category: "cross-site-scripting",
+            workflow: "dom",
+            endpoint: "/preview",
+            method: "GET",
             description: "Synthetic reflected dialog.",
             effect: "dialog",
             markerPattern: "^QUIVER-BROWSER-",
             pagePath: "/preview?payload=old#/result",
             payloadTemplate: "{{challenge}}",
-            challenge: { location: "json-body", parameter: "payload", template: "{{challenge}}" },
+            challenge: { location: "fragment", parameter: "payload", template: "{{challenge}}" },
+            submissionActorId: "anonymous",
             pageActorId: "anonymous",
             pageChallenge: { location: "query", parameter: "payload", template: "{{challenge}}" },
             requestBudget: 1,
           },
         ],
       }),
-    ).toThrow("pageChallenge must replace one declared query parameter");
+    ).toThrow("fragment-only DOM workflow");
   });
 });

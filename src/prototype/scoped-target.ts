@@ -6,9 +6,18 @@ import {
   type BrowserCookie,
   type BrowserRequestMetadata,
 } from "./attack-surface.ts";
-import { collectBrowserEffect, type BrowserProofProbe } from "./browser-proof.ts";
+import {
+  collectBrowserEffect,
+  collectBrowserStateTransition,
+  type BrowserProofProbe,
+  type BrowserStateTransitionProbe,
+} from "./browser-proof.ts";
 import { impactAtMost } from "./impact.ts";
-import type { BrowserEffectEvidence, ImpactLevel } from "./state.ts";
+import type {
+  BrowserEffectEvidence,
+  BrowserStateTransitionEvidence,
+  ImpactLevel,
+} from "./state.ts";
 import {
   actorIds,
   InMemorySessions,
@@ -37,6 +46,8 @@ export interface HttpObservation {
   body: unknown;
   truncated?: boolean;
   contentType?: string;
+  redirectLocation?: string;
+  redirected?: boolean;
   durationMs?: number;
 }
 
@@ -76,6 +87,9 @@ export interface ScopedTargetOptions {
   browserExecutablePath?: string;
   attackSurfaceMapper?: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
   browserEffectCollector?: (probe: BrowserProofProbe) => Promise<BrowserEffectEvidence | undefined>;
+  browserStateTransitionCollector?: (
+    probe: BrowserStateTransitionProbe,
+  ) => Promise<BrowserStateTransitionEvidence | undefined>;
   maximumImpactLevel?: ImpactLevel;
   sessions?: Sessions;
   browserActorId?: ActorId;
@@ -130,6 +144,16 @@ export interface BrowserEffectRequest {
   requestBudget: number;
 }
 
+export interface BrowserStateTransitionRequest {
+  policyId: string;
+  sourceOrigin: string;
+  sourcePath: string;
+  targetPath: string;
+  method: "POST";
+  actorId: ActorId;
+  requestBudget: number;
+}
+
 export type RestMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 
 export type CrawlDocument = AttackSurfaceDocument;
@@ -165,6 +189,9 @@ export class ScopedTarget {
   readonly #browserEffectCollector: (
     probe: BrowserProofProbe,
   ) => Promise<BrowserEffectEvidence | undefined>;
+  readonly #browserStateTransitionCollector: (
+    probe: BrowserStateTransitionProbe,
+  ) => Promise<BrowserStateTransitionEvidence | undefined>;
   readonly #maximumImpactLevel: ImpactLevel;
   readonly #sessions: Sessions;
   readonly #inMemorySessions?: InMemorySessions;
@@ -223,6 +250,8 @@ export class ScopedTarget {
       options.attackSurfaceMapper ??
       ((mapperOptions) => new BrowserAttackSurfaceMapper(mapperOptions).map());
     this.#browserEffectCollector = options.browserEffectCollector ?? collectBrowserEffect;
+    this.#browserStateTransitionCollector =
+      options.browserStateTransitionCollector ?? collectBrowserStateTransition;
     this.#maximumImpactLevel = options.maximumImpactLevel ?? "state-change";
     this.#sessions = options.sessions ?? new InMemorySessions();
     this.#inMemorySessions =
@@ -350,6 +379,70 @@ export class ScopedTarget {
     });
   }
 
+  async observeBrowserStateTransition(
+    request: BrowserStateTransitionRequest,
+  ): Promise<BrowserStateTransitionEvidence | undefined> {
+    this.assertImpactLevel("state-change");
+    const source = new URL(request.sourceOrigin);
+    const configuredSource = this.#attackSurfaceOrigins?.find(
+      ({ origin, scope }) => new URL(origin).origin === source.origin && scope === "visit-only",
+    );
+    if (
+      !configuredSource ||
+      source.origin === this.#origin ||
+      `${source.origin}` !== request.sourceOrigin
+    ) {
+      throw new TargetScopeError(
+        "Browser state proof source must be an exact configured cross-origin visit-only origin",
+      );
+    }
+    const targetUrl = this.#resolvePath(request.targetPath);
+    if (targetUrl.origin !== this.#origin) {
+      throw new TargetScopeError("Browser state proof transition must target the primary origin");
+    }
+    const browserState = await this.#sessions.browserState(request.actorId);
+    const cookies = (browserState.cookies ?? []).filter((cookie) =>
+      browserCookieTargetsOrigin(cookie, new URL(this.#origin)),
+    );
+    if (request.actorId === actorIds.anonymous || cookies.length === 0) {
+      throw new TargetScopeError(
+        "Browser state proof requires a named actor with target-scoped cookies",
+      );
+    }
+    let collectorRequests = 0;
+    return this.#browserStateTransitionCollector({
+      policyId: request.policyId,
+      targetOrigin: this.#origin,
+      sourceOrigin: request.sourceOrigin,
+      sourcePath: request.sourcePath,
+      targetPath: request.targetPath,
+      method: request.method,
+      timeoutMs: this.#timeoutMs,
+      cookies,
+      executablePath: this.#browserExecutablePath,
+      decideRequest: (method, url) => {
+        if (collectorRequests >= request.requestBudget) return false;
+        const path = `${url.pathname}${url.search}`;
+        const decision =
+          url.origin === this.#origin
+            ? this.#decideBrowserRequest(method, path, true, false)
+            : url.origin === source.origin
+              ? this.#decideBrowserRequest(
+                  method,
+                  path,
+                  true,
+                  false,
+                  "visit-only",
+                  source.origin,
+                  true,
+                )
+              : { allowed: false };
+        if (decision.allowed) collectorRequests += 1;
+        return decision.allowed;
+      },
+    });
+  }
+
   async #request(
     request: ScopedRequest,
     responseLimit: number,
@@ -432,6 +525,8 @@ export class ScopedTarget {
       body,
       truncated,
       contentType: response.headers.get("content-type") ?? "",
+      redirectLocation: response.headers.get("location") ?? undefined,
+      redirected: response.redirected,
       durationMs: Math.round(performance.now() - startedAt),
     };
     return includeResponseHeaders
@@ -668,4 +763,18 @@ function pathTemplateMatches(template: string, concrete: string): boolean {
       (segment, index) => segment === "{id}" || segment === concreteSegments[index],
     )
   );
+}
+
+function browserCookieTargetsOrigin(cookie: BrowserCookie, target: URL): boolean {
+  if (cookie.secure && target.protocol !== "https:") return false;
+  if (cookie.url) {
+    try {
+      return new URL(cookie.url).origin === target.origin;
+    } catch {
+      return false;
+    }
+  }
+  const domain = cookie.domain?.replace(/^\./, "").toLowerCase();
+  const hostname = target.hostname.toLowerCase();
+  return domain !== undefined && (hostname === domain || hostname.endsWith(`.${domain}`));
 }
