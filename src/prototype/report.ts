@@ -21,12 +21,13 @@ export interface ReportedExploitChain extends ExploitChain {
 }
 
 export interface RunReport {
-  schemaVersion: 8;
+  schemaVersion: 9;
   generatedAt: string;
   profileId: string;
   reproductionAuthentication?: CampaignRun["reproductionAuthentication"];
   model: string;
   usage: CampaignRun["usage"];
+  missionUsage: CampaignRun["missionUsage"];
   target: string;
   coordination: CampaignRun["state"]["coordination"];
   outcome: {
@@ -81,12 +82,13 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
   }));
 
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     generatedAt: generatedAt.toISOString(),
     profileId: run.profileId,
     reproductionAuthentication: run.reproductionAuthentication,
     model: run.model,
     usage: run.usage,
+    missionUsage: run.missionUsage,
     target: run.state.target,
     coordination: run.state.coordination,
     outcome: {
@@ -218,6 +220,17 @@ export function renderMarkdownReport(report: RunReport): string {
     `| Duration | ${(report.outcome.durationMs / 1_000).toFixed(1)}s |`,
     `| Model tokens | ${report.usage.totalTokens} |`,
     `| Approximate model cost | $${report.usage.cost.total.toFixed(4)} |`,
+    "",
+    "## Model routing by mission",
+    "",
+    "| Mission | Role | Requirements | Models attempted | Tokens | Approximate cost |",
+    "| --- | --- | --- | --- | ---: | ---: |",
+    ...(report.missionUsage.length === 0
+      ? ["| None | — | — | — | 0 | $0.0000 |"]
+      : report.missionUsage.map(
+          (mission) =>
+            `| ${mission.missionId} | ${mission.role} | ${mission.requirements.capabilities.join(", ") || mission.requirements.costPreference} | ${mission.attemptedModels.join(" → ")} | ${mission.usage.totalTokens} | $${mission.usage.cost.total.toFixed(4)} |`,
+        )),
     "",
   ];
 

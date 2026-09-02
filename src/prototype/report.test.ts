@@ -67,6 +67,34 @@ describe("campaign report", () => {
         totalTokens: 15,
         cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
       },
+      missionUsage: [
+        {
+          missionId: "explorer-1",
+          role: "explorer",
+          requirements: {
+            kind: "route-triage",
+            capabilities: [],
+            costPreference: "cheap",
+            estimatedInputTokens: 1_000,
+          },
+          attemptedModels: ["openrouter/z-ai/glm-5.3-flash"],
+          model: "openrouter/z-ai/glm-5.3-flash",
+          usage: {
+            input: 10,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 15,
+            cost: {
+              input: 0.01,
+              output: 0.02,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0.03,
+            },
+          },
+        },
+      ],
       state,
       events: [],
     };
@@ -74,7 +102,7 @@ describe("campaign report", () => {
     const report = createRunReport(run, new Date("2026-08-31T00:00:00.000Z"));
 
     expect(report).toMatchObject({
-      schemaVersion: 8,
+      schemaVersion: 9,
       generatedAt: "2026-08-31T00:00:00.000Z",
       profileId: "crapi",
       outcome: {
@@ -206,6 +234,34 @@ describe("campaign report", () => {
         totalTokens: 15,
         cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
       },
+      missionUsage: [
+        {
+          missionId: "explorer-1",
+          role: "explorer",
+          requirements: {
+            kind: "route-triage",
+            capabilities: [],
+            costPreference: "cheap",
+            estimatedInputTokens: 1_000,
+          },
+          attemptedModels: ["openrouter/z-ai/glm-5.3-flash"],
+          model: "openrouter/z-ai/glm-5.3-flash",
+          usage: {
+            input: 10,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 15,
+            cost: {
+              input: 0.01,
+              output: 0.02,
+              cacheRead: 0,
+              cacheWrite: 0,
+              total: 0.03,
+            },
+          },
+        },
+      ],
       state,
       events: [
         {
@@ -226,6 +282,8 @@ describe("campaign report", () => {
 
     expect(markdown).toContain("# Quiver security campaign report");
     expect(markdown).toContain("| Confirmed | 1 |");
+    expect(markdown).toContain("## Model routing by mission");
+    expect(markdown).toContain("| explorer-1 | explorer | cheap |");
     expect(markdown).toContain("## Confirmed findings");
     expect(markdown).toContain("### Cross-owner vehicle location");
     expect(markdown).toContain("Fresh replay returned another owner's coordinates.");
