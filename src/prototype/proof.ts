@@ -18,12 +18,8 @@ import type { ProtectedOperationManifest, TargetIdentityManifest } from "./targe
 
 /** Code-owned compatibility is the first vulnerability-specific validation boundary. */
 export const compatiblePredicates: Record<FindingCategory, readonly ProofPredicate["type"][]> = {
-  "broken-object-authorization": ["cross-principal-access", "unauthenticated-success"],
-  "broken-function-authorization": [
-    "cross-principal-access",
-    "unauthenticated-success",
-    "role-privilege-differential",
-  ],
+  "broken-object-authorization": ["cross-principal-access"],
+  "broken-function-authorization": ["cross-principal-access", "role-privilege-differential"],
   "authentication-bypass": ["authentication-bypass"],
   "excessive-data-exposure": [
     "cross-principal-data-exposure",
@@ -90,879 +86,7 @@ export function evaluateProof(
     checks.push(...impactSafetyChecks(finding, context.maximumImpactLevel));
   }
 
-  switch (finding.proof.type) {
-    case "cross-principal-access": {
-      const actor = selectedValue(observations, finding.proof.actor);
-      const owner = selectedValue(observations, finding.proof.resourceOwner);
-      const access = observations[finding.proof.accessRequestIndex];
-      checks.push(
-        check(
-          finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
-          "actor identity was established in a named actor session",
-        ),
-        check(actor.found && isScalar(actor.value), "actor identity exists", actor.value),
-        check(owner.found && isScalar(owner.value), "resource-owner identity exists", owner.value),
-        check(
-          actor.found && owner.found && !sameValue(actor.value, owner.value),
-          "actor and resource owner are different principals",
-          actor.found && owner.found
-            ? `${String(actor.value)} != ${String(owner.value)}`
-            : undefined,
-        ),
-        check(
-          access !== undefined && isSuccess(access.status),
-          "cross-principal request returned a successful response",
-          access?.status,
-        ),
-        check(
-          finding.reproduction[finding.proof.accessRequestIndex]?.actorId ===
-            finding.reproduction[finding.proof.actor.requestIndex]?.actorId &&
-            finding.reproduction[finding.proof.accessRequestIndex]?.actorId !== actorIds.anonymous,
-          "cross-principal access used the identified actor session",
-        ),
-        ...pointerChecks(access, finding.proof.evidencePointers),
-      );
-      break;
-    }
-    case "authentication-bypass": {
-      const proof = finding.proof;
-      const authenticatedRequest = finding.reproduction[proof.authenticatedRequestIndex];
-      const anonymousRequest = finding.reproduction[proof.anonymousRequestIndex];
-      const authenticatedObservation = observations[proof.authenticatedRequestIndex];
-      const anonymousObservation = observations[proof.anonymousRequestIndex];
-      const operation = protectedOperationFor(context.protectedOperations, authenticatedRequest);
-      const anonymousOperation = protectedOperationFor(
-        context.protectedOperations,
-        anonymousRequest,
-      );
-      const authenticatedIdentity = identityFor(context.identities, authenticatedRequest?.actorId);
-      const anonymousIdentity = identityFor(context.identities, anonymousRequest?.actorId);
-      checks.push(
-        check(
-          finding.reproduction.length === 2 &&
-            proof.authenticatedRequestIndex !== proof.anonymousRequestIndex,
-          "authentication bypass is one closed authenticated-anonymous request pair",
-        ),
-        check(
-          authenticatedRequest !== undefined &&
-            authenticatedRequest.actorId !== actorIds.anonymous &&
-            anonymousRequest?.actorId === actorIds.anonymous,
-          "control is authenticated and bypass probe is anonymous",
-        ),
-        check(
-          authenticatedIdentity !== undefined &&
-            authenticatedIdentity.role !== "anonymous" &&
-            anonymousIdentity?.role === "anonymous",
-          "authenticated and anonymous actors are declared by the target manifest",
-        ),
-        check(
-          operation !== undefined &&
-            operation === anonymousOperation &&
-            authenticatedRequest !== undefined &&
-            operation.authorizedActors.includes(authenticatedRequest.actorId) &&
-            !operation.authorizedActors.includes(actorIds.anonymous),
-          "target policy requires authentication for the affected operation",
-        ),
-        check(
-          affectedOperationMatches(finding, authenticatedRequest) &&
-            affectedOperationMatches(finding, anonymousRequest),
-          "authenticated control and anonymous probe match the affected operation",
-        ),
-        check(
-          sameRequestAcrossActors(authenticatedRequest, anonymousRequest),
-          "authenticated control and anonymous probe differ only by actor session",
-        ),
-        check(
-          !hasPotentialAuthenticationHeaders(authenticatedRequest?.headers) &&
-            !hasPotentialAuthenticationHeaders(anonymousRequest?.headers),
-          "authentication differential relies only on declared actor sessions",
-        ),
-        check(
-          authenticatedObservation !== undefined && isSuccess(authenticatedObservation.status),
-          "authenticated control returned a successful response",
-          authenticatedObservation?.status,
-        ),
-        check(
-          anonymousObservation !== undefined && isSuccess(anonymousObservation.status),
-          "anonymous bypass probe returned a successful response",
-          anonymousObservation?.status,
-        ),
-        ...differentialPointerChecks(
-          authenticatedObservation,
-          anonymousObservation,
-          proof.evidencePointers,
-          "authenticated control",
-          "anonymous bypass probe",
-        ),
-      );
-      break;
-    }
-    case "role-privilege-differential": {
-      const proof = finding.proof;
-      const authorizedRequest = finding.reproduction[proof.authorizedRequestIndex];
-      const lessPrivilegedRequest = finding.reproduction[proof.lessPrivilegedRequestIndex];
-      const authorizedObservation = observations[proof.authorizedRequestIndex];
-      const lessPrivilegedObservation = observations[proof.lessPrivilegedRequestIndex];
-      const authorizedIdentity = identityFor(context.identities, authorizedRequest?.actorId);
-      const lessPrivilegedIdentity = identityFor(
-        context.identities,
-        lessPrivilegedRequest?.actorId,
-      );
-      const operation = protectedOperationFor(context.protectedOperations, authorizedRequest);
-      const lessPrivilegedOperation = protectedOperationFor(
-        context.protectedOperations,
-        lessPrivilegedRequest,
-      );
-      const method = authorizedRequest?.method ?? "GET";
-      checks.push(
-        check(
-          finding.reproduction.length === 2 &&
-            proof.authorizedRequestIndex !== proof.lessPrivilegedRequestIndex,
-          "role differential is one closed authorized-less-privileged request pair",
-        ),
-        check(
-          authorizedRequest !== undefined &&
-            lessPrivilegedRequest !== undefined &&
-            authorizedRequest.actorId !== actorIds.anonymous &&
-            lessPrivilegedRequest.actorId !== actorIds.anonymous &&
-            authorizedRequest.actorId !== lessPrivilegedRequest.actorId,
-          "role differential uses two distinct authenticated actors",
-        ),
-        check(
-          authorizedIdentity !== undefined &&
-            lessPrivilegedIdentity !== undefined &&
-            roleRank(authorizedIdentity.role) > roleRank(lessPrivilegedIdentity.role),
-          "control actor has a more privileged declared role than the probe actor",
-          authorizedIdentity && lessPrivilegedIdentity
-            ? `${authorizedIdentity.role} > ${lessPrivilegedIdentity.role}`
-            : undefined,
-        ),
-        check(
-          operation !== undefined &&
-            operation === lessPrivilegedOperation &&
-            authorizedRequest !== undefined &&
-            lessPrivilegedRequest !== undefined &&
-            operation.authorizedActors.includes(authorizedRequest.actorId) &&
-            !operation.authorizedActors.includes(lessPrivilegedRequest.actorId),
-          "target policy authorizes the control actor but not the less-privileged actor",
-        ),
-        check(
-          affectedOperationMatches(finding, authorizedRequest) &&
-            affectedOperationMatches(finding, lessPrivilegedRequest),
-          "authorized control and less-privileged probe match the affected operation",
-        ),
-        check(
-          sameRequestAcrossActors(authorizedRequest, lessPrivilegedRequest),
-          "authorized control and less-privileged probe differ only by actor session",
-        ),
-        check(
-          !hasPotentialAuthenticationHeaders(authorizedRequest?.headers) &&
-            !hasPotentialAuthenticationHeaders(lessPrivilegedRequest?.headers),
-          "role differential relies only on declared actor sessions",
-        ),
-        check(
-          finding.category !== "business-logic" || ["POST", "PUT", "PATCH"].includes(method),
-          "cross-role business action uses a state-changing method",
-          method,
-        ),
-        check(
-          authorizedObservation !== undefined && isSuccess(authorizedObservation.status),
-          "authorized control returned a successful response",
-          authorizedObservation?.status,
-        ),
-        check(
-          lessPrivilegedObservation !== undefined && isSuccess(lessPrivilegedObservation.status),
-          "less-privileged probe returned a successful response",
-          lessPrivilegedObservation?.status,
-        ),
-        ...differentialPointerChecks(
-          authorizedObservation,
-          lessPrivilegedObservation,
-          proof.evidencePointers,
-          "authorized control",
-          "less-privileged probe",
-        ),
-      );
-      break;
-    }
-    case "unauthenticated-success": {
-      const observation = observations[finding.proof.requestIndex];
-      const request = finding.reproduction[finding.proof.requestIndex];
-      checks.push(
-        check(
-          request !== undefined &&
-            request.actorId === actorIds.anonymous &&
-            ["GET", "HEAD"].includes(request.method ?? "GET") &&
-            request.body === undefined &&
-            !hasPotentialAuthenticationHeaders(request.headers),
-          "bodyless GET/HEAD request was sent without authentication",
-        ),
-        check(
-          observation !== undefined && isSuccess(observation.status),
-          "unauthenticated request returned a successful response",
-          observation?.status,
-        ),
-        ...pointerChecks(observation, finding.proof.evidencePointers),
-      );
-      break;
-    }
-    case "cross-principal-data-exposure": {
-      const actor = selectedValue(observations, finding.proof.actor);
-      const subject = selectedValue(observations, finding.proof.exposedSubject);
-      const observation = observations[finding.proof.responseRequestIndex];
-      checks.push(
-        check(
-          finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
-          "actor identity was established in a named actor session",
-        ),
-        check(actor.found && isScalar(actor.value), "actor identity exists", actor.value),
-        check(
-          subject.found && isScalar(subject.value),
-          "exposed-subject identity exists",
-          subject.value,
-        ),
-        check(
-          actor.found && subject.found && !sameValue(actor.value, subject.value),
-          "actor and exposed subject are different principals",
-          actor.found && subject.found
-            ? `${String(actor.value)} != ${String(subject.value)}`
-            : undefined,
-        ),
-        check(
-          observation !== undefined && isSuccess(observation.status),
-          "cross-principal data response returned successfully",
-          observation?.status,
-        ),
-        check(
-          finding.reproduction[finding.proof.responseRequestIndex]?.actorId ===
-            finding.reproduction[finding.proof.actor.requestIndex]?.actorId &&
-            finding.reproduction[finding.proof.responseRequestIndex]?.actorId !==
-              actorIds.anonymous,
-          "cross-principal data was observed in the identified actor session",
-        ),
-        ...pointerChecks(observation, finding.proof.evidencePointers),
-      );
-      break;
-    }
-    case "internal-field-exposure": {
-      const observation = observations[finding.proof.requestIndex];
-      checks.push(
-        check(
-          observation !== undefined && isSuccess(observation.status),
-          "evidence response returned a successful response",
-          observation?.status,
-        ),
-        check(finding.proof.evidencePointers.length > 0, "at least one exposed field was declared"),
-        ...pointerChecks(observation, finding.proof.evidencePointers),
-      );
-      break;
-    }
-    case "timing-differential": {
-      const controlDurations = selectedDurations(observations, finding.proof.controlRequestIndexes);
-      const probeDurations = selectedDurations(observations, finding.proof.probeRequestIndexes);
-      const controlMedian = median(controlDurations);
-      const probeMedian = median(probeDurations);
-      const delta =
-        controlMedian === undefined || probeMedian === undefined
-          ? undefined
-          : probeMedian - controlMedian;
-      checks.push(
-        check(
-          distinctSampleCount(finding.reproduction, finding.proof.controlRequestIndexes) >= 3,
-          "control timing requests use three distinct sample identifiers",
-        ),
-        check(
-          distinctSampleCount(finding.reproduction, finding.proof.probeRequestIndexes) >= 3,
-          "probe timing requests use three distinct sample identifiers",
-        ),
-        check(
-          distinctSampleCount(finding.reproduction, [
-            ...finding.proof.controlRequestIndexes,
-            ...finding.proof.probeRequestIndexes,
-          ]) >= 6,
-          "control and probe sample identifiers are disjoint",
-        ),
-        check(
-          new Set(finding.proof.controlRequestIndexes).size >= 3,
-          "at least three distinct control samples were replayed",
-          controlDurations,
-        ),
-        check(
-          new Set(finding.proof.probeRequestIndexes).size >= 3,
-          "at least three distinct probe samples were replayed",
-          probeDurations,
-        ),
-        check(
-          controlDurations.length === finding.proof.controlRequestIndexes.length,
-          "every control sample has timing evidence",
-          controlDurations,
-        ),
-        check(
-          probeDurations.length === finding.proof.probeRequestIndexes.length,
-          "every probe sample has timing evidence",
-          probeDurations,
-        ),
-        check(
-          delta !== undefined && delta >= finding.proof.minimumDeltaMs,
-          `probe median is at least ${finding.proof.minimumDeltaMs}ms slower than control median`,
-          delta,
-        ),
-        ...timingDifferentialSecurityChecks(finding, observations),
-      );
-      break;
-    }
-    case "sql-semantic-differential": {
-      const proof = finding.proof;
-      const policy = policyFor(context.policies, proof.policyId, "sql-semantic-differential");
-      const controlRequest = finding.reproduction[proof.controlRequestIndex];
-      const probeRequest = finding.reproduction[proof.probeRequestIndex];
-      const controlObservation = observations[proof.controlRequestIndex];
-      const probeObservation = observations[proof.probeRequestIndex];
-      const controlResult = policy
-        ? selectedAt(observations, proof.controlRequestIndex, policy.response.jsonPointer)
-        : { found: false };
-      const probeResult = policy
-        ? selectedAt(observations, proof.probeRequestIndex, policy.response.jsonPointer)
-        : { found: false };
-      checks.push(
-        check(
-          policy?.category === finding.category,
-          "target policy authorizes this SQL semantic differential",
-        ),
-        check(
-          policy !== undefined &&
-            finding.reproduction.length === 2 &&
-            proof.controlRequestIndex === 0 &&
-            proof.probeRequestIndex === 1,
-          "SQL proof is one closed adjacent control-probe pair",
-        ),
-        check(
-          policy !== undefined &&
-            [controlRequest, probeRequest].every(
-              (request) =>
-                request !== undefined &&
-                (request.method ?? "GET") === policy.method &&
-                endpointMatchesRequest(policy.endpoint, request.path) &&
-                affectedOperationMatches(finding, request),
-            ),
-          "SQL control and probe match the policy-bound affected operation",
-        ),
-        check(
-          policy !== undefined &&
-            requestMutationValue(controlRequest, policy.mutation) ===
-              policy.mutation.controlValue &&
-            requestMutationValue(probeRequest, policy.mutation) === policy.mutation.probeValue,
-          "SQL requests use the target-owned control and probe predicates",
-        ),
-        check(
-          policy !== undefined &&
-            requestsShareMutationShape(controlRequest, probeRequest, policy.mutation),
-          "SQL control and probe differ only by the policy-owned mutation",
-        ),
-        check(
-          controlObservation !== undefined &&
-            probeObservation !== undefined &&
-            isSuccess(controlObservation.status) &&
-            isSuccess(probeObservation.status),
-          "SQL control and probe both returned successful responses",
-        ),
-        check(
-          policy !== undefined &&
-            controlResult.found &&
-            sameValue(controlResult.value, policy.response.controlValue),
-          "SQL control produced the target-owned semantic result",
-          controlResult.value,
-        ),
-        check(
-          policy !== undefined &&
-            probeResult.found &&
-            sameValue(probeResult.value, policy.response.probeValue),
-          "SQL probe produced the target-owned semantic result",
-          probeResult.value,
-        ),
-      );
-      break;
-    }
-    case "command-execution-challenge": {
-      const proof = finding.proof;
-      const policy = policyFor(context.policies, proof.policyId, "command-execution-challenge");
-      const request = finding.reproduction[proof.requestIndex];
-      const observation = observations[proof.requestIndex];
-      const selected = policy
-        ? selectedAt(observations, proof.requestIndex, policy.outputJsonPointer)
-        : { found: false };
-      const expectedOutput = policy ? commandChallengeOutput(policy, proof.challenge) : undefined;
-      checks.push(
-        check(
-          policy?.category === finding.category,
-          "target policy authorizes this command-execution challenge",
-        ),
-        check(
-          policy !== undefined &&
-            Number.isSafeInteger(proof.challenge) &&
-            proof.challenge >= policy.challengeMinimum &&
-            proof.challenge <= policy.challengeMaximum &&
-            expectedOutput !== undefined,
-          "command challenge is a bounded policy-owned arithmetic input",
-          proof.challenge,
-        ),
-        check(
-          policy !== undefined &&
-            finding.reproduction.length === 1 &&
-            proof.requestIndex === 0 &&
-            request !== undefined &&
-            (request.method ?? "GET") === policy.method &&
-            endpointMatchesRequest(policy.endpoint, request.path) &&
-            affectedOperationMatches(finding, request),
-          "command challenge is one policy-bound affected operation",
-        ),
-        check(
-          policy !== undefined &&
-            challengeRequestMatches(request, policy.challenge, String(proof.challenge)),
-          "request uses the target-owned command template",
-        ),
-        check(
-          observation !== undefined && isSuccess(observation.status),
-          "command challenge returned a successful response",
-          observation?.status,
-        ),
-        check(
-          selected.found &&
-            typeof selected.value === "string" &&
-            expectedOutput !== undefined &&
-            selected.value.includes(expectedOutput),
-          "response contains the computed command-execution result",
-          selected.value,
-        ),
-        check(
-          request !== undefined &&
-            expectedOutput !== undefined &&
-            !requestContains(request, expectedOutput),
-          "computed command result was not present in the request",
-          expectedOutput,
-        ),
-      );
-      break;
-    }
-    case "canary-retrieval": {
-      const policy = policyFor(context.policies, finding.proof.policyId, "canary");
-      const observation = observations[finding.proof.requestIndex];
-      const selected = observation
-        ? jsonPointer(observation.body, finding.proof.jsonPointer)
-        : { found: false };
-      const canaryValue = typeof selected.value === "string" ? selected.value : undefined;
-      const request = finding.reproduction[finding.proof.requestIndex];
-      checks.push(
-        check(policy?.category === finding.category, "target policy authorizes this canary proof"),
-        check(
-          policy?.source === "immutable-fixture" &&
-            finding.proof.jsonPointer === policy.jsonPointer &&
-            finding.reproduction.length === 1 &&
-            request !== undefined &&
-            ["GET", "HEAD"].includes(request.method ?? "GET") &&
-            request.body === undefined &&
-            Object.keys(request.headers ?? {}).length === 0 &&
-            new URL(request.path, "http://proof.invalid").search === "",
-          "canary comes from an immutable fixture through one bodyless headerless read",
-        ),
-        check(
-          policy !== undefined &&
-            request !== undefined &&
-            (request.method ?? "GET") === policy.method &&
-            endpointMatchesRequest(policy.endpoint, request.path) &&
-            affectedOperationMatches(finding, request),
-          "canary retrieval request matches the policy and affected operation",
-        ),
-        check(selected.found && typeof selected.value === "string", "canary value was retrieved"),
-        check(
-          policy !== undefined &&
-            request !== undefined &&
-            canaryValue !== undefined &&
-            !finding.reproduction.some((candidate) => requestContains(candidate, canaryValue)) &&
-            verifyCanary(policy, canaryValue),
-          "retrieved value passes the verifier-only canary contract and was not reflected",
-          selected.value,
-        ),
-      );
-      break;
-    }
-    case "file-content-retrieval": {
-      const proof = finding.proof;
-      const policy = policyFor(context.policies, proof.policyId, "file-content");
-      const request = finding.reproduction[proof.requestIndex];
-      const observation = observations[proof.requestIndex];
-      const body = typeof observation?.body === "string" ? observation.body : undefined;
-      const contentTypePattern = policy ? safeRegex(policy.contentTypePattern, "i") : undefined;
-      checks.push(
-        check(policy?.category === finding.category, "target policy authorizes this file proof"),
-        check(
-          policy !== undefined &&
-            finding.reproduction.length === 1 &&
-            proof.requestIndex === 0 &&
-            request !== undefined &&
-            (request.method ?? "GET") === policy.method &&
-            endpointMatchesRequest(policy.endpoint, request.path) &&
-            affectedOperationMatches(finding, request),
-          "file request is one policy-bound affected operation",
-        ),
-        check(
-          policy !== undefined &&
-            requestMutationValue(request, policy.request) === policy.request.value,
-          "request contains the exact target-owned traversal value",
-        ),
-        check(
-          observation !== undefined && isSuccess(observation.status) && body !== undefined,
-          "file response is successful raw text rather than a parsed JSON canary",
-          observation?.status,
-        ),
-        check(
-          contentTypePattern !== undefined &&
-            contentTypePattern.test(observation?.contentType ?? ""),
-          "file response media type matches the target policy",
-          observation?.contentType,
-        ),
-        check(
-          policy !== undefined &&
-            policy.source === "immutable-fixture" &&
-            request !== undefined &&
-            body !== undefined &&
-            !requestContains(request, body) &&
-            verifyFileContent(policy, body),
-          "raw body passes the verifier-only immutable-file contract and was not reflected",
-        ),
-      );
-      break;
-    }
-    case "redirect-destination": {
-      const proof = finding.proof;
-      const policy = policyFor(context.policies, proof.policyId, "redirect");
-      const request = finding.reproduction[proof.requestIndex];
-      const observation = observations[proof.requestIndex];
-      checks.push(
-        check(
-          policy?.category === finding.category,
-          "target policy authorizes this redirect proof",
-        ),
-        check(
-          policy !== undefined && proof.destination === policy.destination,
-          "redirect destination is the exact target-owned absolute URL",
-          proof.destination,
-        ),
-        check(
-          policy !== undefined &&
-            finding.reproduction.length === 1 &&
-            proof.requestIndex === 0 &&
-            request !== undefined &&
-            (request.method ?? "GET") === policy.method &&
-            endpointMatchesRequest(policy.endpoint, request.path) &&
-            affectedOperationMatches(finding, request),
-          "redirect request is one policy-bound affected operation",
-        ),
-        check(
-          policy !== undefined &&
-            challengeRequestMatches(request, policy.challenge, policy.destination),
-          "request binds the exact redirect destination to the policy parameter",
-        ),
-        check(
-          observation !== undefined && observation.status >= 300 && observation.status < 400,
-          "response is an HTTP redirect",
-          observation?.status,
-        ),
-        check(
-          observation?.redirected === false,
-          "automatic redirect following was disabled",
-          observation?.redirected,
-        ),
-        check(
-          observation?.redirectLocation === proof.destination,
-          "Location exactly equals the declared redirect destination",
-          observation?.redirectLocation,
-        ),
-      );
-      break;
-    }
-    case "state-transition": {
-      const policy = policyFor(context.policies, finding.proof.policyId, "state-transition");
-      const before = policy
-        ? selectedAt(observations, finding.proof.beforeRequestIndex, policy.jsonPointer)
-        : { found: false };
-      const after = policy
-        ? selectedAt(observations, finding.proof.afterRequestIndex, policy.jsonPointer)
-        : { found: false };
-      const beforeObservation = observations[finding.proof.beforeRequestIndex];
-      const transitionObservation = observations[finding.proof.transitionRequestIndex];
-      const afterObservation = observations[finding.proof.afterRequestIndex];
-      const transition = finding.reproduction[finding.proof.transitionRequestIndex];
-      checks.push(
-        check(policy?.category === finding.category, "target policy authorizes this state proof"),
-        check(
-          policy !== undefined &&
-            ["POST", "PUT", "PATCH"].includes(policy.method) &&
-            ["GET", "HEAD"].includes(policy.readMethod),
-          "state policy separates an explicit mutating operation from read-only state checks",
-        ),
-        check(
-          context.stateResetAvailable === true,
-          "target provides a fresh-state preparation hook for validation",
-        ),
-        check(
-          finding.reproduction.length === 3 &&
-            finding.proof.beforeRequestIndex === 0 &&
-            finding.proof.transitionRequestIndex === 1 &&
-            finding.proof.afterRequestIndex === 2,
-          "state proof is a closed adjacent read-transition-read reproduction",
-        ),
-        check(
-          policy !== undefined &&
-            transition !== undefined &&
-            (transition.method ?? "GET") === policy.method &&
-            endpointMatchesRequest(policy.endpoint, transition.path) &&
-            affectedOperationMatches(finding, transition),
-          "declared transition request matches the protected operation",
-        ),
-        check(
-          policy !== undefined &&
-            [finding.proof.beforeRequestIndex, finding.proof.afterRequestIndex].every((index) => {
-              const request = finding.reproduction[index];
-              return (
-                request !== undefined &&
-                (request.method ?? "GET") === policy.readMethod &&
-                endpointMatchesRequest(policy.readEndpoint, request.path)
-              );
-            }) &&
-            sameConcreteRequest(
-              finding.reproduction[finding.proof.beforeRequestIndex],
-              finding.reproduction[finding.proof.afterRequestIndex],
-            ),
-          "before and after requests read the same policy-bound resource",
-        ),
-        check(
-          beforeObservation !== undefined &&
-            transitionObservation !== undefined &&
-            afterObservation !== undefined &&
-            isSuccess(beforeObservation.status) &&
-            isSuccess(transitionObservation.status) &&
-            isSuccess(afterObservation.status),
-          "before, transition, and after operations all completed successfully",
-        ),
-        check(
-          before.found && sameValue(before.value, policy?.before),
-          "protected state starts at policy value",
-          before.value,
-        ),
-        check(
-          after.found && sameValue(after.value, policy?.after),
-          "protected state reaches policy value",
-          after.value,
-        ),
-      );
-      break;
-    }
-    case "browser-state-transition": {
-      const proof = finding.proof;
-      const policy = policyFor(context.policies, proof.policyId, "browser-state-transition");
-      const before = policy
-        ? selectedAt(observations, proof.beforeRequestIndex, policy.jsonPointer)
-        : { found: false };
-      const after = policy
-        ? selectedAt(observations, proof.afterRequestIndex, policy.jsonPointer)
-        : { found: false };
-      const beforeObservation = observations[proof.beforeRequestIndex];
-      const afterObservation = observations[proof.afterRequestIndex];
-      const artifact = context.artifacts?.browserStateTransitions.find(
-        (candidate) =>
-          candidate.policyId === policy?.id &&
-          candidate.sourceOrigin === policy.sourceOrigin &&
-          candidate.sourcePath === policy.sourcePath &&
-          candidate.targetPath === policy.endpoint &&
-          candidate.method === policy.method,
-      );
-      checks.push(
-        check(policy?.category === finding.category, "target policy authorizes this CSRF proof"),
-        check(
-          context.stateResetAvailable === true,
-          "target provides a fresh-state preparation hook for CSRF validation",
-        ),
-        check(
-          policy !== undefined &&
-            finding.reproduction.length === 2 &&
-            proof.beforeRequestIndex === 0 &&
-            proof.afterRequestIndex === 1 &&
-            proof.pageActorId === policy.pageActorId &&
-            proof.pageActorId !== actorIds.anonymous &&
-            proof.collectorRequestBudget === policy.requestBudget,
-          "CSRF proof is one authenticated policy-page transition between two reads",
-        ),
-        check(
-          policy !== undefined &&
-            finding.method === policy.method &&
-            endpointMatchesRequest(finding.endpoint, policy.endpoint) &&
-            isExactOrigin(policy.sourceOrigin),
-          "affected mutation and exact source origin match the target policy",
-        ),
-        check(
-          policy !== undefined &&
-            [proof.beforeRequestIndex, proof.afterRequestIndex].every((index) => {
-              const request = finding.reproduction[index];
-              return (
-                request !== undefined &&
-                request.actorId === policy.pageActorId &&
-                (request.method ?? "GET") === policy.readMethod &&
-                endpointMatchesRequest(policy.readEndpoint, request.path)
-              );
-            }) &&
-            sameConcreteRequest(
-              finding.reproduction[proof.beforeRequestIndex],
-              finding.reproduction[proof.afterRequestIndex],
-            ),
-          "before and after requests read the same policy-bound state as the browser actor",
-        ),
-        check(
-          beforeObservation !== undefined &&
-            afterObservation !== undefined &&
-            isSuccess(beforeObservation.status) &&
-            isSuccess(afterObservation.status),
-          "before and after state reads completed successfully",
-        ),
-        check(
-          artifact !== undefined && isCompletedStateTransition(artifact.status),
-          "fresh browser artifact records the exact cross-origin mutation",
-          artifact?.status,
-        ),
-        check(
-          before.found && sameValue(before.value, policy?.before),
-          "protected state starts at the policy value",
-          before.value,
-        ),
-        check(
-          after.found && sameValue(after.value, policy?.after),
-          "protected state reaches the policy value",
-          after.value,
-        ),
-      );
-      break;
-    }
-    case "browser-visible-effect": {
-      const proof = finding.proof;
-      const policy = policyFor(context.policies, proof.policyId, "browser-effect");
-      const pattern = policy ? safeRegex(policy.markerPattern) : undefined;
-      const artifact = context.artifacts?.browserEffects.find(
-        ({ probeId }) => probeId === proof.probeId,
-      );
-      const request = finding.reproduction[proof.requestIndex];
-      const observation = observations[proof.requestIndex];
-      checks.push(
-        check(policy?.category === finding.category, "target policy authorizes this browser proof"),
-        check(
-          policy !== undefined &&
-            finding.reproduction.length === 1 &&
-            proof.requestIndex === 0 &&
-            request !== undefined &&
-            (request.method ?? "GET") === policy.method &&
-            endpointMatchesRequest(policy.endpoint, request.path) &&
-            affectedOperationMatches(finding, request),
-          "browser payload is one policy-bound affected operation",
-        ),
-        check(
-          policy !== undefined &&
-            canonicalJson(proof.challenge) === canonicalJson(policy.challenge),
-          "browser challenge uses the target-owned mutation and executable payload template",
-        ),
-        check(
-          policy !== undefined &&
-            proof.pageActorId === policy.pageActorId &&
-            request?.actorId === policy.submissionActorId,
-          "browser submission and page actors match the target policy",
-        ),
-        check(
-          policy !== undefined && proof.collectorRequestBudget === policy.requestBudget,
-          "browser collector request budget matches the target policy",
-        ),
-        check(
-          canonicalJson(proof.pageChallenge) === canonicalJson(policy?.pageChallenge),
-          "browser navigation challenge matches the target policy",
-        ),
-        check(
-          policy !== undefined &&
-            ((policy.workflow === "stored" &&
-              ["POST", "PUT", "PATCH"].includes(policy.method) &&
-              proof.pageChallenge === undefined) ||
-              (policy.workflow === "dom" &&
-                finding.method === "GET" &&
-                proof.pageChallenge?.location === "fragment" &&
-                proof.pagePath === request?.path &&
-                challengePathMatches(proof.pagePath, proof.pageChallenge, proof.marker) &&
-                !responseContains(observation?.body, proof.marker))),
-          "browser proof follows the policy's closed stored-write or fragment-only DOM workflow",
-        ),
-        check(
-          challengeRequestMatches(
-            finding.reproduction[proof.requestIndex],
-            proof.challenge,
-            proof.marker,
-          ),
-          "issued browser marker is bound to the declared request mutation",
-        ),
-        check(
-          observation !== undefined && isSuccess(observation.status),
-          "browser payload operation completed successfully",
-          observation?.status,
-        ),
-        check(
-          artifact !== undefined &&
-            policy !== undefined &&
-            policy.effect === "dialog" &&
-            proof.kind === policy.effect &&
-            artifact.kind === policy.effect &&
-            browserPolicyPath(policy, proof.marker) === proof.pagePath &&
-            artifact.path === proof.pagePath,
-          "fresh browser artifact matches the policy effect and page",
-        ),
-        check(
-          artifact?.value === proof.marker && pattern !== undefined && pattern.test(proof.marker),
-          "browser effect contains the policy-approved marker",
-          artifact?.value,
-        ),
-      );
-      break;
-    }
-    case "oast-callback": {
-      const proof = finding.proof;
-      const policy = policyFor(context.policies, proof.policyId, "oast");
-      const artifact = context.artifacts?.oastCallbacks.find(
-        ({ probeId, token }) => probeId === proof.probeId && token === proof.token,
-      );
-      const request = finding.reproduction[proof.requestIndex];
-      checks.push(
-        check(policy?.category === finding.category, "target policy authorizes this OAST proof"),
-        check(
-          policy !== undefined &&
-            canonicalJson(proof.challenge) === canonicalJson(policy.challenge),
-          "OAST challenge uses the target-owned request mutation",
-        ),
-        check(
-          policy !== undefined &&
-            request !== undefined &&
-            (request.method ?? "GET") === policy.method &&
-            endpointMatchesRequest(policy.endpoint, request.path) &&
-            affectedOperationMatches(finding, request),
-          "OAST probe request matches the policy and affected operation",
-        ),
-        check(
-          request !== undefined &&
-            proof.callbackUrl.includes(proof.token) &&
-            challengeRequestMatches(request, proof.challenge, proof.callbackUrl),
-          "issued OAST callback URL is bound to the declared request mutation",
-        ),
-        check(
-          artifact !== undefined && artifact.protocol === policy?.protocol,
-          "fresh target callback reached the issued OAST probe",
-          artifact?.path,
-        ),
-      );
-      break;
-    }
-  }
+  evaluatePredicateChecks(finding, observations, checks, context);
 
   const passed = checks.every((item) => item.passed);
   return {
@@ -978,6 +102,879 @@ export function evaluateProof(
       : `Deterministic ${finding.proof.type} predicate failed ${checks.filter((item) => !item.passed).length}/${checks.length} checks.`,
     checks,
   };
+}
+
+type ProofType = ProofPredicate["type"];
+type ProofEvaluationBase = Pick<
+  Finding,
+  "category" | "endpoint" | "method" | "impactLevel" | "reproduction"
+>;
+type ProofEvaluationFinding<K extends ProofType = ProofType> = ProofEvaluationBase & {
+  proof: Extract<ProofPredicate, { type: K }>;
+};
+
+type ProofCheckHandler<K extends ProofType> = (
+  finding: ProofEvaluationFinding<K>,
+  observations: readonly ValidationObservation[],
+  checks: ProofCheck[],
+  context: ProofEvaluationContext,
+) => void;
+
+type ProofCheckHandlers = {
+  [K in ProofType]: ProofCheckHandler<K>;
+};
+
+const proofCheckHandlers = {
+  "cross-principal-access": (finding, observations, checks) => {
+    const actor = selectedValue(observations, finding.proof.actor);
+    const owner = selectedValue(observations, finding.proof.resourceOwner);
+    const access = observations[finding.proof.accessRequestIndex];
+    checks.push(
+      check(
+        finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
+        "actor identity was established in a named actor session",
+      ),
+      check(actor.found && isScalar(actor.value), "actor identity exists", actor.value),
+      check(owner.found && isScalar(owner.value), "resource-owner identity exists", owner.value),
+      check(
+        actor.found && owner.found && !sameValue(actor.value, owner.value),
+        "actor and resource owner are different principals",
+        actor.found && owner.found ? `${String(actor.value)} != ${String(owner.value)}` : undefined,
+      ),
+      check(
+        access !== undefined && isSuccess(access.status),
+        "cross-principal request returned a successful response",
+        access?.status,
+      ),
+      check(
+        finding.reproduction[finding.proof.accessRequestIndex]?.actorId ===
+          finding.reproduction[finding.proof.actor.requestIndex]?.actorId &&
+          finding.reproduction[finding.proof.accessRequestIndex]?.actorId !== actorIds.anonymous,
+        "cross-principal access used the identified actor session",
+      ),
+      ...pointerChecks(access, finding.proof.evidencePointers),
+    );
+  },
+  "authentication-bypass": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const authenticatedRequest = finding.reproduction[proof.authenticatedRequestIndex];
+    const anonymousRequest = finding.reproduction[proof.anonymousRequestIndex];
+    const authenticatedObservation = observations[proof.authenticatedRequestIndex];
+    const anonymousObservation = observations[proof.anonymousRequestIndex];
+    const operation = protectedOperationFor(context.protectedOperations, authenticatedRequest);
+    const anonymousOperation = protectedOperationFor(context.protectedOperations, anonymousRequest);
+    const authenticatedIdentity = identityFor(context.identities, authenticatedRequest?.actorId);
+    const anonymousIdentity = identityFor(context.identities, anonymousRequest?.actorId);
+    checks.push(
+      check(
+        finding.reproduction.length === 2 &&
+          proof.authenticatedRequestIndex !== proof.anonymousRequestIndex,
+        "authentication bypass is one closed authenticated-anonymous request pair",
+      ),
+      check(
+        authenticatedRequest !== undefined &&
+          authenticatedRequest.actorId !== actorIds.anonymous &&
+          anonymousRequest?.actorId === actorIds.anonymous,
+        "control is authenticated and bypass probe is anonymous",
+      ),
+      check(
+        authenticatedIdentity !== undefined &&
+          authenticatedIdentity.role !== "anonymous" &&
+          anonymousIdentity?.role === "anonymous",
+        "authenticated and anonymous actors are declared by the target manifest",
+      ),
+      check(
+        operation !== undefined &&
+          operation === anonymousOperation &&
+          authenticatedRequest !== undefined &&
+          operation.authorizedActors.includes(authenticatedRequest.actorId) &&
+          !operation.authorizedActors.includes(actorIds.anonymous),
+        "target policy requires authentication for the affected operation",
+      ),
+      check(
+        affectedOperationMatches(finding, authenticatedRequest) &&
+          affectedOperationMatches(finding, anonymousRequest),
+        "authenticated control and anonymous probe match the affected operation",
+      ),
+      check(
+        sameRequestAcrossActors(authenticatedRequest, anonymousRequest),
+        "authenticated control and anonymous probe differ only by actor session",
+      ),
+      check(
+        !hasPotentialAuthenticationHeaders(authenticatedRequest?.headers) &&
+          !hasPotentialAuthenticationHeaders(anonymousRequest?.headers),
+        "authentication differential relies only on declared actor sessions",
+      ),
+      check(
+        authenticatedObservation !== undefined && isSuccess(authenticatedObservation.status),
+        "authenticated control returned a successful response",
+        authenticatedObservation?.status,
+      ),
+      check(
+        anonymousObservation !== undefined && isSuccess(anonymousObservation.status),
+        "anonymous bypass probe returned a successful response",
+        anonymousObservation?.status,
+      ),
+      ...differentialPointerChecks(
+        authenticatedObservation,
+        anonymousObservation,
+        proof.evidencePointers,
+        "authenticated control",
+        "anonymous bypass probe",
+      ),
+    );
+  },
+  "role-privilege-differential": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const authorizedRequest = finding.reproduction[proof.authorizedRequestIndex];
+    const lessPrivilegedRequest = finding.reproduction[proof.lessPrivilegedRequestIndex];
+    const authorizedObservation = observations[proof.authorizedRequestIndex];
+    const lessPrivilegedObservation = observations[proof.lessPrivilegedRequestIndex];
+    const authorizedIdentity = identityFor(context.identities, authorizedRequest?.actorId);
+    const lessPrivilegedIdentity = identityFor(context.identities, lessPrivilegedRequest?.actorId);
+    const operation = protectedOperationFor(context.protectedOperations, authorizedRequest);
+    const lessPrivilegedOperation = protectedOperationFor(
+      context.protectedOperations,
+      lessPrivilegedRequest,
+    );
+    const method = authorizedRequest?.method ?? "GET";
+    checks.push(
+      check(
+        finding.reproduction.length === 2 &&
+          proof.authorizedRequestIndex !== proof.lessPrivilegedRequestIndex,
+        "role differential is one closed authorized-less-privileged request pair",
+      ),
+      check(
+        authorizedRequest !== undefined &&
+          lessPrivilegedRequest !== undefined &&
+          authorizedRequest.actorId !== actorIds.anonymous &&
+          lessPrivilegedRequest.actorId !== actorIds.anonymous &&
+          authorizedRequest.actorId !== lessPrivilegedRequest.actorId,
+        "role differential uses two distinct authenticated actors",
+      ),
+      check(
+        authorizedIdentity !== undefined &&
+          lessPrivilegedIdentity !== undefined &&
+          roleRank(authorizedIdentity.role) > roleRank(lessPrivilegedIdentity.role),
+        "control actor has a more privileged declared role than the probe actor",
+        authorizedIdentity && lessPrivilegedIdentity
+          ? `${authorizedIdentity.role} > ${lessPrivilegedIdentity.role}`
+          : undefined,
+      ),
+      check(
+        operation !== undefined &&
+          operation === lessPrivilegedOperation &&
+          authorizedRequest !== undefined &&
+          lessPrivilegedRequest !== undefined &&
+          operation.authorizedActors.includes(authorizedRequest.actorId) &&
+          !operation.authorizedActors.includes(lessPrivilegedRequest.actorId),
+        "target policy authorizes the control actor but not the less-privileged actor",
+      ),
+      check(
+        affectedOperationMatches(finding, authorizedRequest) &&
+          affectedOperationMatches(finding, lessPrivilegedRequest),
+        "authorized control and less-privileged probe match the affected operation",
+      ),
+      check(
+        sameRequestAcrossActors(authorizedRequest, lessPrivilegedRequest),
+        "authorized control and less-privileged probe differ only by actor session",
+      ),
+      check(
+        !hasPotentialAuthenticationHeaders(authorizedRequest?.headers) &&
+          !hasPotentialAuthenticationHeaders(lessPrivilegedRequest?.headers),
+        "role differential relies only on declared actor sessions",
+      ),
+      check(
+        finding.category !== "business-logic" || ["POST", "PUT", "PATCH"].includes(method),
+        "cross-role business action uses a state-changing method",
+        method,
+      ),
+      check(
+        authorizedObservation !== undefined && isSuccess(authorizedObservation.status),
+        "authorized control returned a successful response",
+        authorizedObservation?.status,
+      ),
+      check(
+        lessPrivilegedObservation !== undefined && isSuccess(lessPrivilegedObservation.status),
+        "less-privileged probe returned a successful response",
+        lessPrivilegedObservation?.status,
+      ),
+      ...differentialPointerChecks(
+        authorizedObservation,
+        lessPrivilegedObservation,
+        proof.evidencePointers,
+        "authorized control",
+        "less-privileged probe",
+      ),
+    );
+  },
+  "unauthenticated-success": (finding, observations, checks) => {
+    const observation = observations[finding.proof.requestIndex];
+    const request = finding.reproduction[finding.proof.requestIndex];
+    checks.push(
+      check(
+        request !== undefined &&
+          request.actorId === actorIds.anonymous &&
+          ["GET", "HEAD"].includes(request.method ?? "GET") &&
+          request.body === undefined &&
+          !hasPotentialAuthenticationHeaders(request.headers),
+        "bodyless GET/HEAD request was sent without authentication",
+      ),
+      check(
+        observation !== undefined && isSuccess(observation.status),
+        "unauthenticated request returned a successful response",
+        observation?.status,
+      ),
+      ...pointerChecks(observation, finding.proof.evidencePointers),
+    );
+  },
+  "cross-principal-data-exposure": (finding, observations, checks) => {
+    const actor = selectedValue(observations, finding.proof.actor);
+    const subject = selectedValue(observations, finding.proof.exposedSubject);
+    const observation = observations[finding.proof.responseRequestIndex];
+    checks.push(
+      check(
+        finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
+        "actor identity was established in a named actor session",
+      ),
+      check(actor.found && isScalar(actor.value), "actor identity exists", actor.value),
+      check(
+        subject.found && isScalar(subject.value),
+        "exposed-subject identity exists",
+        subject.value,
+      ),
+      check(
+        actor.found && subject.found && !sameValue(actor.value, subject.value),
+        "actor and exposed subject are different principals",
+        actor.found && subject.found
+          ? `${String(actor.value)} != ${String(subject.value)}`
+          : undefined,
+      ),
+      check(
+        observation !== undefined && isSuccess(observation.status),
+        "cross-principal data response returned successfully",
+        observation?.status,
+      ),
+      check(
+        finding.reproduction[finding.proof.responseRequestIndex]?.actorId ===
+          finding.reproduction[finding.proof.actor.requestIndex]?.actorId &&
+          finding.reproduction[finding.proof.responseRequestIndex]?.actorId !== actorIds.anonymous,
+        "cross-principal data was observed in the identified actor session",
+      ),
+      ...pointerChecks(observation, finding.proof.evidencePointers),
+    );
+  },
+  "internal-field-exposure": (finding, observations, checks) => {
+    const observation = observations[finding.proof.requestIndex];
+    checks.push(
+      check(
+        observation !== undefined && isSuccess(observation.status),
+        "evidence response returned a successful response",
+        observation?.status,
+      ),
+      check(finding.proof.evidencePointers.length > 0, "at least one exposed field was declared"),
+      ...pointerChecks(observation, finding.proof.evidencePointers),
+    );
+  },
+  "response-differential": () => undefined,
+  "timing-differential": (finding, observations, checks) => {
+    const controlDurations = selectedDurations(observations, finding.proof.controlRequestIndexes);
+    const probeDurations = selectedDurations(observations, finding.proof.probeRequestIndexes);
+    const controlMedian = median(controlDurations);
+    const probeMedian = median(probeDurations);
+    const delta =
+      controlMedian === undefined || probeMedian === undefined
+        ? undefined
+        : probeMedian - controlMedian;
+    checks.push(
+      check(
+        distinctSampleCount(finding.reproduction, finding.proof.controlRequestIndexes) >= 3,
+        "control timing requests use three distinct sample identifiers",
+      ),
+      check(
+        distinctSampleCount(finding.reproduction, finding.proof.probeRequestIndexes) >= 3,
+        "probe timing requests use three distinct sample identifiers",
+      ),
+      check(
+        distinctSampleCount(finding.reproduction, [
+          ...finding.proof.controlRequestIndexes,
+          ...finding.proof.probeRequestIndexes,
+        ]) >= 6,
+        "control and probe sample identifiers are disjoint",
+      ),
+      check(
+        new Set(finding.proof.controlRequestIndexes).size >= 3,
+        "at least three distinct control samples were replayed",
+        controlDurations,
+      ),
+      check(
+        new Set(finding.proof.probeRequestIndexes).size >= 3,
+        "at least three distinct probe samples were replayed",
+        probeDurations,
+      ),
+      check(
+        controlDurations.length === finding.proof.controlRequestIndexes.length,
+        "every control sample has timing evidence",
+        controlDurations,
+      ),
+      check(
+        probeDurations.length === finding.proof.probeRequestIndexes.length,
+        "every probe sample has timing evidence",
+        probeDurations,
+      ),
+      check(
+        delta !== undefined && delta >= finding.proof.minimumDeltaMs,
+        `probe median is at least ${finding.proof.minimumDeltaMs}ms slower than control median`,
+        delta,
+      ),
+      ...timingDifferentialSecurityChecks(finding, observations),
+    );
+  },
+  "sql-semantic-differential": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const policy = policyFor(context.policies, proof.policyId, "sql-semantic-differential");
+    const controlRequest = finding.reproduction[proof.controlRequestIndex];
+    const probeRequest = finding.reproduction[proof.probeRequestIndex];
+    const controlObservation = observations[proof.controlRequestIndex];
+    const probeObservation = observations[proof.probeRequestIndex];
+    const controlResult = policy
+      ? selectedAt(observations, proof.controlRequestIndex, policy.response.jsonPointer)
+      : { found: false };
+    const probeResult = policy
+      ? selectedAt(observations, proof.probeRequestIndex, policy.response.jsonPointer)
+      : { found: false };
+    checks.push(
+      check(
+        policy?.category === finding.category,
+        "target policy authorizes this SQL semantic differential",
+      ),
+      check(
+        policy !== undefined &&
+          finding.reproduction.length === 2 &&
+          proof.controlRequestIndex === 0 &&
+          proof.probeRequestIndex === 1,
+        "SQL proof is one closed adjacent control-probe pair",
+      ),
+      check(
+        policy !== undefined &&
+          [controlRequest, probeRequest].every(
+            (request) =>
+              request !== undefined &&
+              (request.method ?? "GET") === policy.method &&
+              endpointMatchesRequest(policy.endpoint, request.path) &&
+              affectedOperationMatches(finding, request),
+          ),
+        "SQL control and probe match the policy-bound affected operation",
+      ),
+      check(
+        policy !== undefined &&
+          requestMutationValue(controlRequest, policy.mutation) === policy.mutation.controlValue &&
+          requestMutationValue(probeRequest, policy.mutation) === policy.mutation.probeValue,
+        "SQL requests use the target-owned control and probe predicates",
+      ),
+      check(
+        policy !== undefined &&
+          requestsShareMutationShape(controlRequest, probeRequest, policy.mutation),
+        "SQL control and probe differ only by the policy-owned mutation",
+      ),
+      check(
+        controlObservation !== undefined &&
+          probeObservation !== undefined &&
+          isSuccess(controlObservation.status) &&
+          isSuccess(probeObservation.status),
+        "SQL control and probe both returned successful responses",
+      ),
+      check(
+        policy !== undefined &&
+          controlResult.found &&
+          sameValue(controlResult.value, policy.response.controlValue),
+        "SQL control produced the target-owned semantic result",
+        controlResult.value,
+      ),
+      check(
+        policy !== undefined &&
+          probeResult.found &&
+          sameValue(probeResult.value, policy.response.probeValue),
+        "SQL probe produced the target-owned semantic result",
+        probeResult.value,
+      ),
+    );
+  },
+  "command-execution-challenge": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const policy = policyFor(context.policies, proof.policyId, "command-execution-challenge");
+    const request = finding.reproduction[proof.requestIndex];
+    const observation = observations[proof.requestIndex];
+    const selected = policy
+      ? selectedAt(observations, proof.requestIndex, policy.outputJsonPointer)
+      : { found: false };
+    const expectedOutput = policy ? commandChallengeOutput(policy, proof.challenge) : undefined;
+    checks.push(
+      check(
+        policy?.category === finding.category,
+        "target policy authorizes this command-execution challenge",
+      ),
+      check(
+        policy !== undefined &&
+          Number.isSafeInteger(proof.challenge) &&
+          proof.challenge >= policy.challengeMinimum &&
+          proof.challenge <= policy.challengeMaximum &&
+          expectedOutput !== undefined,
+        "command challenge is a bounded policy-owned arithmetic input",
+        proof.challenge,
+      ),
+      check(
+        policy !== undefined &&
+          finding.reproduction.length === 1 &&
+          proof.requestIndex === 0 &&
+          request !== undefined &&
+          (request.method ?? "GET") === policy.method &&
+          endpointMatchesRequest(policy.endpoint, request.path) &&
+          affectedOperationMatches(finding, request),
+        "command challenge is one policy-bound affected operation",
+      ),
+      check(
+        policy !== undefined &&
+          challengeRequestMatches(request, policy.challenge, String(proof.challenge)),
+        "request uses the target-owned command template",
+      ),
+      check(
+        observation !== undefined && isSuccess(observation.status),
+        "command challenge returned a successful response",
+        observation?.status,
+      ),
+      check(
+        selected.found &&
+          typeof selected.value === "string" &&
+          expectedOutput !== undefined &&
+          selected.value.includes(expectedOutput),
+        "response contains the computed command-execution result",
+        selected.value,
+      ),
+      check(
+        request !== undefined &&
+          expectedOutput !== undefined &&
+          !requestContains(request, expectedOutput),
+        "computed command result was not present in the request",
+        expectedOutput,
+      ),
+    );
+  },
+  "canary-retrieval": (finding, observations, checks, context) => {
+    const policy = policyFor(context.policies, finding.proof.policyId, "canary");
+    const observation = observations[finding.proof.requestIndex];
+    const selected = observation
+      ? jsonPointer(observation.body, finding.proof.jsonPointer)
+      : { found: false };
+    const canaryValue = typeof selected.value === "string" ? selected.value : undefined;
+    const request = finding.reproduction[finding.proof.requestIndex];
+    checks.push(
+      check(policy?.category === finding.category, "target policy authorizes this canary proof"),
+      check(
+        policy?.source === "immutable-fixture" &&
+          finding.proof.jsonPointer === policy.jsonPointer &&
+          finding.reproduction.length === 1 &&
+          request !== undefined &&
+          ["GET", "HEAD"].includes(request.method ?? "GET") &&
+          request.body === undefined &&
+          Object.keys(request.headers ?? {}).length === 0 &&
+          new URL(request.path, "http://proof.invalid").search === "",
+        "canary comes from an immutable fixture through one bodyless headerless read",
+      ),
+      check(
+        policy !== undefined &&
+          request !== undefined &&
+          (request.method ?? "GET") === policy.method &&
+          endpointMatchesRequest(policy.endpoint, request.path) &&
+          affectedOperationMatches(finding, request),
+        "canary retrieval request matches the policy and affected operation",
+      ),
+      check(selected.found && typeof selected.value === "string", "canary value was retrieved"),
+      check(
+        policy !== undefined &&
+          request !== undefined &&
+          canaryValue !== undefined &&
+          !finding.reproduction.some((candidate) => requestContains(candidate, canaryValue)) &&
+          verifyCanary(policy, canaryValue),
+        "retrieved value passes the verifier-only canary contract and was not reflected",
+        selected.value,
+      ),
+    );
+  },
+  "file-content-retrieval": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const policy = policyFor(context.policies, proof.policyId, "file-content");
+    const request = finding.reproduction[proof.requestIndex];
+    const observation = observations[proof.requestIndex];
+    const body = typeof observation?.body === "string" ? observation.body : undefined;
+    const contentTypePattern = policy ? safeRegex(policy.contentTypePattern, "i") : undefined;
+    checks.push(
+      check(policy?.category === finding.category, "target policy authorizes this file proof"),
+      check(
+        policy !== undefined &&
+          finding.reproduction.length === 1 &&
+          proof.requestIndex === 0 &&
+          request !== undefined &&
+          (request.method ?? "GET") === policy.method &&
+          endpointMatchesRequest(policy.endpoint, request.path) &&
+          affectedOperationMatches(finding, request),
+        "file request is one policy-bound affected operation",
+      ),
+      check(
+        policy !== undefined &&
+          requestMutationValue(request, policy.request) === policy.request.value,
+        "request contains the exact target-owned traversal value",
+      ),
+      check(
+        observation !== undefined && isSuccess(observation.status) && body !== undefined,
+        "file response is successful raw text rather than a parsed JSON canary",
+        observation?.status,
+      ),
+      check(
+        contentTypePattern !== undefined && contentTypePattern.test(observation?.contentType ?? ""),
+        "file response media type matches the target policy",
+        observation?.contentType,
+      ),
+      check(
+        policy !== undefined &&
+          policy.source === "immutable-fixture" &&
+          request !== undefined &&
+          body !== undefined &&
+          !requestContains(request, body) &&
+          verifyFileContent(policy, body),
+        "raw body passes the verifier-only immutable-file contract and was not reflected",
+      ),
+    );
+  },
+  "redirect-destination": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const policy = policyFor(context.policies, proof.policyId, "redirect");
+    const request = finding.reproduction[proof.requestIndex];
+    const observation = observations[proof.requestIndex];
+    checks.push(
+      check(policy?.category === finding.category, "target policy authorizes this redirect proof"),
+      check(
+        policy !== undefined && proof.destination === policy.destination,
+        "redirect destination is the exact target-owned absolute URL",
+        proof.destination,
+      ),
+      check(
+        policy !== undefined &&
+          finding.reproduction.length === 1 &&
+          proof.requestIndex === 0 &&
+          request !== undefined &&
+          (request.method ?? "GET") === policy.method &&
+          endpointMatchesRequest(policy.endpoint, request.path) &&
+          affectedOperationMatches(finding, request),
+        "redirect request is one policy-bound affected operation",
+      ),
+      check(
+        policy !== undefined &&
+          challengeRequestMatches(request, policy.challenge, policy.destination),
+        "request binds the exact redirect destination to the policy parameter",
+      ),
+      check(
+        observation !== undefined && observation.status >= 300 && observation.status < 400,
+        "response is an HTTP redirect",
+        observation?.status,
+      ),
+      check(
+        observation?.redirected === false,
+        "automatic redirect following was disabled",
+        observation?.redirected,
+      ),
+      check(
+        observation?.redirectLocation === proof.destination,
+        "Location exactly equals the declared redirect destination",
+        observation?.redirectLocation,
+      ),
+    );
+  },
+  "state-transition": (finding, observations, checks, context) => {
+    const policy = policyFor(context.policies, finding.proof.policyId, "state-transition");
+    const before = policy
+      ? selectedAt(observations, finding.proof.beforeRequestIndex, policy.jsonPointer)
+      : { found: false };
+    const after = policy
+      ? selectedAt(observations, finding.proof.afterRequestIndex, policy.jsonPointer)
+      : { found: false };
+    const beforeObservation = observations[finding.proof.beforeRequestIndex];
+    const transitionObservation = observations[finding.proof.transitionRequestIndex];
+    const afterObservation = observations[finding.proof.afterRequestIndex];
+    const transition = finding.reproduction[finding.proof.transitionRequestIndex];
+    checks.push(
+      check(policy?.category === finding.category, "target policy authorizes this state proof"),
+      check(
+        policy !== undefined &&
+          ["POST", "PUT", "PATCH"].includes(policy.method) &&
+          ["GET", "HEAD"].includes(policy.readMethod),
+        "state policy separates an explicit mutating operation from read-only state checks",
+      ),
+      check(
+        context.stateResetAvailable === true,
+        "target provides a fresh-state preparation hook for validation",
+      ),
+      check(
+        finding.reproduction.length === 3 &&
+          finding.proof.beforeRequestIndex === 0 &&
+          finding.proof.transitionRequestIndex === 1 &&
+          finding.proof.afterRequestIndex === 2,
+        "state proof is a closed adjacent read-transition-read reproduction",
+      ),
+      check(
+        policy !== undefined &&
+          transition !== undefined &&
+          (transition.method ?? "GET") === policy.method &&
+          endpointMatchesRequest(policy.endpoint, transition.path) &&
+          affectedOperationMatches(finding, transition),
+        "declared transition request matches the protected operation",
+      ),
+      check(
+        policy !== undefined &&
+          [finding.proof.beforeRequestIndex, finding.proof.afterRequestIndex].every((index) => {
+            const request = finding.reproduction[index];
+            return (
+              request !== undefined &&
+              (request.method ?? "GET") === policy.readMethod &&
+              endpointMatchesRequest(policy.readEndpoint, request.path)
+            );
+          }) &&
+          sameConcreteRequest(
+            finding.reproduction[finding.proof.beforeRequestIndex],
+            finding.reproduction[finding.proof.afterRequestIndex],
+          ),
+        "before and after requests read the same policy-bound resource",
+      ),
+      check(
+        beforeObservation !== undefined &&
+          transitionObservation !== undefined &&
+          afterObservation !== undefined &&
+          isSuccess(beforeObservation.status) &&
+          isSuccess(transitionObservation.status) &&
+          isSuccess(afterObservation.status),
+        "before, transition, and after operations all completed successfully",
+      ),
+      check(
+        before.found && sameValue(before.value, policy?.before),
+        "protected state starts at policy value",
+        before.value,
+      ),
+      check(
+        after.found && sameValue(after.value, policy?.after),
+        "protected state reaches policy value",
+        after.value,
+      ),
+    );
+  },
+  "browser-state-transition": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const policy = policyFor(context.policies, proof.policyId, "browser-state-transition");
+    const before = policy
+      ? selectedAt(observations, proof.beforeRequestIndex, policy.jsonPointer)
+      : { found: false };
+    const after = policy
+      ? selectedAt(observations, proof.afterRequestIndex, policy.jsonPointer)
+      : { found: false };
+    const beforeObservation = observations[proof.beforeRequestIndex];
+    const afterObservation = observations[proof.afterRequestIndex];
+    const artifact = context.artifacts?.browserStateTransitions.find(
+      (candidate) =>
+        candidate.policyId === policy?.id &&
+        candidate.sourceOrigin === policy.sourceOrigin &&
+        candidate.sourcePath === policy.sourcePath &&
+        candidate.targetPath === policy.endpoint &&
+        candidate.method === policy.method,
+    );
+    checks.push(
+      check(policy?.category === finding.category, "target policy authorizes this CSRF proof"),
+      check(
+        context.stateResetAvailable === true,
+        "target provides a fresh-state preparation hook for CSRF validation",
+      ),
+      check(
+        policy !== undefined &&
+          finding.reproduction.length === 2 &&
+          proof.beforeRequestIndex === 0 &&
+          proof.afterRequestIndex === 1 &&
+          proof.pageActorId === policy.pageActorId &&
+          proof.pageActorId !== actorIds.anonymous &&
+          proof.collectorRequestBudget === policy.requestBudget,
+        "CSRF proof is one authenticated policy-page transition between two reads",
+      ),
+      check(
+        policy !== undefined &&
+          finding.method === policy.method &&
+          endpointMatchesRequest(finding.endpoint, policy.endpoint) &&
+          isExactOrigin(policy.sourceOrigin),
+        "affected mutation and exact source origin match the target policy",
+      ),
+      check(
+        policy !== undefined &&
+          [proof.beforeRequestIndex, proof.afterRequestIndex].every((index) => {
+            const request = finding.reproduction[index];
+            return (
+              request !== undefined &&
+              request.actorId === policy.pageActorId &&
+              (request.method ?? "GET") === policy.readMethod &&
+              endpointMatchesRequest(policy.readEndpoint, request.path)
+            );
+          }) &&
+          sameConcreteRequest(
+            finding.reproduction[proof.beforeRequestIndex],
+            finding.reproduction[proof.afterRequestIndex],
+          ),
+        "before and after requests read the same policy-bound state as the browser actor",
+      ),
+      check(
+        beforeObservation !== undefined &&
+          afterObservation !== undefined &&
+          isSuccess(beforeObservation.status) &&
+          isSuccess(afterObservation.status),
+        "before and after state reads completed successfully",
+      ),
+      check(
+        artifact !== undefined && isCompletedStateTransition(artifact.status),
+        "fresh browser artifact records the exact cross-origin mutation",
+        artifact?.status,
+      ),
+      check(
+        before.found && sameValue(before.value, policy?.before),
+        "protected state starts at the policy value",
+        before.value,
+      ),
+      check(
+        after.found && sameValue(after.value, policy?.after),
+        "protected state reaches the policy value",
+        after.value,
+      ),
+    );
+  },
+  "browser-visible-effect": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const policy = policyFor(context.policies, proof.policyId, "browser-effect");
+    const pattern = policy ? safeRegex(policy.markerPattern) : undefined;
+    const artifact = context.artifacts?.browserEffects.find(
+      ({ probeId }) => probeId === proof.probeId,
+    );
+    const request = finding.reproduction[proof.requestIndex];
+    const observation = observations[proof.requestIndex];
+    checks.push(
+      check(policy?.category === finding.category, "target policy authorizes this browser proof"),
+      check(
+        policy !== undefined &&
+          finding.reproduction.length === 1 &&
+          proof.requestIndex === 0 &&
+          request !== undefined &&
+          (request.method ?? "GET") === policy.method &&
+          endpointMatchesRequest(policy.endpoint, request.path) &&
+          affectedOperationMatches(finding, request),
+        "browser payload is one policy-bound affected operation",
+      ),
+      check(
+        policy !== undefined && canonicalJson(proof.challenge) === canonicalJson(policy.challenge),
+        "browser challenge uses the target-owned mutation and executable payload template",
+      ),
+      check(
+        policy !== undefined &&
+          proof.pageActorId === policy.pageActorId &&
+          request?.actorId === policy.submissionActorId,
+        "browser submission and page actors match the target policy",
+      ),
+      check(
+        policy !== undefined && proof.collectorRequestBudget === policy.requestBudget,
+        "browser collector request budget matches the target policy",
+      ),
+      check(
+        canonicalJson(proof.pageChallenge) === canonicalJson(policy?.pageChallenge),
+        "browser navigation challenge matches the target policy",
+      ),
+      check(
+        policy !== undefined &&
+          ((policy.workflow === "stored" &&
+            ["POST", "PUT", "PATCH"].includes(policy.method) &&
+            proof.pageChallenge === undefined) ||
+            (policy.workflow === "dom" &&
+              finding.method === "GET" &&
+              proof.pageChallenge?.location === "fragment" &&
+              proof.pagePath === request?.path &&
+              challengePathMatches(proof.pagePath, proof.pageChallenge, proof.marker) &&
+              !responseContains(observation?.body, proof.marker))),
+        "browser proof follows the policy's closed stored-write or fragment-only DOM workflow",
+      ),
+      check(
+        challengeRequestMatches(
+          finding.reproduction[proof.requestIndex],
+          proof.challenge,
+          proof.marker,
+        ),
+        "issued browser marker is bound to the declared request mutation",
+      ),
+      check(
+        observation !== undefined && isSuccess(observation.status),
+        "browser payload operation completed successfully",
+        observation?.status,
+      ),
+      check(
+        artifact !== undefined &&
+          policy !== undefined &&
+          policy.effect === "dialog" &&
+          proof.kind === policy.effect &&
+          artifact.kind === policy.effect &&
+          browserPolicyPath(policy, proof.marker) === proof.pagePath &&
+          artifact.path === proof.pagePath,
+        "fresh browser artifact matches the policy effect and page",
+      ),
+      check(
+        artifact?.value === proof.marker && pattern !== undefined && pattern.test(proof.marker),
+        "browser effect contains the policy-approved marker",
+        artifact?.value,
+      ),
+    );
+  },
+  "oast-callback": (finding, observations, checks, context) => {
+    const proof = finding.proof;
+    const policy = policyFor(context.policies, proof.policyId, "oast");
+    const artifact = context.artifacts?.oastCallbacks.find(
+      ({ probeId, token }) => probeId === proof.probeId && token === proof.token,
+    );
+    const request = finding.reproduction[proof.requestIndex];
+    checks.push(
+      check(policy?.category === finding.category, "target policy authorizes this OAST proof"),
+      check(
+        policy !== undefined && canonicalJson(proof.challenge) === canonicalJson(policy.challenge),
+        "OAST challenge uses the target-owned request mutation",
+      ),
+      check(
+        policy !== undefined &&
+          request !== undefined &&
+          (request.method ?? "GET") === policy.method &&
+          endpointMatchesRequest(policy.endpoint, request.path) &&
+          affectedOperationMatches(finding, request),
+        "OAST probe request matches the policy and affected operation",
+      ),
+      check(
+        request !== undefined &&
+          proof.callbackUrl.includes(proof.token) &&
+          challengeRequestMatches(request, proof.challenge, proof.callbackUrl),
+        "issued OAST callback URL is bound to the declared request mutation",
+      ),
+      check(
+        artifact !== undefined && artifact.protocol === policy?.protocol,
+        "fresh target callback reached the issued OAST probe",
+        artifact?.path,
+      ),
+    );
+  },
+} satisfies ProofCheckHandlers;
+
+function evaluatePredicateChecks(
+  finding: ProofEvaluationFinding,
+  observations: readonly ValidationObservation[],
+  checks: ProofCheck[],
+  context: ProofEvaluationContext,
+): void {
+  const handler = proofCheckHandlers[finding.proof.type] as ProofCheckHandler<ProofType>;
+  handler(finding, observations, checks, context);
 }
 
 function affectedOperationIsRepresented(

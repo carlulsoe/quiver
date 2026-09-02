@@ -24,6 +24,7 @@ import {
   type RuntimeRequestLease,
   type RuntimeSafetyController,
 } from "./runtime-safety.ts";
+import { containsCredentialHeader, isCredentialHeaderName } from "./security/credentials.ts";
 import {
   actorIds,
   InMemorySessions,
@@ -65,6 +66,8 @@ export interface TargetRequestEvent {
   number: number;
   method: string;
   path: string;
+  /** True for repeatable profile authentication/reset traffic, not proof reproduction. */
+  setup: boolean;
 }
 
 export interface AllowedRequest {
@@ -545,6 +548,7 @@ export class ScopedTarget {
         number: this.#requestsUsed,
         method,
         path: targetPath,
+        setup: includeResponseHeaders || this.#setupAccess,
       });
       const startedAt = performance.now();
       const response = await this.#transport(url, {
@@ -726,6 +730,7 @@ export class ScopedTarget {
       number: this.#requestsUsed,
       method,
       path: targetPath,
+      setup: false,
     });
     return { allowed: true };
   }
@@ -777,7 +782,7 @@ export class ScopedTarget {
 export function hasPotentialAuthenticationHeaders(
   headers: Record<string, string> | undefined,
 ): boolean {
-  return Object.keys(headers ?? {}).some(isCredentialCapableHeader);
+  return containsCredentialHeader(headers);
 }
 
 function hasPotentialScopeOverrideHeaders(headers: Record<string, string> | undefined): boolean {
@@ -794,32 +799,7 @@ function hasPotentialScopeOverrideHeaders(headers: Record<string, string> | unde
 }
 
 export function isCredentialCapableHeader(name: string): boolean {
-  const parts = name
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
-  if (
-    parts.some((part) =>
-      [
-        "auth",
-        "authentication",
-        "authorization",
-        "cookie",
-        "credential",
-        "password",
-        "secret",
-        "session",
-        "signature",
-        "token",
-      ].includes(part),
-    )
-  ) {
-    return true;
-  }
-  return (
-    parts.includes("key") &&
-    parts.some((part) => ["access", "api", "client", "private", "security"].includes(part))
-  );
+  return isCredentialHeaderName(name);
 }
 
 function isStateChanging(method: string): boolean {

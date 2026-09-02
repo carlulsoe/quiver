@@ -1,6 +1,13 @@
 import { normalizeEndpoint } from "./endpoint.ts";
 import type { RestMethod } from "./scoped-target.ts";
 import type { CoordinatorSnapshot } from "./adaptive-coordinator.ts";
+import {
+  aggregateMissionUsage,
+  emptyCampaignHistory,
+  type CampaignHistory,
+  type MissionUsage,
+  type RunEvent,
+} from "./campaign-history.ts";
 import type { ActorId } from "./sessions.ts";
 
 export { normalizeEndpoint } from "./endpoint.ts";
@@ -344,6 +351,8 @@ export interface CampaignJob {
   impactLevel: ImpactLevel;
   status: CampaignJobStatus;
   attempts: number;
+  /** Persisted before the first state-changing proof request, excluding repeatable setup. */
+  mutationStarted: boolean;
   error?: string;
 }
 
@@ -355,8 +364,18 @@ export interface CampaignRuntimeState {
   jobs: CampaignJob[];
 }
 
+export interface CampaignIdentity {
+  schemaVersion: 2;
+  profileId: string;
+  configurationFingerprint: string;
+  /** False when callback-owned closed-over configuration has no explicit binding. */
+  resumable: boolean;
+}
+
 export interface CampaignState {
   target: string;
+  /** Binds durable state to the profile and safety-relevant configuration that created it. */
+  identity?: CampaignIdentity;
   phase: "starting" | "exploring" | "validating" | "complete" | "failed";
   budget: CampaignBudget;
   requests: { total: number; exploration: number; validation: number };
@@ -370,6 +389,7 @@ export interface CampaignState {
   exploitChains: ExploitChain[];
   exploitChainValidations: ExploitChainValidation[];
   runtime: CampaignRuntimeState;
+  history: CampaignHistory;
   error?: string;
 }
 
@@ -401,9 +421,14 @@ export type CampaignAction =
   | { type: "halt"; reason: string }
   | { type: "recover" }
   | { type: "job-started"; id: string }
+  | { type: "job-mutation-started"; id: string }
   | { type: "job-failed"; id: string; error: string; retryable: boolean }
   | { type: "runtime-success" }
   | { type: "runtime-failure"; disruptive?: boolean }
+  | { type: "run-event"; event: RunEvent }
+  | { type: "mission-started"; mission: MissionUsage }
+  | { type: "mission-updated"; index: number; mission: MissionUsage }
+  | { type: "history-elapsed"; durationMs: number }
   | { type: "failed"; error: string };
 
 const nextPhases: Record<CampaignState["phase"], CampaignState["phase"][]> = {
@@ -418,12 +443,14 @@ export function createCampaignState(
   target: string,
   budget: CampaignBudget,
   explorerCount = 2,
+  identity?: CampaignIdentity,
 ): CampaignState {
   if (budget.exploration + budget.validation !== budget.total) {
     throw new Error("Exploration and validation budgets must equal the total budget");
   }
   return {
     target,
+    ...(identity ? { identity } : {}),
     phase: "starting",
     budget,
     requests: { total: 0, exploration: 0, validation: 0 },
@@ -449,12 +476,47 @@ export function createCampaignState(
       disruptiveResponses: 0,
       jobs: [],
     },
+    history: emptyCampaignHistory(),
   };
 }
 
 export function reduceCampaign(state: CampaignState, action: CampaignAction): CampaignState {
   state = withRuntimeState(state);
   switch (action.type) {
+    case "run-event":
+      return {
+        ...state,
+        history: {
+          ...state.history,
+          durationMs: Math.max(state.history.durationMs, action.event.elapsedMs),
+          events: [...state.history.events, structuredClone(action.event)],
+        },
+      };
+    case "mission-started": {
+      const missionUsage = [...state.history.missionUsage, structuredClone(action.mission)];
+      return {
+        ...state,
+        history: { ...state.history, missionUsage, usage: aggregateMissionUsage(missionUsage) },
+      };
+    }
+    case "mission-updated": {
+      if (!state.history.missionUsage[action.index]) return state;
+      const missionUsage = state.history.missionUsage.map((mission, index) =>
+        index === action.index ? structuredClone(action.mission) : mission,
+      );
+      return {
+        ...state,
+        history: { ...state.history, missionUsage, usage: aggregateMissionUsage(missionUsage) },
+      };
+    }
+    case "history-elapsed":
+      return {
+        ...state,
+        history: {
+          ...state.history,
+          durationMs: Math.max(state.history.durationMs, action.durationMs),
+        },
+      };
     case "pause":
       return state.runtime.control === "running"
         ? {
@@ -487,7 +549,7 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
       let interruptedStateChange = false;
       const jobs = state.runtime.jobs.map((job): CampaignJob => {
         if (job.status !== "running") return job;
-        if (job.impactLevel === "state-change") {
+        if (job.impactLevel === "state-change" && job.mutationStarted) {
           interruptedStateChange = true;
           return {
             ...job,
@@ -495,7 +557,7 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
             error: "Process exited while a state-changing proof attempt was in flight",
           };
         }
-        return { ...job, status: "queued", error: undefined };
+        return { ...job, status: "queued", mutationStarted: false, error: undefined };
       });
       return {
         ...state,
@@ -524,7 +586,25 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
             job.id === action.id &&
             (job.status === "queued" ||
               (job.status === "failed" && job.impactLevel !== "state-change"))
-              ? { ...job, status: "running", attempts: job.attempts + 1, error: undefined }
+              ? {
+                  ...job,
+                  status: "running",
+                  attempts: job.attempts + 1,
+                  mutationStarted: false,
+                  error: undefined,
+                }
+              : job,
+          ),
+        },
+      };
+    case "job-mutation-started":
+      return {
+        ...state,
+        runtime: {
+          ...state.runtime,
+          jobs: state.runtime.jobs.map((job) =>
+            job.id === action.id && job.status === "running" && job.impactLevel === "state-change"
+              ? { ...job, mutationStarted: true }
               : job,
           ),
         },
@@ -533,13 +613,14 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
       let interruptedStateChange = false;
       const jobs = state.runtime.jobs.map((job): CampaignJob => {
         if (job.id !== action.id || job.status !== "running") return job;
-        if (job.impactLevel === "state-change") {
+        if (job.impactLevel === "state-change" && job.mutationStarted) {
           interruptedStateChange = true;
           return { ...job, status: "interrupted", error: action.error };
         }
         return {
           ...job,
           status: action.retryable ? "queued" : "failed",
+          mutationStarted: false,
           error: action.error,
         };
       });
@@ -709,38 +790,47 @@ export function exploitChainJobId(fingerprint: string): string {
 
 /** Adds runtime defaults when loading checkpoints written before durable execution existed. */
 export function withRuntimeState(state: CampaignState): CampaignState {
-  if (state.runtime) return state;
+  const runtime = state.runtime
+    ? {
+        ...state.runtime,
+        jobs: state.runtime.jobs.map((job) => ({
+          ...job,
+          mutationStarted: job.mutationStarted ?? false,
+        })),
+      }
+    : {
+        control: "running" as const,
+        consecutiveFailures: 0,
+        disruptiveResponses: 0,
+        jobs: [
+          ...state.findings
+            .filter(
+              (finding) =>
+                !state.validations.some(
+                  (validation) => validation.fingerprint === finding.fingerprint,
+                ),
+            )
+            .map((finding) =>
+              campaignJob(
+                "validation",
+                finding.fingerprint,
+                finding.impactLevel ?? deriveImpactLevel(finding),
+              ),
+            ),
+          ...state.exploitChains
+            .filter(
+              (chain) =>
+                !state.exploitChainValidations.some(
+                  (validation) => validation.fingerprint === chain.fingerprint,
+                ),
+            )
+            .map((chain) => campaignJob("exploit-chain", chain.fingerprint, chain.impactLevel)),
+        ],
+      };
   return {
     ...state,
-    runtime: {
-      control: "running",
-      consecutiveFailures: 0,
-      disruptiveResponses: 0,
-      jobs: [
-        ...state.findings
-          .filter(
-            (finding) =>
-              !state.validations.some(
-                (validation) => validation.fingerprint === finding.fingerprint,
-              ),
-          )
-          .map((finding) =>
-            campaignJob(
-              "validation",
-              finding.fingerprint,
-              finding.impactLevel ?? deriveImpactLevel(finding),
-            ),
-          ),
-        ...state.exploitChains
-          .filter(
-            (chain) =>
-              !state.exploitChainValidations.some(
-                (validation) => validation.fingerprint === chain.fingerprint,
-              ),
-          )
-          .map((chain) => campaignJob("exploit-chain", chain.fingerprint, chain.impactLevel)),
-      ],
-    },
+    runtime,
+    history: state.history ?? emptyCampaignHistory(),
   };
 }
 
@@ -756,6 +846,7 @@ function campaignJob(
     impactLevel,
     status: "queued",
     attempts: 0,
+    mutationStarted: false,
   };
 }
 
@@ -763,7 +854,9 @@ function completeJob(runtime: CampaignRuntimeState, id: string): CampaignRuntime
   return {
     ...runtime,
     jobs: runtime.jobs.map((job) =>
-      job.id === id ? { ...job, status: "completed", error: undefined } : job,
+      job.id === id
+        ? { ...job, status: "completed", mutationStarted: false, error: undefined }
+        : job,
     ),
   };
 }

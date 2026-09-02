@@ -17,7 +17,7 @@ import {
   type ProofResult,
 } from "./state.ts";
 import type { TargetProfile } from "./target-profile.ts";
-import type { BoundedToolAdapters } from "./tool-adapters.ts";
+import { NON_REST_AGENT_TOOLS, type BoundedToolAdapters } from "./tool-adapters.ts";
 import { actorIds } from "./sessions.ts";
 import {
   proofPredicateSchema,
@@ -74,7 +74,7 @@ function explorationTools(
   dispatch: (action: CampaignAction) => void,
 ) {
   const mapAttackSurface = defineTool({
-    name: "map_attack_surface",
+    name: NON_REST_AGENT_TOOLS.mapAttackSurface,
     description:
       "Map browser-observed requests and supplied OpenAPI operations into a REST attack surface. Use this first.",
     async run() {
@@ -222,7 +222,7 @@ function explorationTools(
     },
   });
   const createOastProbe = defineTool({
-    name: "create_oast_probe",
+    name: NON_REST_AGENT_TOOLS.createOastProbe,
     description: "Issue a campaign-local loopback HTTP callback URL with an unguessable token.",
     run() {
       const { probeId, token, url } = adapters.oast.issue();
@@ -230,7 +230,7 @@ function explorationTools(
     },
   });
   const createBrowserProbe = defineTool({
-    name: "create_browser_probe",
+    name: NON_REST_AGENT_TOOLS.createBrowserProbe,
     description: "Issue an unguessable marker for one browser-visible-effect proof attempt.",
     run() {
       const { probeId, marker } = adapters.browser.issue();
@@ -238,7 +238,7 @@ function explorationTools(
     },
   });
   const pollOastProbe = defineTool({
-    name: "poll_oast_probe",
+    name: NON_REST_AGENT_TOOLS.pollOastProbe,
     description: "Wait briefly for a callback to one issued OAST probe.",
     input: v.object({ probeId: v.string(), token: v.string() }),
     async run({ data }) {
@@ -261,7 +261,7 @@ function explorationTools(
     },
   });
   const observeBrowserEffect = defineTool({
-    name: "observe_browser_effect",
+    name: NON_REST_AGENT_TOOLS.observeBrowserEffect,
     description:
       "Open one same-origin page with a target-policy-owned request cap and record an issued marker only when it is visibly observed.",
     input: v.object({
@@ -286,28 +286,12 @@ function explorationTools(
     },
   });
   const observeBrowserStateTransition = defineTool({
-    name: "observe_browser_state_transition",
+    name: NON_REST_AGENT_TOOLS.observeBrowserStateTransition,
     description:
       "Run one policy-owned cross-origin browser page with victim cookies and record only its exact state-changing request.",
     input: v.object({ policyId: v.string() }),
     async run({ data }) {
-      const policy = profile.proofPolicies?.find(
-        (candidate) =>
-          candidate.kind === "browser-state-transition" && candidate.id === data.policyId,
-      );
-      if (policy?.kind !== "browser-state-transition") {
-        throw new Error("Unknown browser-state-transition proof policy");
-      }
-      const evidence = await target.observeBrowserStateTransition({
-        policyId: policy.id,
-        sourceOrigin: policy.sourceOrigin,
-        sourcePath: policy.sourcePath,
-        targetPath: policy.endpoint,
-        method: policy.method,
-        actorId: policy.pageActorId,
-        requestBudget: policy.requestBudget,
-      });
-      if (evidence) artifacts.recordBrowserStateTransition(evidence);
+      const evidence = await adapters.browser.observeStateTransition(data);
       return {
         output: {
           observed: evidence !== undefined,

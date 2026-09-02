@@ -143,6 +143,7 @@ describe("campaign store", () => {
     const stateChangingStore = campaignWithFinding(stateChangingFinding());
     const stateChangingId = validationJobId("business-logic:POST:/orders/{id}");
     stateChangingStore.apply({ type: "job-started", id: stateChangingId });
+    stateChangingStore.apply({ type: "job-mutation-started", id: stateChangingId });
     stateChangingStore.apply({ type: "recover" });
     expect(stateChangingStore.checkpoint().runtime).toMatchObject({
       control: "halted",
@@ -171,6 +172,7 @@ describe("campaign store", () => {
     const stateChangingStore = campaignWithFinding(stateChangingFinding());
     const stateChangingId = validationJobId("business-logic:POST:/orders/{id}");
     stateChangingStore.apply({ type: "job-started", id: stateChangingId });
+    stateChangingStore.apply({ type: "job-mutation-started", id: stateChangingId });
     stateChangingStore.apply({
       type: "job-failed",
       id: stateChangingId,
@@ -180,6 +182,24 @@ describe("campaign store", () => {
     expect(stateChangingStore.checkpoint().runtime).toMatchObject({
       control: "halted",
       jobs: [expect.objectContaining({ status: "interrupted", attempts: 1 })],
+    });
+  });
+
+  it("does not quarantine a state-changing job that failed before target mutation began", () => {
+    const store = campaignWithFinding(stateChangingFinding());
+    const id = validationJobId("business-logic:POST:/orders/{id}");
+
+    store.apply({ type: "job-started", id });
+    store.apply({
+      type: "job-failed",
+      id,
+      error: "model unavailable before tool use",
+      retryable: false,
+    });
+
+    expect(store.checkpoint().runtime).toMatchObject({
+      control: "running",
+      jobs: [expect.objectContaining({ status: "failed", attempts: 1 })],
     });
   });
 

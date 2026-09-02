@@ -1,8 +1,9 @@
 import { dirname, extname, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import type { CampaignRun, RunEvent } from "./runner.ts";
+import { isCredentialHeaderName } from "./security/credentials.ts";
+import { redactCredentials } from "./security/redaction.ts";
 import { actorIds } from "./sessions.ts";
-import { isCredentialCapableHeader } from "./scoped-target.ts";
 import {
   campaignOperationCoverage,
   type ExploitChain,
@@ -113,83 +114,6 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
     exploitChains: redactCredentials(exploitChains) as ReportedExploitChain[],
     events: redactCredentials(run.events) as RunEvent[],
   };
-}
-
-function redactCredentials(value: unknown, insideHeaders = false): unknown {
-  if (Array.isArray(value)) return value.map((item) => redactCredentials(item));
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([name, entry]) => [
-      name,
-      insideHeaders && isCredentialCapableHeader(name)
-        ? "[REDACTED]"
-        : isCredentialField(name)
-          ? "[REDACTED]"
-          : name.toLowerCase() === "body" && typeof entry === "string"
-            ? redactCredentialBody(entry)
-            : ["endpoint", "path", "target", "url"].includes(name.toLowerCase()) &&
-                typeof entry === "string"
-              ? redactCredentialUrl(entry)
-              : redactCredentials(entry, name.toLowerCase() === "headers"),
-    ]),
-  );
-}
-
-function redactCredentialUrl(value: string): string {
-  try {
-    const absolute = /^[a-z][a-z\d+.-]*:/i.test(value);
-    const url = new URL(value, "http://redaction.invalid");
-    if (url.username || url.password) {
-      url.username = "REDACTED";
-      url.password = "REDACTED";
-    }
-    for (const name of new Set(url.searchParams.keys())) {
-      if (isCredentialField(name)) url.searchParams.set(name, "[REDACTED]");
-    }
-    return absolute ? url.href : `${url.pathname}${url.search}${url.hash}`;
-  } catch {
-    return "[REDACTED]";
-  }
-}
-
-function redactCredentialBody(body: string): string {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    return parsed !== null && typeof parsed === "object"
-      ? JSON.stringify(redactCredentials(parsed))
-      : "[REDACTED]";
-  } catch {
-    // Unsupported body formats cannot be sanitized reliably enough for persistent reports.
-    return "[REDACTED]";
-  }
-}
-
-function isCredentialField(name: string): boolean {
-  const normalized = name
-    .replaceAll(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]+/g, "_");
-  const parts = normalized.split("_").filter(Boolean);
-  if (
-    [
-      "authorization",
-      "cookie",
-      "credential",
-      "password",
-      "passwd",
-      "passphrase",
-      "secret",
-      "signature",
-      "token",
-    ].some((marker) => normalized.includes(marker))
-  ) {
-    return true;
-  }
-  if (["key", "cookie", "session", "otp"].some((marker) => parts.includes(marker))) return true;
-  return (
-    parts.includes("pin") ||
-    ((parts.includes("verification") || parts.includes("mfa")) && parts.includes("code"))
-  );
 }
 
 export function renderMarkdownReport(report: RunReport): string {
@@ -347,7 +271,7 @@ export function renderMarkdownReport(report: RunReport): string {
         const method = request.method ?? "GET";
         const headers = Object.entries(request.headers ?? {})
           .flatMap(([name, value]) => {
-            if (!isCredentialCapableHeader(name)) {
+            if (!isCredentialHeaderName(name)) {
               return [` --header ${shellQuote(`${name}: ${value}`)}`];
             }
             if (request.actorId !== actorIds.anonymous && name.toLowerCase() === "authorization")

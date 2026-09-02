@@ -392,6 +392,32 @@ describe("deterministic finding proof", () => {
     ).toBe(false);
   });
 
+  it.each(["broken-object-authorization", "broken-function-authorization"] as const)(
+    "does not treat a public anonymous GET as %s",
+    (category) => {
+      const publicEndpointFinding = finding({
+        category,
+        endpoint: "/catalog/7",
+        reproduction: [{ path: "/catalog/7", actorId: actorIds.anonymous }],
+        proof: {
+          type: "unauthenticated-success",
+          requestIndex: 0,
+          evidencePointers: ["/item/id"],
+        },
+      });
+
+      const result = evaluateProof(publicEndpointFinding, [
+        observation("/catalog/7", { item: { id: 7 } }, { actorId: actorIds.anonymous }),
+      ]);
+
+      expect(result.passed).toBe(false);
+      expect(result.checks).toContainEqual({
+        passed: false,
+        description: `predicate unauthenticated-success is compatible with ${category}`,
+      });
+    },
+  );
+
   it("requires a different subject for cross-principal data exposure", () => {
     const exposed = finding({
       category: "excessive-data-exposure",

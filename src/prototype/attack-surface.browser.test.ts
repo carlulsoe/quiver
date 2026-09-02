@@ -13,9 +13,11 @@ describe("browser stateful discovery", () => {
     let blockedWorkflowRequests = 0;
     let blockedVisitOnlyPosts = 0;
     let primaryAuthorization: string | null = null;
+    let primaryApiKey: string | null = null;
     let primarySocketAuthorization: string | null = null;
     let primaryCookie: string | null = null;
     let secondaryAuthorization: string | null = null;
+    let secondaryApiKey: string | null = null;
     let secondaryCookie: string | null = null;
     let secondaryStoredValue: string | null = null;
     let secondaryVisibleCookie: string | null = null;
@@ -45,6 +47,7 @@ describe("browser stateful discovery", () => {
         }
         if (url.pathname === "/visitor") {
           secondaryAuthorization = request.headers.get("authorization");
+          secondaryApiKey = request.headers.get("xapikey");
           secondaryCookie = request.headers.get("cookie");
           return html(`
             <script>
@@ -83,6 +86,7 @@ describe("browser stateful discovery", () => {
         }
         if (url.pathname === "/") {
           primaryAuthorization = request.headers.get("authorization");
+          primaryApiKey = request.headers.get("xapikey");
           primaryCookie = request.headers.get("cookie");
           return html(`
             <script>
@@ -194,7 +198,10 @@ describe("browser stateful discovery", () => {
       startPath: "/",
       maxDocuments: 2,
       timeoutMs: 3_000,
-      authenticationHeaders: { authorization: "Bearer primary-session" },
+      authenticationHeaders: {
+        authorization: "Bearer primary-session",
+        xApiKey: "primary-api-key",
+      },
       localStorage: { "primary-secret": "must-not-cross-origins" },
       cookies: [{ name: "session", value: "primary-cookie", url: origin }],
       origins: [{ origin: `http://127.0.0.1:${secondary.port}`, scope: "visit-only" }],
@@ -215,9 +222,11 @@ describe("browser stateful discovery", () => {
     expect(blockedWorkflowRequests).toBe(0);
     expect(blockedVisitOnlyPosts).toBe(0);
     expect(primaryAuthorization).toBe("Bearer primary-session");
+    expect(primaryApiKey).toBe("primary-api-key");
     expect(primarySocketAuthorization).toBe("Bearer primary-session");
     expect(primaryCookie).toBe("session=primary-cookie");
     expect(secondaryAuthorization).toBeNull();
+    expect(secondaryApiKey).toBeNull();
     expect(secondaryCookie ?? "").not.toContain("primary-cookie");
     expect(secondaryStoredValue).toBe("null");
     expect(secondaryVisibleCookie).toBe("");

@@ -262,12 +262,18 @@ For resumable runs, `--campaign-store <path>` selects an append-only JSONL store
 and `--campaign-id <id>` selects the stable campaign checkpoint. Every action is
 flushed before use and periodic full-state checkpoints are checksum verified.
 The JSONL adapter uses the OS-released `flock` command to enforce one writer
-across processes.
-Read-only validation jobs interrupted by a crash return to the queue; an in-flight
-state-changing proof is quarantined and automatically halts the campaign for
-manual target review. Pause, resume, cancellation, and automatic halts are durable
-campaign actions. A shared request scheduler enforces profile testing windows,
-RPS and concurrency limits, and stops after repeated transport failures or
+across processes. A checkpoint is bound to its target profile and safety-relevant
+campaign configuration; Quiver rejects a resume when either changes. Event history,
+elapsed duration, mission-level model attempts, token usage, and cost also survive
+process restarts. Custom profiles whose callbacks close over runtime values must set
+`callbackConfigurationFingerprint` to a non-secret digest that changes with those values;
+without it, Quiver permits a fresh run but rejects durable resume.
+Read-only validation jobs interrupted by a crash return to the queue. A state-changing
+job is quarantined only after its first mutating target request begins; a provider failure
+before that boundary remains safely retryable. An interrupted mutation automatically
+halts the campaign for manual target review. Pause, resume, cancellation, and automatic
+halts are durable campaign actions. A shared request scheduler enforces profile testing
+windows, RPS and concurrency limits, and stops after repeated transport failures or
 disruptive responses such as rate limiting and server unavailability.
 For example, two different vehicle UUIDs affected by the same object-level
 authorization flaw become one finding. The validator replays every unique
@@ -278,7 +284,9 @@ findings explicitly unvalidated.
 
 Model selection is capability-gated rather than a single campaign-wide default. Reports retain the
 aggregate token/cost total for evaluation compatibility and also record requirements, attempted
-models, tokens, and approximate cost for every explorer, specialist, and validation mission.
+models, tokens, and approximate cost for every explorer, specialist, and validation mission. An
+availability failure may advance to the next routed model before the mission invokes a tool; after
+the first tool invocation, Quiver never replays that mission automatically.
 
 Current hard boundaries:
 
@@ -405,7 +413,7 @@ server also publishes the active seed atomically to `.prototype/held-out-seed`
 so a separately started campaign can construct the hidden canary verifier. The
 generated Markdown report includes severity, CWE, impact, mitigation, raw replay
 responses, predicate checks, copyable requests, route coverage, model cost, and
-an anchored chronological trace. Reports use schema version 8 and include
+an anchored chronological trace. Reports use schema version 9 and include
 impact levels, collector artifacts, and exploit-chain outcomes.
 
 ## Developer loop

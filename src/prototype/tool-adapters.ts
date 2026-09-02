@@ -1,16 +1,27 @@
 import type { AttackSurfaceMap } from "./attack-surface.ts";
 import type { ProofArtifactStore } from "./proof-artifacts.ts";
-import type { BrowserEffectRequest, ScopedTarget } from "./scoped-target.ts";
-import type { BrowserEffectEvidence, OastCallbackEvidence } from "./state.ts";
+import type {
+  BrowserEffectRequest,
+  BrowserStateTransitionRequest,
+  ScopedTarget,
+} from "./scoped-target.ts";
+import type {
+  BrowserEffectEvidence,
+  BrowserStateTransitionEvidence,
+  OastCallbackEvidence,
+} from "./state.ts";
 import { browserPolicyPath, type TargetProfile } from "./target-profile.ts";
 
-export const NON_REST_AGENT_TOOL_NAMES = [
-  "map_attack_surface",
-  "create_oast_probe",
-  "poll_oast_probe",
-  "create_browser_probe",
-  "observe_browser_effect",
-] as const;
+export const NON_REST_AGENT_TOOLS = Object.freeze({
+  mapAttackSurface: "map_attack_surface",
+  createOastProbe: "create_oast_probe",
+  pollOastProbe: "poll_oast_probe",
+  createBrowserProbe: "create_browser_probe",
+  observeBrowserEffect: "observe_browser_effect",
+  observeBrowserStateTransition: "observe_browser_state_transition",
+} as const);
+
+export const NON_REST_AGENT_TOOL_NAMES = Object.freeze(Object.values(NON_REST_AGENT_TOOLS));
 
 export interface OastProbeOutput {
   probeId: string;
@@ -37,11 +48,20 @@ export interface BoundedToolAdapters {
       policyId: string;
       probeId: string;
     }): Promise<BrowserEffectEvidence | undefined>;
+    observeStateTransition(input: {
+      policyId: string;
+    }): Promise<BrowserStateTransitionEvidence | undefined>;
   };
 }
 
 interface BoundedToolAdapterOptions {
-  target: Pick<ScopedTarget, "assertImpactLevel" | "mapAttackSurface" | "observeBrowserEffect">;
+  target: Pick<
+    ScopedTarget,
+    | "assertImpactLevel"
+    | "mapAttackSurface"
+    | "observeBrowserEffect"
+    | "observeBrowserStateTransition"
+  >;
   profile: TargetProfile;
   artifacts: Pick<
     ProofArtifactStore,
@@ -50,6 +70,7 @@ interface BoundedToolAdapterOptions {
     | "issueBrowserProbe"
     | "browserProbe"
     | "recordBrowserEffect"
+    | "recordBrowserStateTransition"
   >;
 }
 
@@ -99,6 +120,27 @@ export function createBoundedToolAdapters({
         };
         const evidence = await target.observeBrowserEffect(request);
         if (evidence) artifacts.recordBrowserEffect(evidence);
+        return evidence;
+      },
+      async observeStateTransition(input: { policyId: string }) {
+        const policy = profile.proofPolicies?.find(
+          (candidate) =>
+            candidate.kind === "browser-state-transition" && candidate.id === input.policyId,
+        );
+        if (policy?.kind !== "browser-state-transition") {
+          throw new Error("Unknown browser-state-transition proof policy");
+        }
+        const request: BrowserStateTransitionRequest = {
+          policyId: policy.id,
+          sourceOrigin: policy.sourceOrigin,
+          sourcePath: policy.sourcePath,
+          targetPath: policy.endpoint,
+          method: policy.method,
+          actorId: policy.pageActorId,
+          requestBudget: policy.requestBudget,
+        };
+        const evidence = await target.observeBrowserStateTransition(request);
+        if (evidence) artifacts.recordBrowserStateTransition(evidence);
         return evidence;
       },
     }),

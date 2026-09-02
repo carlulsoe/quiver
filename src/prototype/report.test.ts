@@ -150,6 +150,7 @@ describe("campaign report", () => {
               accept: "application/json",
               authorization: "Bearer report-secret",
               "x-api-key": "report-secret",
+              xApiKey: "camel-secret",
               "`id`-auth": "report-secret",
             },
             body: JSON.stringify({
@@ -269,8 +270,13 @@ describe("campaign report", () => {
           elapsedMs: 10,
           type: "tool-call",
           data: {
+            author: "Ada",
             input: {
-              headers: { "content-type": "application/json", authorization: "secret" },
+              headers: {
+                "content-type": "application/json",
+                authorization: "secret",
+                xapikey: "collapsed-secret",
+              },
               body: "query=vehicle-2&access_token=event-secret",
             },
           },
@@ -301,6 +307,7 @@ describe("campaign report", () => {
     expect(markdown).toContain(`--header 'Authorization: Bearer '"$QUIVER_TOKEN_SECOND_USER"`);
     expect(markdown).toContain("--header 'accept: application/json'");
     expect(markdown).toContain(`--header 'x-api-key: '"$QUIVER_HEADER_X_API_KEY"`);
+    expect(markdown).toContain(`--header 'xApiKey: '"$QUIVER_HEADER_XAPIKEY"`);
     expect(markdown).toContain(`--header '\`id\`-auth: '"$QUIVER_HEADER_ID_AUTH"`);
     expect(markdown).toContain('--data-raw "$QUIVER_REQUEST_BODY"');
     const customHeaderCommand = markdown
@@ -310,6 +317,9 @@ describe("campaign report", () => {
     expect(markdown).not.toContain("authorization: [REDACTED]");
     expect(JSON.stringify(report)).not.toContain("report-secret");
     expect(JSON.stringify(report)).not.toContain("body-secret");
+    expect(JSON.stringify(report)).not.toContain("camel-secret");
+    expect(JSON.stringify(report)).not.toContain("collapsed-secret");
+    expect(JSON.stringify(report)).toContain('"author":"Ada"');
     expect(JSON.stringify(report)).not.toContain("body-token");
     expect(JSON.stringify(report)).not.toContain("body-key");
     expect(JSON.stringify(report)).not.toContain("event-secret");

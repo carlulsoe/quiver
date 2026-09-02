@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { actorIds } from "../prototype/sessions.ts";
 import { createTargetProfile } from "../prototype/target-profile.ts";
 import type { TargetManifest } from "../prototype/target-manifest.ts";
@@ -79,6 +80,13 @@ export const heldOutProfile = createHeldOutProfile(configuredSeed);
 export function createHeldOutProfile(seed: string | undefined) {
   const canary = seed ? heldOutCanary(seed) : undefined;
   return createTargetProfile(heldOutManifest, {
+    ...(canary
+      ? {
+          callbackConfigurationFingerprint: createHash("sha256")
+            .update(`held-out-canary:${canary}`)
+            .digest("hex"),
+        }
+      : {}),
     proofPolicies: canary
       ? [
           {

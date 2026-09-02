@@ -185,6 +185,11 @@ export interface TargetProfile {
   /** Declarative source used by bundled and external target adapters. */
   manifest?: TargetManifest;
   protectedOperations?: ProtectedOperationManifest[];
+  /**
+   * Opaque, non-secret binding for values closed over by profile callbacks. Change it whenever
+   * authentication, reset, or proof-verification callback configuration changes.
+   */
+  callbackConfigurationFingerprint?: string;
 }
 
 export type TargetProfileExtensions = Pick<
@@ -194,6 +199,7 @@ export type TargetProfileExtensions = Pick<
   | "prepareValidation"
   | "validationResetRequestBudget"
   | "runtimeSafety"
+  | "callbackConfigurationFingerprint"
 >;
 
 /** Builds the runtime profile API from a declarative onboarding manifest. */
@@ -208,6 +214,10 @@ export function createTargetProfile(
     ...setupRequests,
     ...(manifest.scope.protectedOperations ?? []).map(({ method, path }) => ({ method, path })),
   ]);
+  const extensionCallbacks = containsFunction(extensions);
+  const callbackConfigurationFingerprint =
+    extensions.callbackConfigurationFingerprint ??
+    (extensionCallbacks ? undefined : `manifest-derived:${manifest.schemaVersion}`);
   return {
     id: manifest.id,
     displayName: manifest.displayName,
@@ -231,6 +241,7 @@ export function createTargetProfile(
       : {}),
     manifest,
     ...extensions,
+    ...(callbackConfigurationFingerprint ? { callbackConfigurationFingerprint } : {}),
   };
 }
 
@@ -251,91 +262,78 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
   ) {
     throw new Error("Profiles with prepareValidation must declare validationResetRequestBudget");
   }
+  if (
+    profile.callbackConfigurationFingerprint !== undefined &&
+    profile.callbackConfigurationFingerprint.trim().length === 0
+  ) {
+    throw new Error("callbackConfigurationFingerprint must not be empty");
+  }
   for (const policy of profile.proofPolicies ?? []) {
+    validateProofPolicy(policy, profile);
+  }
+}
+
+function containsFunction(value: unknown, seen = new Set<object>()): boolean {
+  if (typeof value === "function") return true;
+  if (!value || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  return Array.isArray(value)
+    ? value.some((entry) => containsFunction(entry, seen))
+    : Object.values(value).some((entry) => containsFunction(entry, seen));
+}
+
+type ProofPolicyValidator<K extends ProofPolicy["kind"]> = (
+  policy: Extract<ProofPolicy, { kind: K }>,
+  profile: TargetProfile,
+) => void;
+
+type ProofPolicyValidators = {
+  [K in ProofPolicy["kind"]]: ProofPolicyValidator<K>;
+};
+
+const proofPolicyValidators = {
+  canary: () => undefined,
+  "state-transition": (policy) => {
     if (
-      policy.kind === "browser-effect" &&
-      (!Number.isInteger(policy.requestBudget) ||
-        policy.requestBudget < 1 ||
-        policy.requestBudget > 20)
+      !["POST", "PUT", "PATCH"].includes(policy.method) ||
+      !["GET", "HEAD"].includes(policy.readMethod)
+    ) {
+      throw new Error(
+        `State-transition policy ${policy.id} must use POST/PUT/PATCH with a GET/HEAD state read`,
+      );
+    }
+  },
+  "browser-effect": (policy) => {
+    if (
+      !Number.isInteger(policy.requestBudget) ||
+      policy.requestBudget < 1 ||
+      policy.requestBudget > 20
     ) {
       throw new Error(`Browser-effect policy ${policy.id} requestBudget must be from 1 to 20`);
     }
-    if (policy.kind === "oast" && policy.challenge.template.split("{{challenge}}").length !== 2) {
-      throw new Error(`OAST policy ${policy.id} challenge must substitute the callback once`);
-    }
     if (
-      policy.kind === "redirect" &&
-      (policy.challenge.template.split("{{challenge}}").length !== 2 ||
-        !isAbsoluteHttpUrl(policy.destination))
-    ) {
-      throw new Error(
-        `Redirect policy ${policy.id} must bind one absolute HTTP(S) destination challenge`,
-      );
-    }
-    if (
-      policy.kind === "file-content" &&
-      (policy.request.value.length === 0 ||
-        (policy.request.location === "json-body" &&
-          !["POST", "PUT", "PATCH"].includes(policy.method)) ||
-        safePolicyRegex(policy.contentTypePattern) === undefined)
-    ) {
-      throw new Error(
-        `File-content policy ${policy.id} must declare a valid request and media type`,
-      );
-    }
-    if (
-      policy.kind === "sql-semantic-differential" &&
-      (policy.mutation.controlValue === policy.mutation.probeValue ||
-        Object.is(policy.response.controlValue, policy.response.probeValue))
-    ) {
-      throw new Error(
-        `SQL semantic-differential policy ${policy.id} must use distinct request and response values`,
-      );
-    }
-    if (
-      policy.kind === "command-execution-challenge" &&
-      (policy.challenge.template.split("{{challenge}}").length !== 2 ||
-        !Number.isSafeInteger(policy.multiplier) ||
-        policy.multiplier === 0 ||
-        !Number.isSafeInteger(policy.addend) ||
-        !Number.isSafeInteger(policy.challengeMinimum) ||
-        !Number.isSafeInteger(policy.challengeMaximum) ||
-        policy.challengeMinimum < 1 ||
-        policy.challengeMinimum >= policy.challengeMaximum ||
-        !Number.isSafeInteger(policy.challengeMinimum * policy.multiplier + policy.addend) ||
-        !Number.isSafeInteger(policy.challengeMaximum * policy.multiplier + policy.addend) ||
-        policy.outputPrefix.length === 0)
-    ) {
-      throw new Error(
-        `Command-execution policy ${policy.id} must declare one bounded arithmetic challenge`,
-      );
-    }
-    if (
-      policy.kind === "browser-effect" &&
-      (policy.challenge.template !== policy.payloadTemplate ||
-        policy.challenge.template.split("{{challenge}}").length !== 2)
+      policy.challenge.template !== policy.payloadTemplate ||
+      policy.challenge.template.split("{{challenge}}").length !== 2
     ) {
       throw new Error(
         `Browser-effect policy ${policy.id} challenge must use its payloadTemplate once`,
       );
     }
     if (
-      policy.kind === "browser-effect" &&
-      ((policy.workflow === "stored" &&
+      (policy.workflow === "stored" &&
         (!["POST", "PUT", "PATCH"].includes(policy.method) ||
           policy.challenge.location === "fragment" ||
           policy.pageChallenge !== undefined)) ||
-        (policy.workflow === "dom" &&
-          (policy.method !== "GET" ||
-            policy.challenge.location !== "fragment" ||
-            policy.pageChallenge?.location !== "fragment")))
+      (policy.workflow === "dom" &&
+        (policy.method !== "GET" ||
+          policy.challenge.location !== "fragment" ||
+          policy.pageChallenge?.location !== "fragment"))
     ) {
       throw new Error(
         `Browser-effect policy ${policy.id} must declare a closed stored or fragment-only DOM workflow`,
       );
     }
     if (
-      policy.kind === "browser-effect" &&
       policy.pageChallenge &&
       (!["query", "fragment"].includes(policy.pageChallenge.location) ||
         !sameChallenge(policy.challenge, policy.pageChallenge) ||
@@ -346,37 +344,93 @@ export function assertValidTargetProfile(profile: TargetProfile): void {
         `Browser-effect policy ${policy.id} pageChallenge must replace one declared URL parameter`,
       );
     }
+  },
+  "browser-state-transition": (policy, profile) => {
     if (
-      policy.kind === "browser-state-transition" &&
-      (!Number.isInteger(policy.requestBudget) ||
-        policy.requestBudget < 2 ||
-        policy.requestBudget > 20 ||
-        policy.method !== "POST" ||
-        !["GET", "HEAD"].includes(policy.readMethod) ||
-        !profile.prepareValidation ||
-        !Number.isInteger(profile.validationResetRequestBudget) ||
-        policy.pageActorId === "anonymous" ||
-        !isExactOrigin(policy.sourceOrigin) ||
-        !isOriginRelativePath(policy.sourcePath) ||
-        !profile.attackSurfaceOrigins?.some(
-          ({ origin, scope }) =>
-            new URL(origin).origin === policy.sourceOrigin && scope === "visit-only",
-        ))
+      !Number.isInteger(policy.requestBudget) ||
+      policy.requestBudget < 2 ||
+      policy.requestBudget > 20 ||
+      policy.method !== "POST" ||
+      !["GET", "HEAD"].includes(policy.readMethod) ||
+      !profile.prepareValidation ||
+      !Number.isInteger(profile.validationResetRequestBudget) ||
+      policy.pageActorId === "anonymous" ||
+      !isExactOrigin(policy.sourceOrigin) ||
+      !isOriginRelativePath(policy.sourcePath) ||
+      !profile.attackSurfaceOrigins?.some(
+        ({ origin, scope }) =>
+          new URL(origin).origin === policy.sourceOrigin && scope === "visit-only",
+      )
     ) {
       throw new Error(
         `Browser-state-transition policy ${policy.id} requires an authenticated configured visit-only origin, a fresh-state reset hook, and a request budget from 2 to 20`,
       );
     }
+  },
+  "file-content": (policy) => {
     if (
-      policy.kind === "state-transition" &&
-      (!["POST", "PUT", "PATCH"].includes(policy.method) ||
-        !["GET", "HEAD"].includes(policy.readMethod))
+      policy.request.value.length === 0 ||
+      (policy.request.location === "json-body" &&
+        !["POST", "PUT", "PATCH"].includes(policy.method)) ||
+      safePolicyRegex(policy.contentTypePattern) === undefined
     ) {
       throw new Error(
-        `State-transition policy ${policy.id} must use POST/PUT/PATCH with a GET/HEAD state read`,
+        `File-content policy ${policy.id} must declare a valid request and media type`,
       );
     }
-  }
+  },
+  redirect: (policy) => {
+    if (
+      policy.challenge.template.split("{{challenge}}").length !== 2 ||
+      !isAbsoluteHttpUrl(policy.destination)
+    ) {
+      throw new Error(
+        `Redirect policy ${policy.id} must bind one absolute HTTP(S) destination challenge`,
+      );
+    }
+  },
+  oast: (policy) => {
+    if (policy.challenge.template.split("{{challenge}}").length !== 2) {
+      throw new Error(`OAST policy ${policy.id} challenge must substitute the callback once`);
+    }
+  },
+  "sql-semantic-differential": (policy) => {
+    if (
+      policy.mutation.controlValue === policy.mutation.probeValue ||
+      Object.is(policy.response.controlValue, policy.response.probeValue)
+    ) {
+      throw new Error(
+        `SQL semantic-differential policy ${policy.id} must use distinct request and response values`,
+      );
+    }
+  },
+  "command-execution-challenge": (policy) => {
+    if (
+      policy.challenge.template.split("{{challenge}}").length !== 2 ||
+      !Number.isSafeInteger(policy.multiplier) ||
+      policy.multiplier === 0 ||
+      !Number.isSafeInteger(policy.addend) ||
+      !Number.isSafeInteger(policy.challengeMinimum) ||
+      !Number.isSafeInteger(policy.challengeMaximum) ||
+      policy.challengeMinimum < 1 ||
+      policy.challengeMinimum >= policy.challengeMaximum ||
+      !Number.isSafeInteger(policy.challengeMinimum * policy.multiplier + policy.addend) ||
+      !Number.isSafeInteger(policy.challengeMaximum * policy.multiplier + policy.addend) ||
+      policy.outputPrefix.length === 0
+    ) {
+      throw new Error(
+        `Command-execution policy ${policy.id} must declare one bounded arithmetic challenge`,
+      );
+    }
+  },
+} satisfies ProofPolicyValidators;
+
+function validateProofPolicy<K extends ProofPolicy["kind"]>(
+  policy: Extract<ProofPolicy, { kind: K }>,
+  profile: TargetProfile,
+): void {
+  const validator = proofPolicyValidators[policy.kind] as ProofPolicyValidator<K>;
+  validator(policy, profile);
 }
 
 function sameChallenge(left: BrowserChallengeMutation, right: BrowserChallengeMutation): boolean {

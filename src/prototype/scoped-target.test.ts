@@ -548,7 +548,24 @@ describe("scoped target", () => {
       target.request({
         path: "/api/me",
         actorId: "ordinary-user",
-        headers: { "idempotency-key": "request-1", prefer: "return=minimal" },
+        headers: { xApiKey: "other-key" },
+      }),
+    ).rejects.toThrow("may not override the session adapter's credential headers");
+    await expect(
+      target.request({
+        path: "/api/me",
+        headers: { xAccessToken: "anonymous-override" },
+      }),
+    ).rejects.toThrow("Anonymous requests may only use standard");
+    await expect(
+      target.request({
+        path: "/api/me",
+        actorId: "ordinary-user",
+        headers: {
+          "idempotency-key": "request-1",
+          prefer: "return=minimal",
+          "x-author": "Ada",
+        },
       }),
     ).resolves.toMatchObject({ status: 200 });
   });

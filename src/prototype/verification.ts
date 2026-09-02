@@ -4,18 +4,19 @@ import { endpointMatchesRequest } from "./endpoint.ts";
 import type { ProofArtifactStore } from "./proof-artifacts.ts";
 import { evaluateProof } from "./proof.ts";
 import { ReplayBudgetExceededError, replayFinding, replayRequestBudget } from "./replay.ts";
-import type { ScopedTarget } from "./scoped-target.ts";
+import type { AllowedRequest, ScopedTarget } from "./scoped-target.ts";
 import { actorIds, type ActorId } from "./sessions.ts";
 import type {
   Finding,
   FindingInput,
   ImpactLevel,
   ProofArtifacts,
+  ProofPredicate,
   ProofResult,
   ReproductionRequest,
   ValidationObservation,
 } from "./state.ts";
-import type { TargetProfile } from "./target-profile.ts";
+import type { ProofPolicy, TargetProfile } from "./target-profile.ts";
 
 export { ReplayBudgetExceededError } from "./replay.ts";
 
@@ -45,6 +46,76 @@ export interface VerificationEngine {
   preflight(submission: FindingInput, context: VerificationContext): PreflightResult;
   impactLevelFor(request: ReproductionRequest): ImpactLevel | undefined;
   replay(finding: Finding, target: ScopedTarget): Promise<VerificationReplay>;
+}
+
+interface VerificationProofHandler {
+  readonly requiresStateReset: boolean;
+  prepareFinding(finding: Finding, context: ProofHandlerContext): Finding;
+  additionalAllowedRequests(finding: Finding, profile: TargetProfile): AllowedRequest[];
+  additionalActorIds(finding: Finding): ActorId[];
+}
+
+interface ProofHandlerContext {
+  profile: TargetProfile;
+  issueIntegerChallenge: (minimum: number, maximum: number) => number;
+}
+
+const ordinaryProofHandler: VerificationProofHandler = {
+  requiresStateReset: false,
+  prepareFinding: (finding) => finding,
+  additionalAllowedRequests: () => [],
+  additionalActorIds: () => [],
+};
+
+const stateTransitionProofHandler: VerificationProofHandler = {
+  ...ordinaryProofHandler,
+  requiresStateReset: true,
+};
+
+const browserVisibleEffectProofHandler: VerificationProofHandler = {
+  ...ordinaryProofHandler,
+  additionalActorIds: (finding) =>
+    finding.proof.type === "browser-visible-effect" ? [finding.proof.pageActorId] : [],
+};
+
+const browserStateTransitionProofHandler: VerificationProofHandler = {
+  ...stateTransitionProofHandler,
+  additionalAllowedRequests: (finding, profile) => {
+    if (finding.proof.type !== "browser-state-transition") return [];
+    const policy = findProofPolicy(profile, finding.proof.policyId, "browser-state-transition");
+    return policy ? [{ method: policy.method, path: policy.endpoint }] : [];
+  },
+  additionalActorIds: (finding) =>
+    finding.proof.type === "browser-state-transition" ? [finding.proof.pageActorId] : [],
+};
+
+const commandExecutionProofHandler: VerificationProofHandler = {
+  ...ordinaryProofHandler,
+  prepareFinding: (finding, context) => freshCommandChallenge(finding, context),
+};
+
+const verificationProofHandlers = {
+  "cross-principal-access": ordinaryProofHandler,
+  "authentication-bypass": ordinaryProofHandler,
+  "role-privilege-differential": ordinaryProofHandler,
+  "unauthenticated-success": ordinaryProofHandler,
+  "cross-principal-data-exposure": ordinaryProofHandler,
+  "internal-field-exposure": ordinaryProofHandler,
+  "response-differential": ordinaryProofHandler,
+  "timing-differential": ordinaryProofHandler,
+  "sql-semantic-differential": ordinaryProofHandler,
+  "command-execution-challenge": commandExecutionProofHandler,
+  "canary-retrieval": ordinaryProofHandler,
+  "file-content-retrieval": ordinaryProofHandler,
+  "redirect-destination": ordinaryProofHandler,
+  "state-transition": stateTransitionProofHandler,
+  "browser-visible-effect": browserVisibleEffectProofHandler,
+  "browser-state-transition": browserStateTransitionProofHandler,
+  "oast-callback": ordinaryProofHandler,
+} satisfies Record<ProofPredicate["type"], VerificationProofHandler>;
+
+function verificationProofHandlerFor(finding: Finding): VerificationProofHandler {
+  return verificationProofHandlers[finding.proof.type];
 }
 
 export class DefaultVerificationEngine implements VerificationEngine {
@@ -97,25 +168,22 @@ export class DefaultVerificationEngine implements VerificationEngine {
   }
 
   async replay(finding: Finding, target: ScopedTarget): Promise<VerificationReplay> {
-    const challengedFinding = this.#freshCommandChallenge(finding);
-    target.allowRequests(
-      challengedFinding.reproduction.map(({ method = "GET", path }) => ({ method, path })),
+    const proofHandler = verificationProofHandlerFor(finding);
+    const challengedFinding = proofHandler.prepareFinding(finding, {
+      profile: this.#profile,
+      issueIntegerChallenge: this.#issueIntegerChallenge,
+    });
+    target.allowRequests([
+      ...challengedFinding.reproduction.map(({ method = "GET", path }) => ({ method, path })),
+      ...proofHandler.additionalAllowedRequests(challengedFinding, this.#profile),
+    ]);
+    await this.#prepareSessions(
+      challengedFinding,
+      proofHandler.additionalActorIds(challengedFinding),
+      target,
     );
-    if (challengedFinding.proof.type === "browser-state-transition") {
-      const proof = challengedFinding.proof;
-      const policy = this.#profile.proofPolicies?.find(
-        (candidate) =>
-          candidate.kind === "browser-state-transition" && candidate.id === proof.policyId,
-      );
-      if (policy?.kind === "browser-state-transition") {
-        target.allowRequests([{ method: policy.method, path: policy.endpoint }]);
-      }
-    }
-    await this.#prepareSessions(challengedFinding, target);
 
-    const resetRequests = ["state-transition", "browser-state-transition"].includes(
-      challengedFinding.proof.type,
-    )
+    const resetRequests = proofHandler.requiresStateReset
       ? (this.#profile.validationResetRequestBudget ?? 0)
       : 0;
     const requiredRequests = replayRequestBudget(challengedFinding) + resetRequests;
@@ -124,10 +192,7 @@ export class DefaultVerificationEngine implements VerificationEngine {
         `Validation requires ${requiredRequests} requests but only ${target.remainingRequests} remain`,
       );
     }
-    if (
-      ["state-transition", "browser-state-transition"].includes(challengedFinding.proof.type) &&
-      this.#profile.prepareValidation
-    ) {
+    if (proofHandler.requiresStateReset && this.#profile.prepareValidation) {
       await target.runProfileSetup(() => this.#profile.prepareValidation!(target));
     }
 
@@ -148,44 +213,15 @@ export class DefaultVerificationEngine implements VerificationEngine {
     return { ...replay, proof };
   }
 
-  #freshCommandChallenge(finding: Finding): Finding {
-    if (finding.proof.type !== "command-execution-challenge") return finding;
-    const proof = finding.proof;
-    const policy = this.#profile.proofPolicies?.find(
-      (candidate) =>
-        candidate.kind === "command-execution-challenge" && candidate.id === proof.policyId,
-    );
-    if (policy?.kind !== "command-execution-challenge") {
-      throw new Error("Unknown command-execution proof policy");
-    }
-    let challenge = this.#issueIntegerChallenge(policy.challengeMinimum, policy.challengeMaximum);
-    if (
-      !Number.isSafeInteger(challenge) ||
-      challenge < policy.challengeMinimum ||
-      challenge > policy.challengeMaximum
-    ) {
-      throw new Error("Command challenge issuer returned an out-of-policy value");
-    }
-    if (challenge === proof.challenge) {
-      challenge = challenge === policy.challengeMaximum ? policy.challengeMinimum : challenge + 1;
-    }
-    return replaceVerificationChallenge(
-      finding,
-      proof.requestIndex,
-      policy.challenge,
-      String(challenge),
-      { ...proof, challenge },
-    );
-  }
-
-  async #prepareSessions(finding: Finding, target: ScopedTarget): Promise<void> {
-    const actorIdsUsed = new Set(finding.reproduction.map(({ actorId }) => actorId));
-    if (finding.proof.type === "browser-visible-effect") {
-      actorIdsUsed.add(finding.proof.pageActorId);
-    }
-    if (finding.proof.type === "browser-state-transition") {
-      actorIdsUsed.add(finding.proof.pageActorId);
-    }
+  async #prepareSessions(
+    finding: Finding,
+    additionalActorIds: readonly ActorId[],
+    target: ScopedTarget,
+  ): Promise<void> {
+    const actorIdsUsed = new Set([
+      ...finding.reproduction.map(({ actorId }) => actorId),
+      ...additionalActorIds,
+    ]);
     if (
       !this.#profile.authenticate ||
       ![...actorIdsUsed].some((actorId) => actorId !== actorIds.anonymous)
@@ -212,6 +248,42 @@ export class DefaultVerificationEngine implements VerificationEngine {
       }
     }
   }
+}
+
+function freshCommandChallenge(finding: Finding, context: ProofHandlerContext): Finding {
+  if (finding.proof.type !== "command-execution-challenge") return finding;
+  const proof = finding.proof;
+  const policy = findProofPolicy(context.profile, proof.policyId, "command-execution-challenge");
+  if (!policy) throw new Error("Unknown command-execution proof policy");
+  let challenge = context.issueIntegerChallenge(policy.challengeMinimum, policy.challengeMaximum);
+  if (
+    !Number.isSafeInteger(challenge) ||
+    challenge < policy.challengeMinimum ||
+    challenge > policy.challengeMaximum
+  ) {
+    throw new Error("Command challenge issuer returned an out-of-policy value");
+  }
+  if (challenge === proof.challenge) {
+    challenge = challenge === policy.challengeMaximum ? policy.challengeMinimum : challenge + 1;
+  }
+  return replaceVerificationChallenge(
+    finding,
+    proof.requestIndex,
+    policy.challenge,
+    String(challenge),
+    { ...proof, challenge },
+  );
+}
+
+function findProofPolicy<K extends ProofPolicy["kind"]>(
+  profile: TargetProfile,
+  id: string,
+  kind: K,
+): Extract<ProofPolicy, { kind: K }> | undefined {
+  return profile.proofPolicies?.find(
+    (policy): policy is Extract<ProofPolicy, { kind: K }> =>
+      policy.kind === kind && policy.id === id,
+  );
 }
 
 async function missingSessions(target: ScopedTarget, actorIdsToCheck: readonly ActorId[]) {

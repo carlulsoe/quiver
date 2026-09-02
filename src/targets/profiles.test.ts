@@ -9,6 +9,8 @@ describe("additional target profiles", () => {
   it("exposes bundled TypeScript profiles as thin declarative adapters", () => {
     expect(brokenCrystalsProfile.manifest?.id).toBe(brokenCrystalsProfile.id);
     expect(vampiVulnerableProfile.manifest?.id).toBe(vampiVulnerableProfile.id);
+    expect(brokenCrystalsProfile.callbackConfigurationFingerprint).toBe("manifest-derived:1");
+    expect(heldOutProfile.callbackConfigurationFingerprint).toBeTruthy();
     expect(heldOutProfile.actorIds).toEqual(["ordinary-user", "second-user", "privileged-user"]);
     expect(heldOutProfile.protectedOperations).toEqual(
       expect.arrayContaining([
