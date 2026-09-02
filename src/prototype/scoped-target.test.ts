@@ -467,6 +467,37 @@ describe("scoped target", () => {
     expect(requested).toEqual([{ url: "http://127.0.0.1:8889/api/items/42", authorization: null }]);
   });
 
+  it("reserves auth-only origins for setup and never contacts blocked origins", async () => {
+    const requested: string[] = [];
+    const authenticationPath = "http://127.0.0.1:8891/token";
+    const blockedPath = "http://127.0.0.1:8892/admin";
+    const target = new ScopedTarget({
+      target: new URL("http://127.0.0.1:8888"),
+      requestBudget: 2,
+      attackSurfaceOrigins: [
+        { origin: "http://127.0.0.1:8891", scope: "auth-only" },
+        { origin: "http://127.0.0.1:8892", scope: "blocked" },
+      ],
+      setupRequests: [{ method: "POST", path: authenticationPath }],
+      transport: async (input) => {
+        requested.push(String(input));
+        return response('{"token":"session"}', "application/json");
+      },
+    });
+
+    await expect(target.request({ path: authenticationPath })).rejects.toThrow(
+      "reserved for profile setup",
+    );
+    await expect(
+      target.setupRequest({ path: authenticationPath, method: "POST", body: "grant=test" }),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      target.setupRequest({ path: blockedPath, method: "POST", body: "{}" }),
+    ).rejects.toThrow("blocked");
+
+    expect(requested).toEqual([authenticationPath]);
+  });
+
   it("rejects credential-capable headers on anonymous requests", async () => {
     const target = new ScopedTarget({
       target: new URL("http://localhost:8888"),

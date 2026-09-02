@@ -40,6 +40,9 @@ describe("browser-visible proof collector", () => {
       headers: () => ({ origin: "http://127.0.0.1:9999" }),
       isNavigationRequest: () => true,
     };
+    const committedRequests: string[] = [];
+    const leaseOutcomes: string[] = [];
+    let leaseSequence = 0;
     const continueRequest = async (_request: SyntheticRequest) => undefined;
     const page = {
       mainFrame: () => frame,
@@ -91,6 +94,24 @@ describe("browser-visible proof collector", () => {
           cookies: [{ name: "session", value: "victim", url: "http://127.0.0.1:8888" }],
           executablePath: "/synthetic/chromium",
           decideRequest: () => true,
+          acquireRequest: async () => {
+            const leaseId = leaseSequence++;
+            let finished = false;
+            const record = (outcome: string) => {
+              if (finished) return;
+              finished = true;
+              leaseOutcomes.push(`${leaseId}:${outcome}`);
+            };
+            return {
+              finish: (outcome = "success") => record(outcome),
+              fail: (disruptive = false) => record(disruptive ? "disruptive" : "failure"),
+              release: () => record("released"),
+            };
+          },
+          commitRequest: (method, url) => {
+            committedRequests.push(`${method} ${url.href}`);
+            return true;
+          },
         },
         async () => browser,
       ),
@@ -102,6 +123,11 @@ describe("browser-visible proof collector", () => {
       method: "POST",
       status: 302,
     });
+    expect(committedRequests).toEqual([
+      "GET http://127.0.0.1:9999/csrf/email",
+      "POST http://127.0.0.1:8888/account/email",
+    ]);
+    expect(leaseOutcomes).toEqual(["1:success", "0:failure"]);
   });
 
   it("allows assets but blocks every child-frame document", () => {

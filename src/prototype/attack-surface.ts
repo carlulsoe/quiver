@@ -8,8 +8,9 @@ import {
   type Request,
 } from "playwright-core";
 import { normalizeEndpoint } from "./endpoint.ts";
+import { classifyHttpStatus, type RuntimeRequestLease } from "./runtime-safety.ts";
 
-export type AttackSurfaceScope = "attackable" | "visit-only";
+export type AttackSurfaceScope = "attackable" | "visit-only" | "auth-only" | "blocked";
 
 export interface AttackSurfaceOrigin {
   origin: string;
@@ -134,6 +135,11 @@ export interface BrowserAttackSurfaceMapperOptions {
     path: string,
     metadata?: BrowserRequestMetadata,
   ) => BrowserRequestDecision;
+  commitRequest?: (
+    method: string,
+    path: string,
+    metadata?: BrowserRequestMetadata,
+  ) => BrowserRequestDecision;
   onOperationDiscovered?: (
     method: string,
     path: string,
@@ -146,6 +152,7 @@ export interface BrowserAttackSurfaceMapperOptions {
       scope?: AttackSurfaceScope;
     },
   ) => void;
+  acquireRequest?: () => Promise<RuntimeRequestLease>;
   executablePath?: string;
   launch?: (executablePath: string) => Promise<Browser>;
 }
@@ -184,8 +191,16 @@ export class BrowserAttackSurfaceMapper {
   readonly #documents = new Map<string, AttackSurfaceDocument>();
   readonly #forms: AttackSurfaceForm[] = [];
   readonly #webSockets: AttackSurfaceWebSocket[] = [];
+  readonly #requestLeases = new Map<Request, RuntimeRequestLease>();
   #automaticInteraction = false;
-  #activeFormRequest?: { method: string; origin: string; pathname: string; allowed: boolean };
+  #activeFormRequest?: {
+    method: string;
+    origin: string;
+    pathname: string;
+    allowed: boolean;
+    observed: boolean;
+    settle: () => void;
+  };
 
   constructor(options: BrowserAttackSurfaceMapperOptions) {
     this.#options = options;
@@ -206,6 +221,8 @@ export class BrowserAttackSurfaceMapper {
       });
       await this.#mapContext(context);
     } finally {
+      for (const lease of this.#requestLeases.values()) lease.fail();
+      this.#requestLeases.clear();
       await browser.close();
     }
     return this.#result();
@@ -261,7 +278,7 @@ export class BrowserAttackSurfaceMapper {
       };
       this.#webSockets.push(evidence);
       if (
-        scoped.scope === "visit-only" ||
+        scoped.scope !== "attackable" ||
         scoped.origin !== this.#options.origin ||
         currentDocumentOrigin !== this.#options.origin
       ) {
@@ -282,6 +299,21 @@ export class BrowserAttackSurfaceMapper {
     });
 
     const page = await context.newPage();
+    context.on("requestfinished", (request) => {
+      const lease = this.#requestLeases.get(request);
+      if (!lease) return;
+      this.#requestLeases.delete(request);
+      void request
+        .response()
+        .then((response) => lease.finish(classifyHttpStatus(response?.status() ?? 0)))
+        .catch(() => lease.fail());
+    });
+    context.on("requestfailed", (request) => {
+      const lease = this.#requestLeases.get(request);
+      if (!lease) return;
+      this.#requestLeases.delete(request);
+      lease.fail();
+    });
     context.on("page", (candidate) => {
       if (candidate !== page) void candidate.close();
     });
@@ -326,14 +358,15 @@ export class BrowserAttackSurfaceMapper {
           ["GET", "HEAD"].includes(method) &&
           (PASSIVE_RESOURCE_TYPES.has(resourceType) ||
             (resourceType === "document" && this.#identifier(scoped.url) === currentDocument)));
-      const decision = this.#options.decideRequest(method, path, {
+      const metadata: BrowserRequestMetadata = {
         budgeted: true,
         automaticInteraction: this.#automaticInteraction,
         origin: scoped.url.origin,
         scope: scoped.scope,
         resourceType,
         passiveVisitOnly,
-      });
+      };
+      const decision = this.#options.decideRequest(method, path, metadata);
       const scopeAllows =
         passiveVisitOnly &&
         (resourceType !== "document" ||
@@ -341,18 +374,50 @@ export class BrowserAttackSurfaceMapper {
           this.#identifier(scoped.url) === currentDocument) &&
         (scoped.scope === "attackable" ||
           (!this.#automaticInteraction && ["GET", "HEAD"].includes(method)));
-      const allowed = decision.allowed && scopeAllows;
-      if (
+      let allowed = decision.allowed && scopeAllows;
+      let admissionReason: string | undefined;
+      let lease: RuntimeRequestLease | undefined;
+      const formAttempt =
         this.#activeFormRequest &&
         method === this.#activeFormRequest.method &&
         scoped.origin === this.#activeFormRequest.origin &&
         scoped.url.pathname === this.#activeFormRequest.pathname
-      ) {
-        this.#activeFormRequest.allowed ||= allowed;
+          ? this.#activeFormRequest
+          : undefined;
+      if (formAttempt) formAttempt.observed = true;
+      if (allowed && this.#options.acquireRequest) {
+        try {
+          lease = await this.#options.acquireRequest();
+          this.#requestLeases.set(request, lease);
+          if (formAttempt && this.#activeFormRequest !== formAttempt) {
+            allowed = false;
+            admissionReason = "form attempt expired while waiting for request admission";
+            this.#requestLeases.delete(request);
+            lease.release();
+            lease = undefined;
+          }
+        } catch (error) {
+          allowed = false;
+          admissionReason = error instanceof Error ? error.message : String(error);
+        }
+      }
+      if (allowed && this.#options.commitRequest) {
+        const committed = this.#options.commitRequest(method, path, metadata);
+        if (!committed.allowed) {
+          allowed = false;
+          admissionReason = committed.reason ?? "request budget exhausted before admission";
+          this.#requestLeases.delete(request);
+          lease?.release();
+          lease = undefined;
+        }
+      }
+      if (formAttempt && this.#activeFormRequest === formAttempt) {
+        formAttempt.allowed ||= allowed;
+        formAttempt.settle();
       }
       const blockedReason = allowed
         ? undefined
-        : (decision.reason ?? "blocked by discovery origin scope");
+        : (admissionReason ?? decision.reason ?? "blocked by discovery origin scope");
       const observed = this.#observeRequest(
         request,
         scoped.url,
@@ -371,11 +436,21 @@ export class BrowserAttackSurfaceMapper {
         });
       }
       if (!allowed) {
-        await route.abort("blockedbyclient");
+        if (request.isNavigationRequest()) {
+          await route.fulfill({ status: 204, body: "" });
+        } else {
+          await route.abort("blockedbyclient");
+        }
       } else {
-        await route.continue({
-          headers: await this.#requestHeaders(request, scoped.origin, currentDocumentOrigin),
-        });
+        try {
+          await route.continue({
+            headers: await this.#requestHeaders(request, scoped.origin, currentDocumentOrigin),
+          });
+        } catch (error) {
+          this.#requestLeases.delete(request);
+          lease?.fail();
+          throw error;
+        }
       }
     });
 
@@ -450,17 +525,22 @@ export class BrowserAttackSurfaceMapper {
       });
       if (!candidate) return;
       const key = `${page.url()} ${candidate.index} ${candidate.action} ${candidate.method}`;
-      exercised.add(key);
       const form = page.locator("form").nth(candidate.index);
       await fillForm(form, candidate);
       const oldUrl = page.url();
       this.#automaticInteraction = true;
       const action = new URL(candidate.action);
+      let settleRequest!: () => void;
+      const requestDecision = new Promise<void>((resolve) => {
+        settleRequest = resolve;
+      });
       this.#activeFormRequest = {
         method: candidate.method,
         origin: action.origin,
         pathname: action.pathname,
         allowed: false,
+        observed: false,
+        settle: settleRequest,
       };
       const navigation = page
         .waitForNavigation({
@@ -481,8 +561,15 @@ export class BrowserAttackSurfaceMapper {
           element.requestSubmit(submitterIndex < 0 ? undefined : submitters[submitterIndex]);
         }, candidate.submitterIndex)
         .catch(() => undefined);
-      await navigation;
+      await Promise.race([
+        navigation,
+        requestDecision,
+        page.waitForTimeout(Math.min(500, this.#options.timeoutMs)),
+      ]);
+      if (this.#activeFormRequest.observed) exercised.add(key);
+      if (this.#activeFormRequest.allowed) await navigation;
       await page.waitForTimeout(75);
+      const attempted = this.#activeFormRequest.observed;
       const submitted = this.#activeFormRequest.allowed;
       this.#activeFormRequest = undefined;
       this.#automaticInteraction = false;
@@ -494,17 +581,20 @@ export class BrowserAttackSurfaceMapper {
           item.method === candidate.method,
       );
       if (recorded) {
-        recorded.attempted = true;
+        recorded.attempted = attempted;
         recorded.submitted = submitted;
       }
-      if (!submitted && page.url() !== oldUrl) {
-        try {
-          await page.goto(oldUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: this.#options.timeoutMs,
-          });
-        } catch (error) {
-          if (!isExpectedNavigationInterruption(error)) throw error;
+      if (!submitted) {
+        if (attempted) await navigation;
+        if (page.url() !== oldUrl) {
+          try {
+            await page.goto(oldUrl, {
+              waitUntil: "domcontentloaded",
+              timeout: this.#options.timeoutMs,
+            });
+          } catch (error) {
+            if (!isExpectedNavigationInterruption(error)) throw error;
+          }
         }
         await page.waitForTimeout(75);
         continue;
@@ -749,7 +839,9 @@ export class BrowserAttackSurfaceMapper {
             ? `https://${url.host}`
             : url.origin;
       const scope = this.#scopes.get(origin);
-      return scope ? { url, origin, scope } : undefined;
+      return scope && scope !== "blocked" && scope !== "auth-only"
+        ? { url, origin, scope }
+        : undefined;
     } catch {
       return undefined;
     }
@@ -1476,6 +1568,9 @@ async function scopedLinks(
   page: Page,
   scopes: ReadonlyMap<string, AttackSurfaceScope>,
 ): Promise<string[]> {
+  const visitableOrigins = [...scopes]
+    .filter(([, scope]) => scope === "attackable" || scope === "visit-only")
+    .map(([origin]) => origin);
   return page
     .locator("a[href]")
     .evaluateAll(
@@ -1491,7 +1586,7 @@ async function scopedLinks(
           }),
         ),
       ],
-      [...scopes.keys()],
+      visitableOrigins,
     )
     .catch(() => []);
 }

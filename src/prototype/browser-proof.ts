@@ -1,6 +1,7 @@
 import type { Browser, Request as BrowserRequest } from "playwright-core";
 import { findBrowserExecutable, launchChromium, type BrowserCookie } from "./attack-surface.ts";
 import type { BrowserEffectEvidence, BrowserStateTransitionEvidence } from "./state.ts";
+import { classifyHttpStatus, type RuntimeRequestLease } from "./runtime-safety.ts";
 
 export interface BrowserProofProbe {
   probeId: string;
@@ -15,6 +16,8 @@ export interface BrowserProofProbe {
   sessionStorage?: Record<string, string>;
   executablePath?: string;
   decideRequest: (method: string, path: string) => boolean;
+  acquireRequest?: () => Promise<RuntimeRequestLease>;
+  commitRequest?: (method: string, path: string) => boolean;
 }
 
 export interface BrowserStateTransitionProbe {
@@ -28,6 +31,8 @@ export interface BrowserStateTransitionProbe {
   cookies: BrowserCookie[];
   executablePath?: string;
   decideRequest: (method: string, url: URL) => boolean;
+  acquireRequest?: () => Promise<RuntimeRequestLease>;
+  commitRequest?: (method: string, url: URL) => boolean;
 }
 
 /** Observes a visible browser effect while blocking cross-origin and unauthorized requests. */
@@ -38,6 +43,7 @@ export async function collectBrowserEffect(
   const executablePath =
     probe.executablePath ?? process.env.QUIVER_BROWSER_PATH ?? (await findBrowserExecutable());
   const browser = await launch(executablePath);
+  const requestLeases = new Map<BrowserRequest, RuntimeRequestLease>();
   try {
     const context = await browser.newContext({
       extraHTTPHeaders: probe.authenticationHeaders,
@@ -56,6 +62,21 @@ export async function collectBrowserEffect(
       );
     }
     const page = await context.newPage();
+    context.on("requestfinished", (request) => {
+      const lease = requestLeases.get(request);
+      if (!lease) return;
+      requestLeases.delete(request);
+      void request
+        .response()
+        .then((response) => lease.finish(classifyHttpStatus(response?.status() ?? 0)))
+        .catch(() => lease.fail());
+    });
+    context.on("requestfailed", (request) => {
+      const lease = requestLeases.get(request);
+      if (!lease) return;
+      requestLeases.delete(request);
+      lease.fail();
+    });
     context.on("page", (candidate) => {
       if (candidate !== page) void candidate.close();
     });
@@ -88,7 +109,22 @@ export async function collectBrowserEffect(
         await route.abort("blockedbyclient");
         return;
       }
-      await route.continue();
+      let lease: RuntimeRequestLease | undefined;
+      try {
+        lease = await probe.acquireRequest?.();
+        if (lease) requestLeases.set(request, lease);
+        if (probe.commitRequest && !probe.commitRequest(request.method(), path)) {
+          requestLeases.delete(request);
+          lease?.release();
+          await route.abort("blockedbyclient");
+          return;
+        }
+        await route.continue();
+      } catch {
+        requestLeases.delete(request);
+        lease?.fail();
+        await route.abort("blockedbyclient").catch(() => undefined);
+      }
     });
     await context.routeWebSocket("**/*", (route) =>
       route.close({ code: 1008, reason: "Quiver browser proof blocks WebSockets" }),
@@ -112,6 +148,8 @@ export async function collectBrowserEffect(
       ? { probeId: probe.probeId, path: probe.path, kind: probe.kind, value: probe.marker }
       : undefined;
   } finally {
+    for (const lease of requestLeases.values()) lease.fail();
+    requestLeases.clear();
     await browser.close();
   }
 }
@@ -124,10 +162,26 @@ export async function collectBrowserStateTransition(
   const executablePath =
     probe.executablePath ?? process.env.QUIVER_BROWSER_PATH ?? (await findBrowserExecutable());
   const browser = await launch(executablePath);
+  const requestLeases = new Map<BrowserRequest, RuntimeRequestLease>();
   try {
     const context = await browser.newContext({ serviceWorkers: "block" });
     await context.addCookies(probe.cookies);
     const page = await context.newPage();
+    context.on("requestfinished", (request) => {
+      const lease = requestLeases.get(request);
+      if (!lease) return;
+      requestLeases.delete(request);
+      void request
+        .response()
+        .then((response) => lease.finish(classifyHttpStatus(response?.status() ?? 0)))
+        .catch(() => lease.fail());
+    });
+    context.on("requestfailed", (request) => {
+      const lease = requestLeases.get(request);
+      if (!lease) return;
+      requestLeases.delete(request);
+      lease.fail();
+    });
     context.on("page", (candidate) => {
       if (candidate !== page) void candidate.close();
     });
@@ -163,8 +217,24 @@ export async function collectBrowserStateTransition(
           await route.abort("blockedbyclient");
           return;
         }
-        transitionRequest = request;
-        await route.continue();
+        let lease: RuntimeRequestLease | undefined;
+        try {
+          lease = await probe.acquireRequest?.();
+          if (lease) requestLeases.set(request, lease);
+          if (probe.commitRequest && !probe.commitRequest(method, url)) {
+            requestLeases.delete(request);
+            lease?.release();
+            await route.abort("blockedbyclient");
+            return;
+          }
+          transitionRequest = request;
+          await route.continue();
+        } catch {
+          if (transitionRequest === request) transitionRequest = undefined;
+          requestLeases.delete(request);
+          lease?.fail();
+          await route.abort("blockedbyclient").catch(() => undefined);
+        }
         return;
       }
       const isSourceRead =
@@ -176,13 +246,35 @@ export async function collectBrowserStateTransition(
         await route.abort("blockedbyclient");
         return;
       }
-      await route.continue();
+      let lease: RuntimeRequestLease | undefined;
+      try {
+        lease = await probe.acquireRequest?.();
+        if (lease) requestLeases.set(request, lease);
+        if (probe.commitRequest && !probe.commitRequest(method, url)) {
+          requestLeases.delete(request);
+          lease?.release();
+          await route.abort("blockedbyclient");
+          return;
+        }
+        await route.continue();
+      } catch {
+        requestLeases.delete(request);
+        lease?.fail();
+        await route.abort("blockedbyclient").catch(() => undefined);
+      }
     });
     await context.routeWebSocket("**/*", (route) =>
       route.close({ code: 1008, reason: "Quiver browser state proof blocks WebSockets" }),
     );
     page.on("response", (response) => {
-      if (response.request() === transitionRequest) resolveTransitionStatus(response.status());
+      const request = response.request();
+      if (request !== transitionRequest) return;
+      const lease = requestLeases.get(request);
+      if (lease) {
+        requestLeases.delete(request);
+        lease.finish(classifyHttpStatus(response.status()));
+      }
+      resolveTransitionStatus(response.status());
     });
     try {
       const sourceResponse = await page.goto(sourceUrl.href, {
@@ -213,6 +305,8 @@ export async function collectBrowserStateTransition(
         }
       : undefined;
   } finally {
+    for (const lease of requestLeases.values()) lease.fail();
+    requestLeases.clear();
     await browser.close();
   }
 }

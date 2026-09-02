@@ -5,6 +5,7 @@ import { createRunReport, writeRunReport } from "./report.ts";
 import { runCampaign } from "./runner.ts";
 import { getTargetProfile } from "../targets/profiles.ts";
 import { loadContext, loadOpenApi } from "./campaign-input.ts";
+import { JsonlCampaignStore } from "./campaign-store.ts";
 
 const options = parseCliOptions(process.argv.slice(2));
 if (options.help) {
@@ -14,12 +15,17 @@ if (options.help) {
     options.openApiPath ? loadOpenApi(options.openApiPath) : undefined,
     options.contextPath ? loadContext(options.contextPath) : undefined,
   ]);
+  using campaignStore = options.campaignStorePath
+    ? new JsonlCampaignStore(options.campaignStorePath)
+    : undefined;
   const run = await runCampaign({
     target: options.target,
     profile: getTargetProfile(options.profileId),
     requestBudget: options.requestBudget,
     openApi,
     context,
+    campaignId: options.campaignId,
+    campaignStore,
     onState: options.quiet ? undefined : render,
   });
 

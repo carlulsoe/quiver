@@ -286,4 +286,52 @@ describe("adaptive coordinator", () => {
       { fingerprint, status: "complete", validatorId: "validator-1", outcome: "confirmed" },
     ]);
   });
+
+  it("deterministically restores coordinator memory from a campaign checkpoint", () => {
+    const operations = [{ method: "GET", path: "/api/accounts/{id}" }];
+    const testedRequests = [
+      {
+        agentId: "explorer-1",
+        method: "GET" as const,
+        path: "/api/accounts/42",
+        actorId: "ordinary-user" as const,
+        status: 200,
+      },
+    ];
+    const coordinator = new AdaptiveCoordinator({ requestBudget: 8, expectedWorkers: 1 });
+    coordinator.discoverOperations(operations);
+    coordinator.observeBudgetUse();
+    coordinator.observeRequest(testedRequests[0]!);
+    coordinator.debrief("explorer-1", {
+      summary: "Retain the account authorization lead.",
+      exhausted: false,
+      hypotheses: [
+        {
+          title: "Cross-account lookup",
+          route: "/api/accounts/{id}",
+          specialty: "authorization",
+          confidence: 0.9,
+          rationale: "A concrete account identifier was observed.",
+          nextStep: "Try the identifier as another actor.",
+        },
+      ],
+    });
+    coordinator.release("explorer-1");
+    const snapshot = coordinator.snapshot();
+
+    const restored = new AdaptiveCoordinator({
+      requestBudget: 8,
+      expectedWorkers: 1,
+      restore: {
+        snapshot,
+        operations,
+        testedRequests,
+        findings: [],
+        validations: [],
+        explorationRequests: 1,
+      },
+    });
+
+    expect(restored.snapshot()).toEqual(snapshot);
+  });
 });
