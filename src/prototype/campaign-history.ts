@@ -14,7 +14,32 @@ export interface RunEvent {
   sequence: number;
   elapsedMs: number;
   type: "state" | "request" | "model-route" | "tool-call" | "tool-output" | "tool-error";
-  data: Record<string, unknown>;
+  data: RunEventData;
+}
+
+export interface RunEventData {
+  action?: string;
+  phase?: string;
+  agentId?: string;
+  requestsUsed?: number;
+  testedRequestCount?: number;
+  findingCount?: number;
+  validationCount?: number;
+  exploitChainCount?: number;
+  toolCallId?: string;
+  toolName?: string;
+  input?: object | string;
+  output?: string;
+  error?: string;
+  durationMs?: number;
+  missionId?: string;
+  role?: string;
+  model?: string;
+  attempt?: number;
+  requirements?: MissionRequirements;
+  path?: string;
+  author?: string;
+  method?: string;
 }
 
 export interface CampaignHistory {

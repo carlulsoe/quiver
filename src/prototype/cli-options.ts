@@ -74,18 +74,19 @@ export function parseCliOptions(args: string[]): CliOptions {
   }
 
   target ??= getDefaultTarget(profileId);
-  return {
+  const options: CliOptions = {
     target,
     profileId,
     reportPath,
     quiet,
     help,
     requestBudget,
-    ...(openApiPath ? { openApiPath } : {}),
-    ...(contextPath ? { contextPath } : {}),
-    ...(campaignId ? { campaignId } : {}),
-    ...(campaignStorePath ? { campaignStorePath } : {}),
   };
+  if (openApiPath) options.openApiPath = openApiPath;
+  if (contextPath) options.contextPath = contextPath;
+  if (campaignId) options.campaignId = campaignId;
+  if (campaignStorePath) options.campaignStorePath = campaignStorePath;
+  return options;
 }
 
 function requiredPath(value: string | undefined, option: string): string {

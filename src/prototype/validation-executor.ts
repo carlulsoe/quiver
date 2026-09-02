@@ -1,27 +1,13 @@
-import { init } from "@flue/runtime";
-import type { PersistentCoordinator } from "./adaptive-coordinator.ts";
 import { createValidatorAgent } from "./agents.ts";
-import type { CampaignSession } from "./campaign-session.ts";
-import { ChainBudgetExceededError, replayExploitChain } from "./exploit-chain.ts";
-import { estimateTokens, validationRequirements, type ModelRouter } from "./model-routing.ts";
+import { validationRequirements } from "./model-routing.ts";
 import { RoutedMission } from "./mission-runtime.ts";
-import { isRequestBudgetExhausted, isRuntimeStopError } from "./runner-errors.ts";
-import { CampaignHaltedError, type RuntimeSafetyController } from "./runtime-safety.ts";
+import { isRequestBudgetExhausted } from "./runner-errors.ts";
+import { CampaignHaltedError } from "./runtime-safety.ts";
 import { ScopedTarget } from "./scoped-target.ts";
 import { actorIds } from "./sessions.ts";
-import { exploitChainJobId, validationJobId } from "./state.ts";
-import type { TargetProfile } from "./target-profile.ts";
-import type { VerificationEngine } from "./verification.ts";
-
-interface ValidationExecutorOptions {
-  target: URL;
-  profile: TargetProfile;
-  session: CampaignSession;
-  coordinator: PersistentCoordinator;
-  modelRouter: ModelRouter;
-  verification: VerificationEngine;
-  runtimeSafety: RuntimeSafetyController;
-}
+import { runExploitChainJobs } from "./validation-executor-chains.ts";
+import { executeValidationFinding } from "./validation-executor-finding.ts";
+import type { ValidationExecutorOptions } from "./validation-executor-types.ts";
 
 /** Owns durable proof jobs, including mutation boundaries and serialized validation. */
 export class ValidationExecutor {
@@ -158,59 +144,10 @@ export class ValidationExecutor {
     }
   }
 
-  async runExploitChains(): Promise<void> {
-    const { session, profile, verification } = this.#options;
-    for (const chain of session.state.exploitChains) {
-      const jobId = exploitChainJobId(chain.fingerprint);
-      if (session.state.runtime.jobs.find(({ id }) => id === jobId)?.status !== "queued") continue;
-      session.dispatch({ type: "job-started", id: jobId });
+  runExploitChains(): Promise<void> {
+    return runExploitChainJobs(this.#options, this.target, (jobId) => {
       this.#activeJobId = jobId;
-      try {
-        session.dispatch({
-          type: "exploit-chain-validation",
-          validation: await replayExploitChain(
-            this.target,
-            chain,
-            session.state.findings,
-            profile,
-            verification,
-          ),
-        });
-      } catch (error) {
-        const mutationStarted =
-          session.state.runtime.jobs.find(({ id }) => id === jobId)?.mutationStarted === true;
-        if (
-          error instanceof ChainBudgetExceededError ||
-          isRuntimeStopError(error) ||
-          mutationStarted
-        ) {
-          session.dispatch({
-            type: "job-failed",
-            id: jobId,
-            error: error instanceof Error ? error.message : String(error),
-            retryable: isRuntimeStopError(error),
-          });
-          if (isRuntimeStopError(error)) throw error;
-          continue;
-        }
-        session.dispatch({
-          type: "exploit-chain-validation",
-          validation: {
-            fingerprint: chain.fingerprint,
-            status: "rejected",
-            summary: error instanceof Error ? error.message : String(error),
-            checks: [
-              {
-                passed: false,
-                description: "ordered exploit-chain replay completed without an error",
-              },
-            ],
-          },
-        });
-      } finally {
-        if (this.#activeJobId === jobId) this.#activeJobId = undefined;
-      }
-    }
+    });
   }
 
   assertAllJobsFinished(): void {
@@ -223,83 +160,22 @@ export class ValidationExecutor {
     throw new CampaignHaltedError(reason);
   }
 
-  private async validateFinding(fingerprint: string, finalAttempt: boolean): Promise<void> {
-    const { session, coordinator, modelRouter } = this.#options;
-    if (session.state.validations.some((item) => item.fingerprint === fingerprint)) return;
-    const finding = session.state.findings.find((item) => item.fingerprint === fingerprint);
-    if (!finding) return;
-    const jobId = validationJobId(fingerprint);
-    if (session.state.runtime.jobs.find(({ id }) => id === jobId)?.status !== "queued") return;
-    const validatorId =
-      this.#missionIndex === 0 ? "validator" : `validator-${this.#missionIndex + 1}`;
-    this.#missionIndex += 1;
-    if (!coordinator.claimValidation(validatorId, fingerprint)) return;
-    this.#cursor.reset(modelRouter.route(validationRequirements(estimateTokens(finding))));
-    const mission = session.beginMission(validatorId, "validator", this.#cursor.route);
-    session.dispatch({ type: "job-started", id: jobId });
-    this.#activeJobId = jobId;
-    if (validatorId !== "validator") {
-      session.dispatch({ type: "agent-spawned", id: validatorId, role: "validator" });
-    }
-    session.dispatch({ type: "agent", id: validatorId, status: "running" });
-    try {
-      let replyText = "";
-      await this.#cursor.run(
-        async (_model, markToolInvoked) => {
-          const validator = init(this.agentDefinition, {
-            id: `mission-${this.#missionIndex}-attempt-${mission.attemptedModels.length}`,
-          });
-          const receipt = await validator.dispatch({
-            message: `Validate only finding ${fingerprint}, submit its outcome, then finish validation.`,
-            initialData: { fingerprint, validatorId },
-          });
-          const reply = await validator.read(receipt, {
-            onEvent: (chunk) => {
-              if (chunk.type === "tool-input") markToolInvoked();
-              session.captureAgentEvent(validatorId, chunk);
-            },
-          });
-          session.captureUsage(reply.metadata, mission);
-          replyText = reply.text;
+  private validateFinding(fingerprint: string, finalAttempt: boolean): Promise<void> {
+    return executeValidationFinding(
+      {
+        options: this.#options,
+        cursor: this.#cursor,
+        agentDefinition: this.agentDefinition,
+        missionIndex: this.#missionIndex,
+        advanceMissionIndex: () => {
+          this.#missionIndex += 1;
         },
-        (model) => session.recordModelAttempt(mission, model),
-      );
-      const completed = session.state.validations.some(
-        (validation) => validation.fingerprint === fingerprint,
-      );
-      if (!completed) {
-        coordinator.releaseValidation(fingerprint);
-        session.dispatch({
-          type: "job-failed",
-          id: jobId,
-          error: "Replay produced no submitted outcome",
-          retryable: !finalAttempt,
-        });
-      }
-      session.dispatch({
-        type: "agent",
-        id: validatorId,
-        status: "finished",
-        summary: completed ? replyText.slice(0, 100) : "Replay produced no submitted outcome.",
-      });
-    } catch (error) {
-      coordinator.releaseValidation(fingerprint);
-      const budgetExhausted = isRequestBudgetExhausted(error);
-      session.dispatch({
-        type: "job-failed",
-        id: jobId,
-        error: error instanceof Error ? error.message : String(error),
-        retryable: isRuntimeStopError(error) || (!finalAttempt && budgetExhausted),
-      });
-      session.dispatch({
-        type: "agent",
-        id: validatorId,
-        status: budgetExhausted ? "finished" : "failed",
-        summary: budgetExhausted ? "Deferred until validation budget is reclaimed." : String(error),
-      });
-      if (isRuntimeStopError(error)) throw error;
-    } finally {
-      if (this.#activeJobId === jobId) this.#activeJobId = undefined;
-    }
+        setActiveJobId: (jobId) => {
+          this.#activeJobId = jobId;
+        },
+      },
+      fingerprint,
+      finalAttempt,
+    );
   }
 }

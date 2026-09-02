@@ -20,5 +20,5 @@ export function observeWebSocketTraffic(
 }
 
 function frameByteLength(payload: string | Buffer): number {
-  return typeof payload === "string" ? Buffer.byteLength(payload) : payload.byteLength;
+  return Buffer.isBuffer(payload) ? payload.byteLength : Buffer.byteLength(payload);
 }

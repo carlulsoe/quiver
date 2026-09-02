@@ -81,21 +81,32 @@ export async function scoreVulnerableAppBenchmark(options: {
   };
 }
 
-function countField(value: unknown, name: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+function countField<T>(value: T, name: string): number {
+  const parsed = Number(value);
+  if (
+    Object.prototype.toString.call(value) !== "[object Number]" ||
+    !Number.isSafeInteger(parsed) ||
+    parsed < 0
+  ) {
     throw new Error(`VulnerableApp benchmark response has invalid ${name}`);
   }
-  return value;
+  return parsed;
 }
 
-function percentageField(value: unknown, name: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
+function percentageField<T>(value: T, name: string): number {
+  const parsed = Number(value);
+  if (
+    Object.prototype.toString.call(value) !== "[object Number]" ||
+    !Number.isFinite(parsed) ||
+    parsed < 0 ||
+    parsed > 100
+  ) {
     throw new Error(`VulnerableApp benchmark response has invalid ${name}`);
   }
-  return value;
+  return parsed;
 }
 
-function arrayField(value: unknown, name: string): unknown[] {
+function arrayField<T>(value: T, name: string): unknown[] {
   if (!Array.isArray(value)) {
     throw new Error(`VulnerableApp benchmark response has invalid ${name}`);
   }

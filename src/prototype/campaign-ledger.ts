@@ -1,6 +1,7 @@
 import type { HttpObservation } from "./scoped-target.ts";
 import type { RestMethod } from "./scoped-target.ts";
 import type { ActorId } from "./sessions.ts";
+import { ledgerRequestKey } from "./campaign-ledger-key.ts";
 import {
   fingerprintExploitChain,
   fingerprintFinding,
@@ -54,7 +55,6 @@ interface RequestEntry {
   tested?: TestedRequest;
 }
 
-/** Coordinates explorers at the point where duplicate work becomes expensive. */
 export class CampaignLedger {
   readonly #requests = new Map<string, RequestEntry>();
   readonly #findings = new Map<string, Finding>();
@@ -73,7 +73,7 @@ export class CampaignLedger {
     request: LedgerRequest,
     execute: () => Promise<HttpObservation>,
   ): Promise<LedgerRequestResult> {
-    const key = requestKey(request);
+    const key = ledgerRequestKey(request);
     const existing = this.#requests.get(key);
     if (existing) return { observation: await existing.promise, reused: true };
 
@@ -93,7 +93,7 @@ export class CampaignLedger {
         this.#onTestedRequest?.(tested);
         return observation;
       })
-      .catch((error: unknown) => {
+      .catch((error) => {
         if (this.#requests.get(key) === entry) this.#requests.delete(key);
         throw error;
       });
@@ -102,7 +102,7 @@ export class CampaignLedger {
     return { observation: await entry.promise, reused: false };
   }
 
-  recordFinding(input: FindingInput): { accepted: boolean; fingerprint: string } {
+  recordFinding(input: FindingInput) {
     const normalized = normalizeFindingInput(input);
     const fingerprint = fingerprintFinding(normalized);
     if (this.#findings.has(fingerprint)) return { accepted: false, fingerprint };
@@ -112,7 +112,7 @@ export class CampaignLedger {
     return { accepted: true, fingerprint };
   }
 
-  recordExploitChain(input: ExploitChainInput): { accepted: boolean; fingerprint: string } {
+  recordExploitChain(input: ExploitChainInput) {
     const fingerprint = fingerprintExploitChain(input);
     if (this.#exploitChains.has(fingerprint)) return { accepted: false, fingerprint };
     this.#exploitChains.set(fingerprint, { ...input, fingerprint });
@@ -154,23 +154,25 @@ export class CampaignLedger {
   ): ValidationObservation[] | undefined {
     const observations: ValidationObservation[] = [];
     for (const request of reproduction) {
-      const observation = this.#requests.get(requestKey(request))?.observation;
+      const observation = this.#requests.get(ledgerRequestKey(request))?.observation;
       if (!observation) return undefined;
-      observations.push({
+      const validationObservation: ValidationObservation = {
         method: observation.method ?? request.method ?? "GET",
         status: observation.status,
         path: observation.path,
         actorId: request.actorId,
         body: observation.body,
         truncated: observation.truncated ?? false,
-        ...(observation.contentType === undefined ? {} : { contentType: observation.contentType }),
-        ...(observation.redirectLocation === undefined
-          ? {}
-          : { redirectLocation: observation.redirectLocation }),
-        ...(observation.redirected === undefined ? {} : { redirected: observation.redirected }),
         durationMs: observation.durationMs,
         sampleId: request.sampleId,
-      });
+      };
+      if (observation.contentType !== undefined)
+        validationObservation.contentType = observation.contentType;
+      if (observation.redirectLocation !== undefined)
+        validationObservation.redirectLocation = observation.redirectLocation;
+      if (observation.redirected !== undefined)
+        validationObservation.redirected = observation.redirected;
+      observations.push(validationObservation);
     }
     return observations;
   }
@@ -193,22 +195,4 @@ export class CampaignLedger {
       })),
     };
   }
-}
-
-function requestKey(
-  request: Pick<LedgerRequest, "path" | "method" | "headers" | "body" | "actorId" | "sampleId">,
-): string {
-  const url = new URL(request.path, "http://scope.invalid");
-  url.searchParams.sort();
-  const headers = Object.entries(request.headers ?? {})
-    .map(([name, value]) => [name.toLowerCase(), value] as const)
-    .sort(([left], [right]) => left.localeCompare(right));
-  return JSON.stringify([
-    request.method ?? "GET",
-    request.actorId,
-    `${url.pathname}${url.search}`,
-    headers,
-    request.body ?? "",
-    request.sampleId ?? "",
-  ]);
 }

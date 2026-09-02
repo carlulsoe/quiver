@@ -7,7 +7,7 @@ import {
 import { RequestBudgetExceededError } from "./scoped-target.ts";
 import { ReplayBudgetExceededError } from "./verification.ts";
 
-export function isRequestBudgetExhausted(error: unknown): boolean {
+export function isRequestBudgetExhausted<T>(error: T): boolean {
   return (
     error instanceof RequestBudgetExceededError ||
     error instanceof ReplayBudgetExceededError ||
@@ -15,7 +15,7 @@ export function isRequestBudgetExhausted(error: unknown): boolean {
   );
 }
 
-export function isRuntimeStopError(error: unknown): boolean {
+export function isRuntimeStopError<T>(error: T): boolean {
   return (
     error instanceof CampaignPausedError ||
     error instanceof CampaignCancelledError ||

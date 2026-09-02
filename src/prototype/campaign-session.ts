@@ -4,6 +4,7 @@ import {
   emptyPromptUsage,
   type MissionUsage,
   type RunEvent,
+  type RunEventData,
 } from "./campaign-history.ts";
 import { assertCampaignIdentity, createCampaignIdentity } from "./campaign-identity.ts";
 import { InMemoryCampaignStore, type CampaignStore } from "./campaign-store.ts";
@@ -16,6 +17,11 @@ import {
   type CampaignState,
 } from "./state.ts";
 import type { TargetProfile } from "./target-profile.ts";
+import {
+  agentStreamEvent,
+  assertCampaignTarget,
+  parsePromptMetadata,
+} from "./campaign-session-support.ts";
 
 export interface CampaignSessionOptions {
   target: URL;
@@ -116,7 +122,7 @@ export class CampaignSession {
     this.#onState?.(this.#state, action);
   }
 
-  record(type: RunEvent["type"], data: Record<string, unknown>): void {
+  record(type: RunEvent["type"], data: RunEventData): void {
     const event: RunEvent = {
       sequence: (this.events.at(-1)?.sequence ?? 0) + 1,
       elapsedMs: this.elapsedMs(),
@@ -128,28 +134,8 @@ export class CampaignSession {
   }
 
   captureAgentEvent(agentId: string, chunk: ConversationStreamChunk): void {
-    if (chunk.type === "tool-input") {
-      this.record("tool-call", {
-        agentId,
-        toolCallId: chunk.toolCallId,
-        toolName: chunk.toolName,
-        input: durableToolInput(chunk.input),
-      });
-    } else if (chunk.type === "tool-output") {
-      this.record("tool-output", {
-        agentId,
-        toolCallId: chunk.toolCallId,
-        output: "[tool output omitted from durable history]",
-        durationMs: chunk.durationMs,
-      });
-    } else if (chunk.type === "tool-output-error") {
-      this.record("tool-error", {
-        agentId,
-        toolCallId: chunk.toolCallId,
-        error: "[tool error detail omitted from durable history]",
-        durationMs: chunk.durationMs,
-      });
-    }
+    const event = agentStreamEvent(agentId, chunk);
+    if (event) this.record(event.type, event.data);
   }
 
   beginMission(missionId: string, role: MissionUsage["role"], route: ModelRoute): MissionUsage {
@@ -180,12 +166,12 @@ export class CampaignSession {
     });
   }
 
-  captureUsage(metadata: Record<string, unknown> | undefined, mission: MissionUsage): void {
-    const value = metadata?.quiverUsage;
-    if (!isPromptUsage(value)) return;
-    addPromptUsage(this.usage, value);
-    addPromptUsage(mission.usage, value);
-    if (typeof metadata?.quiverModel === "string") mission.model = metadata.quiverModel;
+  captureUsage<Metadata>(metadata: Metadata, mission: MissionUsage): void {
+    const parsed = parsePromptMetadata(metadata);
+    if (!parsed) return;
+    addPromptUsage(this.usage, parsed.quiverUsage);
+    addPromptUsage(mission.usage, parsed.quiverUsage);
+    if (parsed.quiverModel) mission.model = parsed.quiverModel;
     this.syncMission(mission);
   }
 
@@ -206,35 +192,4 @@ export class CampaignSession {
     this.#store.apply(action);
     this.#state = this.#store.checkpoint();
   }
-}
-
-function durableToolInput(input: unknown): unknown {
-  return input !== null && typeof input === "object"
-    ? redactCredentials(input)
-    : "[tool input omitted from durable history]";
-}
-
-function assertCampaignTarget(state: CampaignState, campaignId: string, target: URL): void {
-  const expectedTarget = `${target.origin}${target.pathname}${target.search}`;
-  if (state.target !== expectedTarget) {
-    throw new Error(`Campaign ${campaignId} targets ${state.target}, not ${expectedTarget}`);
-  }
-}
-
-function isPromptUsage(value: unknown): value is PromptUsage {
-  if (!value || typeof value !== "object") return false;
-  const usage = value as Partial<PromptUsage>;
-  return (
-    typeof usage.input === "number" &&
-    typeof usage.output === "number" &&
-    typeof usage.cacheRead === "number" &&
-    typeof usage.cacheWrite === "number" &&
-    typeof usage.totalTokens === "number" &&
-    !!usage.cost &&
-    typeof usage.cost.input === "number" &&
-    typeof usage.cost.output === "number" &&
-    typeof usage.cost.cacheRead === "number" &&
-    typeof usage.cost.cacheWrite === "number" &&
-    typeof usage.cost.total === "number"
-  );
 }

@@ -61,6 +61,12 @@ describe("campaign session", () => {
   });
 });
 
-function chunk(value: Record<string, unknown>): ConversationStreamChunk {
-  return { ...value, position: { batch: 0, index: 0 } } as ConversationStreamChunk;
+type ToolChunk = Extract<
+  ConversationStreamChunk,
+  { type: "tool-input" | "tool-output" | "tool-output-error" }
+>;
+type WithoutPosition<Chunk> = Chunk extends ToolChunk ? Omit<Chunk, "position"> : never;
+
+function chunk(value: WithoutPosition<ToolChunk>): ConversationStreamChunk {
+  return { ...value, position: { batch: 0, index: 0 } };
 }

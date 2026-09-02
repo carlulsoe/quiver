@@ -79,14 +79,7 @@ export const heldOutProfile = createHeldOutProfile(configuredSeed);
 
 export function createHeldOutProfile(seed: string | undefined) {
   const canary = seed ? heldOutCanary(seed) : undefined;
-  return createTargetProfile(heldOutManifest, {
-    ...(canary
-      ? {
-          callbackConfigurationFingerprint: createHash("sha256")
-            .update(`held-out-canary:${canary}`)
-            .digest("hex"),
-        }
-      : {}),
+  const options: Parameters<typeof createTargetProfile>[1] = {
     proofPolicies: canary
       ? [
           {
@@ -102,7 +95,13 @@ export function createHeldOutProfile(seed: string | undefined) {
           },
         ]
       : [],
-  });
+  };
+  if (canary) {
+    options.callbackConfigurationFingerprint = createHash("sha256")
+      .update(`held-out-canary:${canary}`)
+      .digest("hex");
+  }
+  return createTargetProfile(heldOutManifest, options);
 }
 
 function readPublishedSeed(): string | undefined {

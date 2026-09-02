@@ -3,6 +3,12 @@ import type { AttackSurfaceGraphqlOperation, AttackSurfaceRequestBody } from "..
 import { isCredentialFieldName } from "../security/credentials.ts";
 import { discoverGraphqlOperations } from "./graphql.ts";
 
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | JsonObject;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 export function observeRequestBody(request: Request): AttackSurfaceRequestBody | undefined {
   const postData = request.postData();
   if (postData === null) return undefined;
@@ -36,9 +42,10 @@ export function discoverGraphqlOperationsFromRequest(
     const contentType = request.headers()["content-type"] ?? "";
     if (contentType.includes("json")) {
       try {
-        const body: unknown = JSON.parse(postData);
+        const body = JSON.parse(postData) as JsonValue;
         for (const entry of Array.isArray(body) ? body : [body]) {
-          if (isRecord(entry) && typeof entry.query === "string") queries.push(entry.query);
+          const query = jsonQuery(entry);
+          if (query) queries.push(query);
         }
       } catch {
         // The malformed body remains visible as body-format metadata.
@@ -49,8 +56,8 @@ export function discoverGraphqlOperationsFromRequest(
     } else if (contentType.includes("multipart/form-data")) {
       for (const match of postData.matchAll(/\r?\n\r?\n({[\s\S]*?})\r?\n--/g)) {
         try {
-          const body: unknown = JSON.parse(match[1]!);
-          if (isRecord(body) && typeof body.query === "string") queries.push(body.query);
+          const query = jsonQuery(JSON.parse(match[1]!) as JsonValue);
+          if (query) queries.push(query);
         } catch {
           // Ignore file data and unrelated multipart fields.
         }
@@ -60,12 +67,12 @@ export function discoverGraphqlOperationsFromRequest(
   return uniqueJson(queries.flatMap(discoverGraphqlOperations));
 }
 
-export function safeExample(value: unknown): unknown {
+export function safeExample<T>(value: T): JsonValue | undefined {
   try {
     const json = JSON.stringify(value);
     if (json === undefined) return undefined;
     if (json.length > 8_000) return "[example truncated]";
-    return redactSensitiveExample(JSON.parse(json) as unknown);
+    return redactSensitiveExample(JSON.parse(json) as JsonValue);
   } catch {
     return undefined;
   }
@@ -90,7 +97,7 @@ function observeMultipart(postData: string): AttackSurfaceRequestBody {
   };
 }
 
-function redactSensitiveExample(value: unknown): unknown {
+function redactSensitiveExample(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(redactSensitiveExample);
   if (!isRecord(value)) return value;
   return Object.fromEntries(
@@ -109,6 +116,12 @@ function uniqueJson<T>(values: readonly T[]): T[] {
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function jsonQuery(value: JsonValue): string | undefined {
+  if (!(value instanceof Object) || Array.isArray(value)) return undefined;
+  const query = value.query;
+  return Object.prototype.toString.call(query) === "[object String]" ? String(query) : undefined;
+}
+
+function isRecord(value: JsonValue): value is JsonObject {
+  return value instanceof Object && !Array.isArray(value);
 }

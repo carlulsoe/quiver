@@ -127,7 +127,7 @@ function authenticate(
   return authorization ? authorizations[authorization as keyof typeof authorizations] : undefined;
 }
 
-function json(body: unknown, status = 200): Response {
+function json<T>(body: T, status = 200): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store" } });
 }
 

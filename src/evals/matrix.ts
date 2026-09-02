@@ -17,13 +17,13 @@ export function buildEvalMatrix(options: {
   }
   if (!options.runSeed) throw new Error("runSeed must not be empty");
   return Array.from({ length: options.trialCount }, (_, offset) => offset + 1).flatMap((index) =>
-    options.profileIds.map((profileId) => ({
-      index,
-      profileId,
-      ...(profileId === "held-out"
-        ? { heldOutSeed: deriveHeldOutSeed(options.runSeed, index) }
-        : {}),
-    })),
+    options.profileIds.map((profileId) => {
+      const matrixCase: EvalMatrixCase = { index, profileId };
+      if (profileId === "held-out") {
+        matrixCase.heldOutSeed = deriveHeldOutSeed(options.runSeed, index);
+      }
+      return matrixCase;
+    }),
   );
 }
 

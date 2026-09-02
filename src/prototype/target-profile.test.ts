@@ -22,7 +22,7 @@ describe("target profile proof policy validation", () => {
           readMethod: "GET",
         },
       ],
-    } as unknown as TargetProfile;
+    } satisfies TargetProfile;
 
     expect(() => assertValidTargetProfile(profile)).toThrow(
       "must use POST/PUT/PATCH with a GET/HEAD state read",

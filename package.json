@@ -34,9 +34,10 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.81.0",
     "@types/bun": "latest",
     "oxfmt": "latest",
-    "oxlint": "latest",
+    "oxlint": "1.81.0",
     "typescript": "latest",
     "vitest": "4.1.11",
     "vitest-evals": "0.16.1"

@@ -63,7 +63,9 @@ export function discoverGraphqlOperations(query: string): AttackSurfaceGraphqlOp
       }
       index = cursor - 1;
     }
-    operations.push({ type, ...(name ? { name } : {}), rootFields });
+    const operation: AttackSurfaceGraphqlOperation = { type, rootFields };
+    if (name) operation.name = name;
+    operations.push(operation);
   }
   return operations;
 }

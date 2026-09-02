@@ -1,10 +1,10 @@
 import { deriveImpactLevel, type Finding, type ImpactLevel, type ProofCheck } from "./state.ts";
 
-const ranks: Record<ImpactLevel, number> = {
+const ranks = {
   observation: 0,
   bounded: 1,
   "state-change": 2,
-};
+} satisfies Record<ImpactLevel, number>;
 
 export function requiredImpactLevel(finding: Pick<Finding, "proof" | "reproduction">): ImpactLevel {
   return deriveImpactLevel(finding);

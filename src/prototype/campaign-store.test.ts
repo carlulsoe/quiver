@@ -1,15 +1,9 @@
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { InMemoryCampaignStore, JsonlCampaignStore, type CampaignStore } from "./campaign-store.ts";
-import {
-  createCampaignBudget,
-  createCampaignState,
-  validationJobId,
-  type FindingInput,
-  type FindingValidation,
-} from "./state.ts";
+import { createCampaignBudget, createCampaignState } from "./state.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -67,6 +61,28 @@ describe("campaign store", () => {
     reopened.close();
   });
 
+  it("does not persist an action rejected by the reducer", () => {
+    const directory = mkdtempSync(join(tmpdir(), "quiver-campaign-store-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "campaigns.jsonl");
+    const initial = createCampaignState("http://127.0.0.1:8888", createCampaignBudget(6), 1);
+    const store = new JsonlCampaignStore(path, [["durable", initial]]);
+
+    store.load("durable");
+    expect(() =>
+      store.apply({
+        type: "operations-discovered",
+        operations: [{ method: "GET", path: "/%E0%A4%A" }],
+      }),
+    ).toThrow();
+    store.close();
+
+    expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(1);
+    const reopened = new JsonlCampaignStore(path);
+    expect(reopened.load("durable").discoveredOperations).toEqual([]);
+    reopened.close();
+  });
+
   it("ignores a torn final JSONL write during crash recovery", () => {
     const directory = mkdtempSync(join(tmpdir(), "quiver-campaign-store-"));
     temporaryDirectories.push(directory);
@@ -110,171 +126,4 @@ describe("campaign store", () => {
 
     store.close();
   });
-
-  it("makes validation completion idempotent", () => {
-    const store = campaignWithFinding(readOnlyFinding());
-    const validation = rejectedValidation("other:GET:/health");
-
-    store.apply({ type: "job-started", id: validationJobId(validation.fingerprint) });
-    store.apply({ type: "validation", validation });
-    store.apply({ type: "validation", validation });
-
-    const checkpoint = store.checkpoint();
-    expect(checkpoint.validations).toHaveLength(1);
-    expect(checkpoint.runtime.jobs).toContainEqual(
-      expect.objectContaining({
-        id: validationJobId(validation.fingerprint),
-        status: "completed",
-        attempts: 1,
-      }),
-    );
-  });
-
-  it("recovers read-only jobs but halts instead of repeating state-changing attempts", () => {
-    const readOnlyStore = campaignWithFinding(readOnlyFinding());
-    const readOnlyId = validationJobId("other:GET:/health");
-    readOnlyStore.apply({ type: "job-started", id: readOnlyId });
-    readOnlyStore.apply({ type: "recover" });
-    expect(readOnlyStore.checkpoint().runtime.jobs[0]).toMatchObject({
-      status: "queued",
-      attempts: 1,
-    });
-
-    const stateChangingStore = campaignWithFinding(stateChangingFinding());
-    const stateChangingId = validationJobId("business-logic:POST:/orders/{id}");
-    stateChangingStore.apply({ type: "job-started", id: stateChangingId });
-    stateChangingStore.apply({ type: "job-mutation-started", id: stateChangingId });
-    stateChangingStore.apply({ type: "recover" });
-    expect(stateChangingStore.checkpoint().runtime).toMatchObject({
-      control: "halted",
-      jobs: [
-        expect.objectContaining({
-          id: stateChangingId,
-          status: "interrupted",
-          attempts: 1,
-        }),
-      ],
-    });
-  });
-
-  it("requeues retryable read-only stops but finalizes terminal job failures", () => {
-    const store = campaignWithFinding(readOnlyFinding());
-    const id = validationJobId("other:GET:/health");
-
-    store.apply({ type: "job-started", id });
-    store.apply({ type: "job-failed", id, error: "Campaign is paused", retryable: true });
-    expect(store.checkpoint().runtime.jobs[0]).toMatchObject({ status: "queued", attempts: 1 });
-
-    store.apply({ type: "job-started", id });
-    store.apply({ type: "job-failed", id, error: "Final budget exhausted", retryable: false });
-    expect(store.checkpoint().runtime.jobs[0]).toMatchObject({ status: "failed", attempts: 2 });
-
-    const stateChangingStore = campaignWithFinding(stateChangingFinding());
-    const stateChangingId = validationJobId("business-logic:POST:/orders/{id}");
-    stateChangingStore.apply({ type: "job-started", id: stateChangingId });
-    stateChangingStore.apply({ type: "job-mutation-started", id: stateChangingId });
-    stateChangingStore.apply({
-      type: "job-failed",
-      id: stateChangingId,
-      error: "Testing window closed during replay",
-      retryable: true,
-    });
-    expect(stateChangingStore.checkpoint().runtime).toMatchObject({
-      control: "halted",
-      jobs: [expect.objectContaining({ status: "interrupted", attempts: 1 })],
-    });
-  });
-
-  it("does not quarantine a state-changing job that failed before target mutation began", () => {
-    const store = campaignWithFinding(stateChangingFinding());
-    const id = validationJobId("business-logic:POST:/orders/{id}");
-
-    store.apply({ type: "job-started", id });
-    store.apply({
-      type: "job-failed",
-      id,
-      error: "model unavailable before tool use",
-      retryable: false,
-    });
-
-    expect(store.checkpoint().runtime).toMatchObject({
-      control: "running",
-      jobs: [expect.objectContaining({ status: "failed", attempts: 1 })],
-    });
-  });
-
-  it("persists pause, resume, and cancellation as idempotent control actions", () => {
-    const state = createCampaignState("http://127.0.0.1:8888", createCampaignBudget(6), 1);
-    const store = new InMemoryCampaignStore([["controlled", state]]);
-    store.load("controlled");
-
-    store.apply({ type: "pause", reason: "outside approved hours" });
-    store.apply({ type: "pause", reason: "ignored duplicate" });
-    expect(store.checkpoint().runtime.controlReason).toBe("outside approved hours");
-    store.apply({ type: "resume" });
-    store.apply({ type: "cancel", reason: "operator cancelled" });
-    store.apply({ type: "resume" });
-
-    expect(store.checkpoint().runtime).toMatchObject({
-      control: "cancelled",
-      controlReason: "operator cancelled",
-    });
-  });
 });
-
-function campaignWithFinding(finding: FindingInput): InMemoryCampaignStore {
-  const state = createCampaignState("http://127.0.0.1:8888", createCampaignBudget(6), 1);
-  const store = new InMemoryCampaignStore([["campaign", state]]);
-  store.load("campaign");
-  store.apply({ type: "finding", finding });
-  return store;
-}
-
-function readOnlyFinding(): FindingInput {
-  return {
-    agentId: "explorer-1",
-    title: "Health details",
-    category: "other",
-    severity: "low",
-    cwe: "CWE-200",
-    endpoint: "/health",
-    method: "GET",
-    resource: "health",
-    rationale: "test",
-    impact: "test",
-    mitigation: "test",
-    impactLevel: "observation",
-    reproduction: [{ path: "/health", actorId: "anonymous" }],
-    proof: { type: "internal-field-exposure", requestIndex: 0, evidencePointers: ["/build"] },
-  };
-}
-
-function stateChangingFinding(): FindingInput {
-  return {
-    ...readOnlyFinding(),
-    title: "Order transition",
-    category: "business-logic",
-    endpoint: "/orders/{id}",
-    method: "POST",
-    impactLevel: "state-change",
-    reproduction: [{ path: "/orders/1", method: "POST", actorId: "anonymous" }],
-    proof: {
-      type: "state-transition",
-      policyId: "order-transition",
-      transitionRequestIndex: 0,
-      beforeRequestIndex: 0,
-      afterRequestIndex: 0,
-    },
-  };
-}
-
-function rejectedValidation(fingerprint: string): FindingValidation {
-  return {
-    fingerprint,
-    status: "rejected",
-    evidence: "not reproduced",
-    proof: { predicate: "internal-field-exposure", passed: false, summary: "no", checks: [] },
-    observations: [],
-    reviewer: { assessment: "unsupported", evidence: "no" },
-  };
-}
