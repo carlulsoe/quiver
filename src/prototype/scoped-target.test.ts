@@ -6,6 +6,62 @@ function response(body: string, contentType: string): Response {
 }
 
 describe("scoped target", () => {
+  it("captures an exact Location header without following the redirect", async () => {
+    let redirectMode: RequestRedirect | undefined;
+    const destination = "https://redirect-proof.invalid/landing";
+    const target = new ScopedTarget({
+      target: new URL("http://127.0.0.1:8888"),
+      requestBudget: 1,
+      transport: async (_input, init) => {
+        redirectMode = init?.redirect;
+        return new Response("redirecting", {
+          status: 302,
+          headers: { location: destination },
+        });
+      },
+    });
+
+    await expect(target.request({ path: "/leave?next=external" })).resolves.toMatchObject({
+      status: 302,
+      redirectLocation: destination,
+      redirected: false,
+    });
+    expect(redirectMode).toBe("manual");
+  });
+
+  it("requires CSRF browser proof cookies to belong to the primary target", async () => {
+    let collections = 0;
+    const target = new ScopedTarget({
+      target: new URL("http://127.0.0.1:8888"),
+      requestBudget: 2,
+      allowedRequests: [{ method: "POST", path: "/account/email" }],
+      attackSurfaceOrigins: [{ origin: "http://127.0.0.1:9999", scope: "visit-only" }],
+      browserStateTransitionCollector: async () => {
+        collections += 1;
+        return undefined;
+      },
+    });
+    target.setSession("ordinary-user", {
+      browserState: {
+        cookies: [{ name: "session", value: "wrong", url: "http://127.0.0.1:9999" }],
+      },
+    });
+
+    await expect(
+      target.observeBrowserStateTransition({
+        policyId: "email-csrf",
+        sourceOrigin: "http://127.0.0.1:9999",
+        sourcePath: "/csrf/email",
+        targetPath: "/account/email",
+        method: "POST",
+        actorId: "ordinary-user",
+        requestBudget: 2,
+      }),
+    ).rejects.toThrow("target-scoped cookies");
+    expect(collections).toBe(0);
+    expect(target.requestsUsed).toBe(0);
+  });
+
   it("extends a persistent validation session and admits new reproduction operations", async () => {
     const target = new ScopedTarget({
       target: new URL("http://127.0.0.1:8888"),

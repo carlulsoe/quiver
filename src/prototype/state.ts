@@ -61,6 +61,12 @@ export interface ChallengeMutation {
   template: string;
 }
 
+export interface BrowserChallengeMutation {
+  location: "query" | "json-body" | "fragment";
+  parameter: string;
+  template: string;
+}
+
 export interface BrowserEffectEvidence {
   probeId: string;
   path: string;
@@ -77,8 +83,18 @@ export interface OastCallbackEvidence {
   observedAt: string;
 }
 
+export interface BrowserStateTransitionEvidence {
+  policyId: string;
+  sourceOrigin: string;
+  sourcePath: string;
+  targetPath: string;
+  method: string;
+  status: number;
+}
+
 export interface ProofArtifacts {
   browserEffects: BrowserEffectEvidence[];
+  browserStateTransitions: BrowserStateTransitionEvidence[];
   oastCallbacks: OastCallbackEvidence[];
 }
 
@@ -144,6 +160,17 @@ export type ProofPredicate =
       jsonPointer: string;
     }
   | {
+      type: "file-content-retrieval";
+      policyId: string;
+      requestIndex: number;
+    }
+  | {
+      type: "redirect-destination";
+      policyId: string;
+      requestIndex: number;
+      destination: string;
+    }
+  | {
       type: "state-transition";
       policyId: string;
       transitionRequestIndex: number;
@@ -158,9 +185,17 @@ export type ProofPredicate =
       requestIndex: number;
       pagePath: string;
       kind: "dialog";
-      challenge: ChallengeMutation;
+      challenge: BrowserChallengeMutation;
       pageActorId: ActorId;
-      pageChallenge?: ChallengeMutation;
+      pageChallenge?: BrowserChallengeMutation;
+      collectorRequestBudget: number;
+    }
+  | {
+      type: "browser-state-transition";
+      policyId: string;
+      beforeRequestIndex: number;
+      afterRequestIndex: number;
+      pageActorId: ActorId;
       collectorRequestBudget: number;
     }
   | {
@@ -247,6 +282,7 @@ export interface ProofCheck {
 
 export interface ProofResult {
   predicate: ProofPredicate["type"];
+  classification?: "server-side-request-forgery" | "command-execution";
   passed: boolean;
   summary: string;
   checks: ProofCheck[];
@@ -259,6 +295,9 @@ export interface ValidationObservation {
   actorId: ActorId;
   body: unknown;
   truncated: boolean;
+  contentType?: string;
+  redirectLocation?: string;
+  redirected?: boolean;
   durationMs?: number;
   sampleId?: string;
 }
@@ -503,7 +542,7 @@ export function deriveImpactLevel(
   finding: Pick<FindingInput, "proof" | "reproduction">,
 ): ImpactLevel {
   if (
-    finding.proof.type === "state-transition" ||
+    ["state-transition", "browser-state-transition"].includes(finding.proof.type) ||
     finding.reproduction.some(({ method = "GET" }) => !["GET", "HEAD", "OPTIONS"].includes(method))
   ) {
     return "state-change";

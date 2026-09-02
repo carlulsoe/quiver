@@ -209,11 +209,13 @@ Explorers may submit multiple findings and continue after each submission.
 Findings carry severity, CWE, impact, mitigation, a safe impact-demonstration level, an ordered reproduction plan
 containing exact REST methods, bodies, headers, and authentication mode, and one
 structured proof predicate. Vulnerability-specific validators cover authorization
-and data exposure, browser-visible XSS effects, HTTP OAST callbacks, verifier-only
-canary retrieval, exact before/after state transitions, target-owned SQL semantic
-differentials, and fresh computed command-execution challenges. Generic response
-and timing differentials remain supporting evidence, and SSRF OAST callbacks do
-not confirm command execution. BOLA proofs require different actor and resource-owner
+and data exposure, explicit stored-write and fragment-only DOM-XSS workflows,
+SSRF-only HTTP OAST callbacks, verifier-only JSON canaries and raw immutable-file
+retrieval, exact HTTP redirect destinations without automatic following, direct and
+cross-origin browser state transitions, target-owned SQL semantic differentials, and
+fresh computed command-execution challenges. Generic response and timing differentials
+remain supporting evidence. OAST results are explicitly classified as SSRF and cannot
+confirm command execution. BOLA proofs require different actor and resource-owner
 identities plus concrete impact fields in a successful access response.
 
 Impact levels are derived by code: `observation` for read-only HTTP evidence,
@@ -258,11 +260,14 @@ Current hard boundaries:
 - Agent state-changing requests must come from the browser/OpenAPI map or profile setup allowlist
 - Profiles may deny operations known to have unwanted side effects; the crAPI profile
   blocks its database- and filesystem-mutating mechanic report handlers
-- Explicit exact-origin enforcement with redirects disabled; configured
+- Explicit exact-origin enforcement with redirects disabled; open-redirect proof records
+  the original 3xx response and requires an exact policy-owned `Location`; configured
   secondary origins are independently `attackable` or `visit-only`
 - WebSockets are observed and forwarded unchanged, not actively tested
 - Shared campaign budget with a reserved validation portion
-- Browser proof documents and assets consume a policy-declared collector budget
+- Browser proof documents, assets, and CSRF transitions consume a policy-declared
+  collector budget; CSRF sources must be configured cross-origin visit-only pages and
+  use a named actor's target-scoped cookies
 - 12 KB cap for agent-visible responses
 - No shell, browser, filesystem, or arbitrary network tools exposed directly to agents
 

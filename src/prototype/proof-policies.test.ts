@@ -52,6 +52,94 @@ function evaluateWithPolicy(
 }
 
 describe("target-owned proof policies", () => {
+  it("confirms only an unfollowed redirect to the exact policy destination", () => {
+    const destination = "https://redirect-proof.invalid/landing?campaign=quiver";
+    const finding = policyFinding(
+      "open-redirect",
+      "/leave",
+      "GET",
+      [{ path: `/leave?next=${encodeURIComponent(destination)}`, actorId: "anonymous" }],
+      {
+        type: "redirect-destination",
+        policyId: "external-leave",
+        requestIndex: 0,
+        destination,
+      },
+    );
+    const policy: ProofPolicy = {
+      id: "external-leave",
+      kind: "redirect",
+      category: "open-redirect",
+      description: "The redirector must not accept an external destination.",
+      endpoint: "/leave",
+      method: "GET",
+      challenge: { location: "query", parameter: "next", template: "{{challenge}}" },
+      destination,
+    };
+    const redirect = {
+      ...observation(finding.reproduction[0]!.path, "redirecting"),
+      status: 302,
+      redirectLocation: destination,
+      redirected: false,
+    };
+
+    expect(evaluateWithPolicy(finding, [redirect], policy).passed).toBe(true);
+    expect(
+      evaluateWithPolicy(
+        finding,
+        [{ ...redirect, redirectLocation: "https://redirect-proof.invalid/other" }],
+        policy,
+      ).passed,
+    ).toBe(false);
+    expect(evaluateWithPolicy(finding, [{ ...redirect, redirected: true }], policy).passed).toBe(
+      false,
+    );
+  });
+
+  it("confirms traversal from a verifier-only raw file body, not a JSON canary", () => {
+    const traversal = "../../fixtures/quiver-proof.txt";
+    const content = "Quiver immutable traversal fixture\nline two\n";
+    const finding = policyFinding(
+      "path-traversal",
+      "/download",
+      "GET",
+      [{ path: `/download?file=${encodeURIComponent(traversal)}`, actorId: "anonymous" }],
+      { type: "file-content-retrieval", policyId: "fixture-file", requestIndex: 0 },
+    );
+    const policy: ProofPolicy = {
+      id: "fixture-file",
+      kind: "file-content",
+      category: "path-traversal",
+      description: "A synthetic immutable text file outside the public root.",
+      endpoint: "/download",
+      method: "GET",
+      request: { location: "query", parameter: "file", value: traversal },
+      source: "immutable-fixture",
+      contentTypePattern: "^text/plain(?:;|$)",
+      verify: (value) => value === content,
+    };
+    const raw = {
+      ...observation(finding.reproduction[0]!.path, content),
+      contentType: "text/plain",
+    };
+
+    expect(evaluateWithPolicy(finding, [raw], policy).passed).toBe(true);
+    expect(
+      evaluateWithPolicy(
+        finding,
+        [{ ...raw, body: { content }, contentType: "application/json" }],
+        policy,
+      ).passed,
+    ).toBe(false);
+    expect(
+      evaluateWithPolicy(
+        { ...finding, reproduction: [{ path: "/download?file=public.txt", actorId: "anonymous" }] },
+        [raw],
+        policy,
+      ).passed,
+    ).toBe(false);
+  });
+
   it("confirms retrieval only when the selected value matches a declared canary", () => {
     const finding = policyFinding(
       "sensitive-data-exposure",
@@ -279,12 +367,16 @@ describe("target-owned proof policies", () => {
       id: "comment-dialog",
       kind: "browser-effect",
       category: "cross-site-scripting",
+      workflow: "stored",
+      endpoint: "/comments",
+      method: "POST",
       description: "Synthetic comments must never execute a dialog marker.",
       effect: "dialog",
       markerPattern: "^QUIVER-BROWSER-[A-Z0-9-]+$",
       pagePath: "/comments/latest",
       payloadTemplate,
       challenge: { location: "json-body", parameter: "payload", template: payloadTemplate },
+      submissionActorId: "ordinary-user",
       pageActorId: "ordinary-user",
       requestBudget: 3,
     };
@@ -298,6 +390,7 @@ describe("target-owned proof policies", () => {
             browserEffects: [
               { probeId: "browser-1", path: "/comments/latest", kind: "dialog", value: marker },
             ],
+            browserStateTransitions: [],
             oastCallbacks: [],
           },
         },
@@ -333,6 +426,7 @@ describe("target-owned proof policies", () => {
             browserEffects: [
               { probeId: "browser-1", path: "/comments/latest", kind: "dialog", value: marker },
             ],
+            browserStateTransitions: [],
             oastCallbacks: [],
           },
         },
@@ -381,6 +475,7 @@ describe("target-owned proof policies", () => {
         {
           artifacts: {
             browserEffects: [],
+            browserStateTransitions: [],
             oastCallbacks: [
               {
                 probeId: "oast-1",
@@ -397,6 +492,134 @@ describe("target-owned proof policies", () => {
     ).toBe(true);
     expect(
       evaluateWithPolicy(oastFinding, [observation("/preview", {}, "POST")], oastPolicy).passed,
+    ).toBe(false);
+  });
+
+  it("confirms a fragment-only DOM workflow without server reflection", () => {
+    const marker = "QUIVER-BROWSER-DOM-1";
+    const path = `/app#payload=${marker}`;
+    const finding = policyFinding(
+      "cross-site-scripting",
+      "/app",
+      "GET",
+      [{ path, actorId: "anonymous" }],
+      {
+        type: "browser-visible-effect",
+        policyId: "dom-dialog",
+        probeId: "dom-probe",
+        marker,
+        requestIndex: 0,
+        pagePath: path,
+        kind: "dialog",
+        challenge: { location: "fragment", parameter: "payload", template: "{{challenge}}" },
+        pageActorId: "anonymous",
+        pageChallenge: {
+          location: "fragment",
+          parameter: "payload",
+          template: "{{challenge}}",
+        },
+        collectorRequestBudget: 1,
+      },
+    );
+    const policy: ProofPolicy = {
+      id: "dom-dialog",
+      kind: "browser-effect",
+      category: "cross-site-scripting",
+      workflow: "dom",
+      endpoint: "/app",
+      method: "GET",
+      description: "The client must not execute a fragment payload.",
+      effect: "dialog",
+      markerPattern: "^QUIVER-BROWSER-DOM-",
+      pagePath: "/app#payload=old",
+      payloadTemplate: "{{challenge}}",
+      challenge: { location: "fragment", parameter: "payload", template: "{{challenge}}" },
+      submissionActorId: "anonymous",
+      pageActorId: "anonymous",
+      pageChallenge: { location: "fragment", parameter: "payload", template: "{{challenge}}" },
+      requestBudget: 1,
+    };
+    const artifacts = {
+      browserEffects: [{ probeId: "dom-probe", path, kind: "dialog" as const, value: marker }],
+      browserStateTransitions: [],
+      oastCallbacks: [],
+    };
+
+    expect(
+      evaluateWithPolicy(finding, [observation(path, "static application shell")], policy, {
+        artifacts,
+      }).passed,
+    ).toBe(true);
+    expect(
+      evaluateWithPolicy(finding, [observation(path, `reflected ${marker}`)], policy, {
+        artifacts,
+      }).passed,
+    ).toBe(false);
+  });
+
+  it("confirms CSRF only from a fresh policy-backed browser state transition", () => {
+    const finding = policyFinding(
+      "cross-site-request-forgery",
+      "/account/email",
+      "POST",
+      [
+        { path: "/account", actorId: "ordinary-user", sampleId: "before" },
+        { path: "/account", actorId: "ordinary-user", sampleId: "after" },
+      ],
+      {
+        type: "browser-state-transition",
+        policyId: "email-csrf",
+        beforeRequestIndex: 0,
+        afterRequestIndex: 1,
+        pageActorId: "ordinary-user",
+        collectorRequestBudget: 2,
+      },
+    );
+    const policy: ProofPolicy = {
+      id: "email-csrf",
+      kind: "browser-state-transition",
+      category: "cross-site-request-forgery",
+      description: "A cross-origin fixture attempts the protected email transition.",
+      endpoint: "/account/email",
+      method: "POST",
+      sourceOrigin: "http://127.0.0.1:9999",
+      sourcePath: "/csrf/email",
+      pageActorId: "ordinary-user",
+      requestBudget: 2,
+      readEndpoint: "/account",
+      readMethod: "GET",
+      jsonPointer: "/email",
+      before: "before@example.test",
+      after: "after@example.test",
+    };
+    const observations = [
+      { ...observation("/account", { email: "before@example.test" }), actorId: "ordinary-user" },
+      { ...observation("/account", { email: "after@example.test" }), actorId: "ordinary-user" },
+    ];
+    const transition = {
+      policyId: policy.id,
+      sourceOrigin: policy.sourceOrigin,
+      sourcePath: policy.sourcePath,
+      targetPath: policy.endpoint,
+      method: policy.method,
+      status: 302,
+    };
+
+    expect(
+      evaluateWithPolicy(finding, observations, policy, {
+        stateResetAvailable: true,
+        artifacts: {
+          browserEffects: [],
+          browserStateTransitions: [transition],
+          oastCallbacks: [],
+        },
+      }).passed,
+    ).toBe(true);
+    expect(
+      evaluateWithPolicy(finding, observations, policy, {
+        stateResetAvailable: true,
+        artifacts: { browserEffects: [], browserStateTransitions: [], oastCallbacks: [] },
+      }).passed,
     ).toBe(false);
   });
 });

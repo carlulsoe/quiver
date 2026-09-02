@@ -242,7 +242,11 @@ describe("verification engine", () => {
       }),
     ).toMatchObject({
       accepted: true,
-      proof: { passed: true, predicate: "command-execution-challenge" },
+      proof: {
+        passed: true,
+        predicate: "command-execution-challenge",
+        classification: "command-execution",
+      },
     });
 
     const target = new ScopedTarget({
@@ -286,11 +290,14 @@ describe("verification engine", () => {
         challenge: { location: "query", parameter: "ipaddress", template: "{{challenge}}" },
       },
     };
-    expect(
-      verification.preflight(oastClaim, {
-        observations: injectionObservations(oastClaim, [{ content: "callback sent" }]),
-      }).proof.checks[0],
-    ).toMatchObject({ passed: false, description: expect.stringContaining("compatible with") });
+    const oastResult = verification.preflight(oastClaim, {
+      observations: injectionObservations(oastClaim, [{ content: "callback sent" }]),
+    });
+    expect(oastResult.proof.classification).toBe("server-side-request-forgery");
+    expect(oastResult.proof.checks[0]).toMatchObject({
+      passed: false,
+      description: expect.stringContaining("compatible with"),
+    });
 
     const secureFinding = commandInjectionFinding(
       "LEVEL_6",

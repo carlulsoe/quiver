@@ -163,6 +163,11 @@ export class CampaignLedger {
         actorId: request.actorId,
         body: observation.body,
         truncated: observation.truncated ?? false,
+        ...(observation.contentType === undefined ? {} : { contentType: observation.contentType }),
+        ...(observation.redirectLocation === undefined
+          ? {}
+          : { redirectLocation: observation.redirectLocation }),
+        ...(observation.redirected === undefined ? {} : { redirected: observation.redirected }),
         durationMs: observation.durationMs,
         sampleId: request.sampleId,
       });

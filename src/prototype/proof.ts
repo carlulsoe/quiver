@@ -34,9 +34,9 @@ export const compatiblePredicates: Record<FindingCategory, readonly ProofPredica
   "sql-injection": ["sql-semantic-differential"],
   "command-injection": ["command-execution-challenge"],
   "server-side-request-forgery": ["oast-callback"],
-  "path-traversal": ["canary-retrieval"],
-  "open-redirect": [],
-  "cross-site-request-forgery": [],
+  "path-traversal": ["canary-retrieval", "file-content-retrieval"],
+  "open-redirect": ["redirect-destination"],
+  "cross-site-request-forgery": ["browser-state-transition"],
   "business-logic": ["state-transition"],
   "security-misconfiguration": ["unauthenticated-success"],
   other: [],
@@ -68,11 +68,7 @@ export function evaluateProof(
       `${observations.length}/${finding.reproduction.length}`,
     ),
     check(
-      finding.reproduction.some(
-        ({ path, method }) =>
-          endpointMatchesRequest(finding.endpoint, path) &&
-          (method ?? "GET") === (finding.method ?? "GET"),
-      ),
+      affectedOperationIsRepresented(finding, context.policies),
       "affected operation matches a reproduction request",
     ),
     check(!observations.some(({ truncated }) => truncated), "proof responses were not truncated"),
@@ -422,6 +418,101 @@ export function evaluateProof(
       );
       break;
     }
+    case "file-content-retrieval": {
+      const proof = finding.proof;
+      const policy = policyFor(context.policies, proof.policyId, "file-content");
+      const request = finding.reproduction[proof.requestIndex];
+      const observation = observations[proof.requestIndex];
+      const body = typeof observation?.body === "string" ? observation.body : undefined;
+      const contentTypePattern = policy ? safeRegex(policy.contentTypePattern, "i") : undefined;
+      checks.push(
+        check(policy?.category === finding.category, "target policy authorizes this file proof"),
+        check(
+          policy !== undefined &&
+            finding.reproduction.length === 1 &&
+            proof.requestIndex === 0 &&
+            request !== undefined &&
+            (request.method ?? "GET") === policy.method &&
+            endpointMatchesRequest(policy.endpoint, request.path) &&
+            affectedOperationMatches(finding, request),
+          "file request is one policy-bound affected operation",
+        ),
+        check(
+          policy !== undefined &&
+            requestMutationValue(request, policy.request) === policy.request.value,
+          "request contains the exact target-owned traversal value",
+        ),
+        check(
+          observation !== undefined && isSuccess(observation.status) && body !== undefined,
+          "file response is successful raw text rather than a parsed JSON canary",
+          observation?.status,
+        ),
+        check(
+          contentTypePattern !== undefined &&
+            contentTypePattern.test(observation?.contentType ?? ""),
+          "file response media type matches the target policy",
+          observation?.contentType,
+        ),
+        check(
+          policy !== undefined &&
+            policy.source === "immutable-fixture" &&
+            request !== undefined &&
+            body !== undefined &&
+            !requestContains(request, body) &&
+            verifyFileContent(policy, body),
+          "raw body passes the verifier-only immutable-file contract and was not reflected",
+        ),
+      );
+      break;
+    }
+    case "redirect-destination": {
+      const proof = finding.proof;
+      const policy = policyFor(context.policies, proof.policyId, "redirect");
+      const request = finding.reproduction[proof.requestIndex];
+      const observation = observations[proof.requestIndex];
+      checks.push(
+        check(
+          policy?.category === finding.category,
+          "target policy authorizes this redirect proof",
+        ),
+        check(
+          policy !== undefined && proof.destination === policy.destination,
+          "redirect destination is the exact target-owned absolute URL",
+          proof.destination,
+        ),
+        check(
+          policy !== undefined &&
+            finding.reproduction.length === 1 &&
+            proof.requestIndex === 0 &&
+            request !== undefined &&
+            (request.method ?? "GET") === policy.method &&
+            endpointMatchesRequest(policy.endpoint, request.path) &&
+            affectedOperationMatches(finding, request),
+          "redirect request is one policy-bound affected operation",
+        ),
+        check(
+          policy !== undefined &&
+            challengeRequestMatches(request, policy.challenge, policy.destination),
+          "request binds the exact redirect destination to the policy parameter",
+        ),
+        check(
+          observation !== undefined && observation.status >= 300 && observation.status < 400,
+          "response is an HTTP redirect",
+          observation?.status,
+        ),
+        check(
+          observation?.redirected === false,
+          "automatic redirect following was disabled",
+          observation?.redirected,
+        ),
+        check(
+          observation?.redirectLocation === proof.destination,
+          "Location exactly equals the declared redirect destination",
+          observation?.redirectLocation,
+        ),
+      );
+      break;
+    }
     case "state-transition": {
       const policy = policyFor(context.policies, finding.proof.policyId, "state-transition");
       const before = policy
@@ -499,6 +590,90 @@ export function evaluateProof(
       );
       break;
     }
+    case "browser-state-transition": {
+      const proof = finding.proof;
+      const policy = policyFor(context.policies, proof.policyId, "browser-state-transition");
+      const before = policy
+        ? selectedAt(observations, proof.beforeRequestIndex, policy.jsonPointer)
+        : { found: false };
+      const after = policy
+        ? selectedAt(observations, proof.afterRequestIndex, policy.jsonPointer)
+        : { found: false };
+      const beforeObservation = observations[proof.beforeRequestIndex];
+      const afterObservation = observations[proof.afterRequestIndex];
+      const artifact = context.artifacts?.browserStateTransitions.find(
+        (candidate) =>
+          candidate.policyId === policy?.id &&
+          candidate.sourceOrigin === policy.sourceOrigin &&
+          candidate.sourcePath === policy.sourcePath &&
+          candidate.targetPath === policy.endpoint &&
+          candidate.method === policy.method,
+      );
+      checks.push(
+        check(policy?.category === finding.category, "target policy authorizes this CSRF proof"),
+        check(
+          context.stateResetAvailable === true,
+          "target provides a fresh-state preparation hook for CSRF validation",
+        ),
+        check(
+          policy !== undefined &&
+            finding.reproduction.length === 2 &&
+            proof.beforeRequestIndex === 0 &&
+            proof.afterRequestIndex === 1 &&
+            proof.pageActorId === policy.pageActorId &&
+            proof.pageActorId !== actorIds.anonymous &&
+            proof.collectorRequestBudget === policy.requestBudget,
+          "CSRF proof is one authenticated policy-page transition between two reads",
+        ),
+        check(
+          policy !== undefined &&
+            finding.method === policy.method &&
+            endpointMatchesRequest(finding.endpoint, policy.endpoint) &&
+            isExactOrigin(policy.sourceOrigin),
+          "affected mutation and exact source origin match the target policy",
+        ),
+        check(
+          policy !== undefined &&
+            [proof.beforeRequestIndex, proof.afterRequestIndex].every((index) => {
+              const request = finding.reproduction[index];
+              return (
+                request !== undefined &&
+                request.actorId === policy.pageActorId &&
+                (request.method ?? "GET") === policy.readMethod &&
+                endpointMatchesRequest(policy.readEndpoint, request.path)
+              );
+            }) &&
+            sameConcreteRequest(
+              finding.reproduction[proof.beforeRequestIndex],
+              finding.reproduction[proof.afterRequestIndex],
+            ),
+          "before and after requests read the same policy-bound state as the browser actor",
+        ),
+        check(
+          beforeObservation !== undefined &&
+            afterObservation !== undefined &&
+            isSuccess(beforeObservation.status) &&
+            isSuccess(afterObservation.status),
+          "before and after state reads completed successfully",
+        ),
+        check(
+          artifact !== undefined && isCompletedStateTransition(artifact.status),
+          "fresh browser artifact records the exact cross-origin mutation",
+          artifact?.status,
+        ),
+        check(
+          before.found && sameValue(before.value, policy?.before),
+          "protected state starts at the policy value",
+          before.value,
+        ),
+        check(
+          after.found && sameValue(after.value, policy?.after),
+          "protected state reaches the policy value",
+          after.value,
+        ),
+      );
+      break;
+    }
     case "browser-visible-effect": {
       const proof = finding.proof;
       const policy = policyFor(context.policies, proof.policyId, "browser-effect");
@@ -506,11 +681,19 @@ export function evaluateProof(
       const artifact = context.artifacts?.browserEffects.find(
         ({ probeId }) => probeId === proof.probeId,
       );
+      const request = finding.reproduction[proof.requestIndex];
+      const observation = observations[proof.requestIndex];
       checks.push(
         check(policy?.category === finding.category, "target policy authorizes this browser proof"),
         check(
-          affectedOperationMatches(finding, finding.reproduction[proof.requestIndex]),
-          "browser payload request matches the affected operation",
+          policy !== undefined &&
+            finding.reproduction.length === 1 &&
+            proof.requestIndex === 0 &&
+            request !== undefined &&
+            (request.method ?? "GET") === policy.method &&
+            endpointMatchesRequest(policy.endpoint, request.path) &&
+            affectedOperationMatches(finding, request),
+          "browser payload is one policy-bound affected operation",
         ),
         check(
           policy !== undefined &&
@@ -518,8 +701,10 @@ export function evaluateProof(
           "browser challenge uses the target-owned mutation and executable payload template",
         ),
         check(
-          policy !== undefined && proof.pageActorId === policy.pageActorId,
-          "browser page authentication matches the target policy",
+          policy !== undefined &&
+            proof.pageActorId === policy.pageActorId &&
+            request?.actorId === policy.submissionActorId,
+          "browser submission and page actors match the target policy",
         ),
         check(
           policy !== undefined && proof.collectorRequestBudget === policy.requestBudget,
@@ -530,13 +715,17 @@ export function evaluateProof(
           "browser navigation challenge matches the target policy",
         ),
         check(
-          proof.pageChallenge === undefined ||
-            (finding.method === "GET" &&
-              proof.requestIndex === 0 &&
-              finding.reproduction.length === 1 &&
-              proof.pagePath === finding.reproduction[proof.requestIndex]?.path &&
-              challengePathMatches(proof.pagePath, proof.pageChallenge, proof.marker)),
-          "reflected browser challenge is the exact affected GET request",
+          policy !== undefined &&
+            ((policy.workflow === "stored" &&
+              ["POST", "PUT", "PATCH"].includes(policy.method) &&
+              proof.pageChallenge === undefined) ||
+              (policy.workflow === "dom" &&
+                finding.method === "GET" &&
+                proof.pageChallenge?.location === "fragment" &&
+                proof.pagePath === request?.path &&
+                challengePathMatches(proof.pagePath, proof.pageChallenge, proof.marker) &&
+                !responseContains(observation?.body, proof.marker))),
+          "browser proof follows the policy's closed stored-write or fragment-only DOM workflow",
         ),
         check(
           challengeRequestMatches(
@@ -545,6 +734,11 @@ export function evaluateProof(
             proof.marker,
           ),
           "issued browser marker is bound to the declared request mutation",
+        ),
+        check(
+          observation !== undefined && isSuccess(observation.status),
+          "browser payload operation completed successfully",
+          observation?.status,
         ),
         check(
           artifact !== undefined &&
@@ -605,12 +799,40 @@ export function evaluateProof(
   const passed = checks.every((item) => item.passed);
   return {
     predicate: finding.proof.type,
+    ...(finding.proof.type === "oast-callback"
+      ? { classification: "server-side-request-forgery" as const }
+      : finding.proof.type === "command-execution-challenge"
+        ? { classification: "command-execution" as const }
+        : {}),
     passed,
     summary: passed
       ? `Deterministic ${finding.proof.type} predicate passed ${checks.length}/${checks.length} checks.`
       : `Deterministic ${finding.proof.type} predicate failed ${checks.filter((item) => !item.passed).length}/${checks.length} checks.`,
     checks,
   };
+}
+
+function affectedOperationIsRepresented(
+  finding: Pick<Finding, "endpoint" | "method" | "proof" | "reproduction">,
+  policies: readonly ProofPolicy[] | undefined,
+): boolean {
+  if (finding.proof.type === "browser-state-transition") {
+    const proof = finding.proof;
+    return (
+      policies?.some(
+        (policy) =>
+          policy.kind === "browser-state-transition" &&
+          policy.id === proof.policyId &&
+          endpointMatchesRequest(finding.endpoint, policy.endpoint) &&
+          policy.method === finding.method,
+      ) === true
+    );
+  }
+  return finding.reproduction.some(
+    ({ path, method }) =>
+      endpointMatchesRequest(finding.endpoint, path) &&
+      (method ?? "GET") === (finding.method ?? "GET"),
+  );
 }
 
 function timingDifferentialSecurityChecks(
@@ -729,16 +951,27 @@ function policyFor<K extends ProofPolicy["kind"]>(
   );
 }
 
-function safeRegex(pattern: string): RegExp | undefined {
+function safeRegex(pattern: string, flags?: string): RegExp | undefined {
   if (pattern.length > 256) return undefined;
   try {
-    return new RegExp(pattern);
+    return new RegExp(pattern, flags);
   } catch {
     return undefined;
   }
 }
 
 function verifyCanary(policy: Extract<ProofPolicy, { kind: "canary" }>, value: string): boolean {
+  try {
+    return policy.verify(value);
+  } catch {
+    return false;
+  }
+}
+
+function verifyFileContent(
+  policy: Extract<ProofPolicy, { kind: "file-content" }>,
+  value: string,
+): boolean {
   try {
     return policy.verify(value);
   } catch {
@@ -756,7 +989,11 @@ function commandChallengeOutput(
 
 function challengeRequestMatches(
   request: ProofRequest | undefined,
-  challenge: { location: "query" | "json-body"; parameter: string; template: string },
+  challenge: {
+    location: "query" | "json-body" | "fragment";
+    parameter: string;
+    template: string;
+  },
   value: string,
 ): boolean {
   return (
@@ -767,13 +1004,38 @@ function challengeRequestMatches(
 
 function challengePathMatches(
   path: string,
-  challenge: { location: "query" | "json-body"; parameter: string; template: string },
+  challenge: {
+    location: "query" | "json-body" | "fragment";
+    parameter: string;
+    template: string;
+  },
   value: string,
 ): boolean {
   return (
-    challenge.location === "query" &&
+    ["query", "fragment"].includes(challenge.location) &&
     challengeRequestMatches({ path, actorId: "anonymous" }, challenge, value)
   );
+}
+
+function responseContains(body: unknown, value: string): boolean {
+  try {
+    const serialized = JSON.stringify(body);
+    return typeof serialized === "string" && serialized.includes(value);
+  } catch {
+    return true;
+  }
+}
+
+function isExactOrigin(value: string): boolean {
+  try {
+    return new URL(value).origin === value;
+  } catch {
+    return false;
+  }
+}
+
+function isCompletedStateTransition(status: number): boolean {
+  return status >= 200 && status < 400;
 }
 
 function selectedAt(
@@ -862,13 +1124,22 @@ function requestsShareMutationShape(
 
 function requestMutationValue(
   request: Pick<ProofRequest, "path" | "body"> | undefined,
-  mutation: Pick<RequestMutation, "location" | "parameter">,
+  mutation: {
+    location: "query" | "json-body" | "fragment";
+    parameter: string;
+  },
 ): string | undefined {
   if (!request) return undefined;
   if (mutation.location === "query") {
     const values = new URL(request.path, "http://proof.invalid").searchParams.getAll(
       mutation.parameter,
     );
+    return values.length === 1 ? values[0] : undefined;
+  }
+  if (mutation.location === "fragment") {
+    const values = new URLSearchParams(
+      new URL(request.path, "http://proof.invalid").hash.slice(1),
+    ).getAll(mutation.parameter);
     return values.length === 1 ? values[0] : undefined;
   }
   const body = parseJsonObject(request.body);
