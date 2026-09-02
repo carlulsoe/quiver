@@ -2,6 +2,7 @@ import type { ChallengeMutation, FindingCategory, ImpactLevel } from "./state.ts
 import type { AllowedRequest, DeniedRequest, ScopedTarget } from "./scoped-target.ts";
 import type { ActorId } from "./sessions.ts";
 import type { AttackSurfaceOrigin } from "./attack-surface.ts";
+import type { RuntimeSafetyPolicy } from "./runtime-safety.ts";
 import {
   assertValidTargetManifest,
   authenticateTargetManifest,
@@ -128,6 +129,8 @@ export interface TargetProfile {
   validationResetRequestBudget?: number;
   /** Hard ceiling for code-derived proof impact. Defaults to observation. */
   maximumImpactLevel?: ImpactLevel;
+  /** Campaign-wide request admission, circuit-breaker, and testing-window policy. */
+  runtimeSafety?: Partial<RuntimeSafetyPolicy>;
   /** Declarative source used by bundled and external target adapters. */
   manifest?: TargetManifest;
   protectedOperations?: ProtectedOperationManifest[];
@@ -135,7 +138,11 @@ export interface TargetProfile {
 
 export type TargetProfileExtensions = Pick<
   TargetProfile,
-  "attackSurfaceOrigins" | "proofPolicies" | "prepareValidation" | "validationResetRequestBudget"
+  | "attackSurfaceOrigins"
+  | "proofPolicies"
+  | "prepareValidation"
+  | "validationResetRequestBudget"
+  | "runtimeSafety"
 >;
 
 /** Builds the runtime profile API from a declarative onboarding manifest. */

@@ -9,6 +9,8 @@ export interface CliOptions {
   requestBudget: number;
   openApiPath?: string;
   contextPath?: string;
+  campaignId?: string;
+  campaignStorePath?: string;
 }
 
 export function parseCliOptions(args: string[]): CliOptions {
@@ -21,6 +23,8 @@ export function parseCliOptions(args: string[]): CliOptions {
   let requestBudget = 30;
   let openApiPath: string | undefined;
   let contextPath: string | undefined;
+  let campaignId: string | undefined;
+  let campaignStorePath: string | undefined;
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -35,6 +39,12 @@ export function parseCliOptions(args: string[]): CliOptions {
       index += 1;
     } else if (argument === "--context") {
       contextPath = requiredPath(args[index + 1], "--context");
+      index += 1;
+    } else if (argument === "--campaign-id") {
+      campaignId = requiredPath(args[index + 1], "--campaign-id");
+      index += 1;
+    } else if (argument === "--campaign-store") {
+      campaignStorePath = requiredPath(args[index + 1], "--campaign-store");
       index += 1;
     } else if (argument === "--profile") {
       const value = args[index + 1];
@@ -73,6 +83,8 @@ export function parseCliOptions(args: string[]): CliOptions {
     requestBudget,
     ...(openApiPath ? { openApiPath } : {}),
     ...(contextPath ? { contextPath } : {}),
+    ...(campaignId ? { campaignId } : {}),
+    ...(campaignStorePath ? { campaignStorePath } : {}),
   };
 }
 
@@ -90,6 +102,8 @@ Options:
   --budget <count> Total HTTP request budget (default: 30)
   --openapi <path> Merge a supplied OpenAPI JSON or YAML document
   --context <path> Supply target notes and assessment context to explorers
+  --campaign-id <id> Stable campaign identifier for checkpoints and resume
+  --campaign-store <path> Append-only JSONL campaign checkpoint file
   --quiet          Suppress live state rendering
   -h, --help       Show this help
 `;

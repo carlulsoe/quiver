@@ -1,6 +1,7 @@
-import type { Browser } from "playwright-core";
+import type { Browser, Request } from "playwright-core";
 import { findBrowserExecutable, launchChromium, type BrowserCookie } from "./attack-surface.ts";
 import type { BrowserEffectEvidence } from "./state.ts";
+import { classifyHttpStatus, type RuntimeRequestLease } from "./runtime-safety.ts";
 
 export interface BrowserProofProbe {
   probeId: string;
@@ -15,6 +16,8 @@ export interface BrowserProofProbe {
   sessionStorage?: Record<string, string>;
   executablePath?: string;
   decideRequest: (method: string, path: string) => boolean;
+  acquireRequest?: () => Promise<RuntimeRequestLease>;
+  commitRequest?: (method: string, path: string) => boolean;
 }
 
 /** Observes a visible browser effect while blocking cross-origin and unauthorized requests. */
@@ -25,6 +28,7 @@ export async function collectBrowserEffect(
   const executablePath =
     probe.executablePath ?? process.env.QUIVER_BROWSER_PATH ?? (await findBrowserExecutable());
   const browser = await launch(executablePath);
+  const requestLeases = new Map<Request, RuntimeRequestLease>();
   try {
     const context = await browser.newContext({
       extraHTTPHeaders: probe.authenticationHeaders,
@@ -43,6 +47,21 @@ export async function collectBrowserEffect(
       );
     }
     const page = await context.newPage();
+    context.on("requestfinished", (request) => {
+      const lease = requestLeases.get(request);
+      if (!lease) return;
+      requestLeases.delete(request);
+      void request
+        .response()
+        .then((response) => lease.finish(classifyHttpStatus(response?.status() ?? 0)))
+        .catch(() => lease.fail());
+    });
+    context.on("requestfailed", (request) => {
+      const lease = requestLeases.get(request);
+      if (!lease) return;
+      requestLeases.delete(request);
+      lease.fail();
+    });
     context.on("page", (candidate) => {
       if (candidate !== page) void candidate.close();
     });
@@ -75,7 +94,22 @@ export async function collectBrowserEffect(
         await route.abort("blockedbyclient");
         return;
       }
-      await route.continue();
+      let lease: RuntimeRequestLease | undefined;
+      try {
+        lease = await probe.acquireRequest?.();
+        if (lease) requestLeases.set(request, lease);
+        if (probe.commitRequest && !probe.commitRequest(request.method(), path)) {
+          requestLeases.delete(request);
+          lease?.release();
+          await route.abort("blockedbyclient");
+          return;
+        }
+        await route.continue();
+      } catch {
+        requestLeases.delete(request);
+        lease?.fail();
+        await route.abort("blockedbyclient").catch(() => undefined);
+      }
     });
     await context.routeWebSocket("**/*", (route) =>
       route.close({ code: 1008, reason: "Quiver browser proof blocks WebSockets" }),
@@ -99,6 +133,8 @@ export async function collectBrowserEffect(
       ? { probeId: probe.probeId, path: probe.path, kind: probe.kind, value: probe.marker }
       : undefined;
   } finally {
+    for (const lease of requestLeases.values()) lease.fail();
+    requestLeases.clear();
     await browser.close();
   }
 }

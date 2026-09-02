@@ -3,12 +3,18 @@ import {
   type AttackSurfaceDocument,
   type AttackSurfaceMap,
   type AttackSurfaceOrigin,
+  type AttackSurfaceScope,
   type BrowserCookie,
   type BrowserRequestMetadata,
 } from "./attack-surface.ts";
 import { collectBrowserEffect, type BrowserProofProbe } from "./browser-proof.ts";
 import { impactAtMost } from "./impact.ts";
 import type { BrowserEffectEvidence, ImpactLevel } from "./state.ts";
+import {
+  classifyHttpStatus,
+  type RuntimeRequestLease,
+  type RuntimeSafetyController,
+} from "./runtime-safety.ts";
 import {
   actorIds,
   InMemorySessions,
@@ -77,6 +83,8 @@ export interface ScopedTargetOptions {
   attackSurfaceMapper?: (options: AttackSurfaceMapperOptions) => Promise<AttackSurfaceMap>;
   browserEffectCollector?: (probe: BrowserProofProbe) => Promise<BrowserEffectEvidence | undefined>;
   maximumImpactLevel?: ImpactLevel;
+  /** Shared campaign request scheduler. Use one instance across exploration and validation. */
+  runtimeSafety?: RuntimeSafetyController;
   sessions?: Sessions;
   browserActorId?: ActorId;
 }
@@ -97,6 +105,11 @@ export interface AttackSurfaceMapperOptions {
     path: string,
     metadata?: BrowserRequestMetadata,
   ) => { allowed: boolean; reason?: string };
+  commitRequest?: (
+    method: string,
+    path: string,
+    metadata?: BrowserRequestMetadata,
+  ) => { allowed: boolean; reason?: string };
   onOperationDiscovered?: (
     method: string,
     path: string,
@@ -106,10 +119,11 @@ export interface AttackSurfaceMapperOptions {
       allowed?: boolean;
       blockedReason?: string;
       origin?: string;
-      scope?: "attackable" | "visit-only";
+      scope?: AttackSurfaceScope;
     },
   ) => void;
   executablePath?: string;
+  acquireRequest?: () => Promise<RuntimeRequestLease>;
 }
 
 export interface ScopedRequest {
@@ -146,7 +160,7 @@ export class TargetScopeError extends Error {
 
 export class ScopedTarget {
   readonly #origin: string;
-  readonly #attackableOrigins: Set<string>;
+  readonly #originScopes: ReadonlyMap<string, AttackSurfaceScope>;
   readonly #startPath: string;
   #requestBudget: number;
   readonly #allowedRequests: Set<string>;
@@ -166,6 +180,7 @@ export class ScopedTarget {
     probe: BrowserProofProbe,
   ) => Promise<BrowserEffectEvidence | undefined>;
   readonly #maximumImpactLevel: ImpactLevel;
+  readonly #runtimeSafety?: RuntimeSafetyController;
   readonly #sessions: Sessions;
   readonly #inMemorySessions?: InMemorySessions;
   #setupAccess = false;
@@ -192,11 +207,11 @@ export class ScopedTarget {
       }
     }
     this.#origin = options.target.origin;
-    this.#attackableOrigins = new Set([
-      this.#origin,
-      ...(options.attackSurfaceOrigins ?? [])
-        .filter(({ scope }) => scope === "attackable")
-        .map(({ origin }) => new URL(origin).origin),
+    this.#originScopes = new Map([
+      ...(options.attackSurfaceOrigins ?? []).map(
+        ({ origin, scope }) => [new URL(origin).origin, scope] as const,
+      ),
+      [this.#origin, "attackable" as const],
     ]);
     this.#startPath = `${options.target.pathname}${options.target.search}`;
     this.#requestBudget = options.requestBudget;
@@ -224,6 +239,7 @@ export class ScopedTarget {
       ((mapperOptions) => new BrowserAttackSurfaceMapper(mapperOptions).map());
     this.#browserEffectCollector = options.browserEffectCollector ?? collectBrowserEffect;
     this.#maximumImpactLevel = options.maximumImpactLevel ?? "state-change";
+    this.#runtimeSafety = options.runtimeSafety;
     this.#sessions = options.sessions ?? new InMemorySessions();
     this.#inMemorySessions =
       this.#sessions instanceof InMemorySessions ? this.#sessions : undefined;
@@ -314,7 +330,7 @@ export class ScopedTarget {
 
   async setupRequest(request: ScopedRequest): Promise<SetupHttpObservation> {
     const method = request.method ?? "GET";
-    const url = this.#resolvePath(request.path);
+    const url = this.#resolvePath(request.path, "setup");
     const targetPath = this.#targetIdentifier(url);
     if (!operationAllowed(this.#setupRequests, method, targetPath)) {
       throw new TargetScopeError(`${method} ${targetPath} is not an allowed profile setup request`);
@@ -339,12 +355,21 @@ export class ScopedTarget {
       localStorage: browserState.localStorage,
       sessionStorage: browserState.sessionStorage,
       executablePath: this.#browserExecutablePath,
+      acquireRequest: this.#runtimeSafety ? () => this.#runtimeSafety!.acquire() : undefined,
+      commitRequest: this.#runtimeSafety
+        ? (method, path) => {
+            if (collectorRequests >= request.requestBudget) return false;
+            const committed = this.#commitBrowserRequest(method, path, true);
+            if (committed.allowed) collectorRequests += 1;
+            return committed.allowed;
+          }
+        : undefined,
       decideRequest: (method, path) => {
         if (!["GET", "HEAD"].includes(method) || collectorRequests >= request.requestBudget) {
           return false;
         }
         const decision = this.#decideBrowserRequest(method, path, true, false);
-        if (decision.allowed) collectorRequests += 1;
+        if (decision.allowed && !this.#runtimeSafety) collectorRequests += 1;
         return decision.allowed;
       },
     });
@@ -356,7 +381,10 @@ export class ScopedTarget {
     includeResponseHeaders = false,
   ): Promise<HttpObservation | SetupHttpObservation> {
     const method = request.method ?? "GET";
-    const url = this.#resolvePath(request.path);
+    const url = this.#resolvePath(
+      request.path,
+      this.#setupAccess || includeResponseHeaders ? "setup" : "attack",
+    );
     const targetPath = this.#targetIdentifier(url);
     if (this.#setupAccess || includeResponseHeaders) {
       if (!operationAllowed(this.#setupRequests, method, targetPath)) {
@@ -373,7 +401,12 @@ export class ScopedTarget {
     if (!includeResponseHeaders && this.#isDenied(method, url.pathname)) {
       throw new TargetScopeError(`${method} ${url.pathname} is denied by the target profile`);
     }
-    if (isStateChanging(method) && !this.#isAuthorizedOperation(method, targetPath)) {
+    if (
+      !this.#setupAccess &&
+      !includeResponseHeaders &&
+      isStateChanging(method) &&
+      !this.#isAuthorizedOperation(method, targetPath)
+    ) {
       throw new TargetScopeError(
         `${method} ${targetPath} was not supplied by the profile or attack-surface map`,
       );
@@ -398,45 +431,59 @@ export class ScopedTarget {
       );
     }
 
-    this.#requestsUsed += 1;
-    this.#onRequest?.({
-      number: this.#requestsUsed,
-      method,
-      path: targetPath,
-    });
-    const startedAt = performance.now();
-    const response = await this.#transport(url, {
-      method,
-      headers: {
-        ...(url.origin === this.#origin ? session.headers : {}),
-        ...request.headers,
-      },
-      body: request.body,
-      redirect: "manual",
-      signal: AbortSignal.timeout(this.#timeoutMs),
-    });
-    const responseText = await response.text();
-    const truncated = responseText.length > responseLimit;
-    const text = responseText.slice(0, responseLimit);
-    let body: unknown = text;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      // Text is a valid target response body.
-    }
-
-    const observation: HttpObservation = {
-      method,
-      status: response.status,
-      path: targetPath,
-      body,
-      truncated,
-      contentType: response.headers.get("content-type") ?? "",
-      durationMs: Math.round(performance.now() - startedAt),
+    const send = async (): Promise<HttpObservation | SetupHttpObservation> => {
+      if (this.#requestsUsed >= this.#requestBudget) {
+        throw new RequestBudgetExceededError(
+          `Request budget exhausted (${this.#requestsUsed}/${this.#requestBudget})`,
+        );
+      }
+      this.#requestsUsed += 1;
+      this.#onRequest?.({
+        number: this.#requestsUsed,
+        method,
+        path: targetPath,
+      });
+      const startedAt = performance.now();
+      const response = await this.#transport(url, {
+        method,
+        headers: {
+          ...(url.origin === this.#origin ? session.headers : {}),
+          ...request.headers,
+        },
+        body: request.body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+      const responseText = await response.text();
+      const truncated = responseText.length > responseLimit;
+      const text = responseText.slice(0, responseLimit);
+      let body: unknown = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        // Text is a valid target response body.
+      }
+      const observation: HttpObservation = {
+        method,
+        status: response.status,
+        path: targetPath,
+        body,
+        truncated,
+        contentType: response.headers.get("content-type") ?? "",
+        durationMs: Math.round(performance.now() - startedAt),
+      };
+      return includeResponseHeaders
+        ? { ...observation, headers: Object.fromEntries(response.headers.entries()) }
+        : observation;
     };
-    return includeResponseHeaders
-      ? { ...observation, headers: Object.fromEntries(response.headers.entries()) }
-      : observation;
+    const observation = this.#runtimeSafety
+      ? await this.#runtimeSafety.execute(
+          send,
+          ({ status }) => classifyHttpStatus(status),
+          (error) => (error instanceof RequestBudgetExceededError ? "ignore" : "failure"),
+        )
+      : await send();
+    return observation;
   }
 
   mapAttackSurface(options: { maxDocuments?: number } = {}): Promise<AttackSurfaceMap> {
@@ -463,6 +510,17 @@ export class ScopedTarget {
       openApi: this.#openApi,
       origins: this.#attackSurfaceOrigins,
       executablePath: this.#browserExecutablePath,
+      acquireRequest: this.#runtimeSafety ? () => this.#runtimeSafety!.acquire() : undefined,
+      commitRequest: this.#runtimeSafety
+        ? (method, path, metadata) =>
+            this.#commitBrowserRequest(
+              method,
+              metadata?.origin && metadata.origin !== this.#origin
+                ? `${metadata.origin}${path}`
+                : path,
+              metadata?.budgeted ?? true,
+            )
+        : undefined,
       decideRequest: (method, path, metadata) =>
         this.#decideBrowserRequest(
           method,
@@ -475,7 +533,7 @@ export class ScopedTarget {
         ),
       onOperationDiscovered: (method, path, source, metadata) => {
         if (
-          metadata?.scope === "visit-only" ||
+          (metadata?.scope !== undefined && metadata.scope !== "attackable") ||
           metadata?.allowed === false ||
           (source === "browser" && metadata?.automaticInteraction)
         ) {
@@ -496,12 +554,22 @@ export class ScopedTarget {
     path: string,
     budgeted: boolean,
     automaticInteraction: boolean,
-    scope?: "attackable" | "visit-only",
+    scope?: AttackSurfaceScope,
     origin = this.#origin,
     passiveVisitOnly = true,
   ): { allowed: boolean; reason?: string } {
     const targetPath = origin === this.#origin ? path : `${origin}${path}`;
-    const url = scope === "visit-only" ? new URL(path, origin) : this.#resolvePath(targetPath);
+    if (scope === "blocked") return { allowed: false, reason: "origin is blocked" };
+    if (scope === "auth-only") {
+      return { allowed: false, reason: "auth-only origins are reserved for profile setup" };
+    }
+    let url: URL;
+    try {
+      this.#runtimeSafety?.assertReady();
+      url = scope === "visit-only" ? new URL(path, origin) : this.#resolvePath(targetPath);
+    } catch (error) {
+      return { allowed: false, reason: error instanceof Error ? error.message : String(error) };
+    }
     if (!passiveVisitOnly) {
       return { allowed: false, reason: "visit-only documents permit passive assets only" };
     }
@@ -535,6 +603,19 @@ export class ScopedTarget {
     if (this.#requestsUsed >= this.#requestBudget) {
       return { allowed: false, reason: "request budget exhausted" };
     }
+    if (this.#runtimeSafety) return { allowed: true };
+    return this.#commitBrowserRequest(method, targetPath, true);
+  }
+
+  #commitBrowserRequest(
+    method: string,
+    targetPath: string,
+    budgeted: boolean,
+  ): { allowed: boolean; reason?: string } {
+    if (!budgeted) return { allowed: true };
+    if (this.#requestsUsed >= this.#requestBudget) {
+      return { allowed: false, reason: "request budget exhausted" };
+    }
     this.#requestsUsed += 1;
     this.#onRequest?.({
       number: this.#requestsUsed,
@@ -544,7 +625,7 @@ export class ScopedTarget {
     return { allowed: true };
   }
 
-  #resolvePath(path: string): URL {
+  #resolvePath(path: string, access: "attack" | "setup" = "attack"): URL {
     if (path.startsWith("//")) {
       throw new TargetScopeError("Protocol-relative target paths are not allowed");
     }
@@ -555,8 +636,18 @@ export class ScopedTarget {
       );
     }
     const url = new URL(path, this.#origin);
-    if (!this.#attackableOrigins.has(url.origin)) {
-      throw new TargetScopeError("Out-of-scope or visit-only origin blocked");
+    const scope = this.#originScopes.get(url.origin);
+    if (
+      !scope ||
+      scope === "blocked" ||
+      scope === "visit-only" ||
+      (scope === "auth-only" && access !== "setup")
+    ) {
+      throw new TargetScopeError(
+        scope === "auth-only"
+          ? "Auth-only origin is reserved for profile setup"
+          : "Out-of-scope, blocked, or visit-only origin blocked",
+      );
     }
     return url;
   }

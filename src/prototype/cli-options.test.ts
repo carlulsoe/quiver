@@ -48,6 +48,20 @@ describe("prototype CLI options", () => {
     });
   });
 
+  it("accepts a durable campaign id and JSONL store", () => {
+    expect(
+      parseCliOptions([
+        "--campaign-id",
+        "nightly-crapi",
+        "--campaign-store",
+        ".prototype/campaigns.jsonl",
+      ]),
+    ).toMatchObject({
+      campaignId: "nightly-crapi",
+      campaignStorePath: ".prototype/campaigns.jsonl",
+    });
+  });
+
   it("rejects missing supplied-input paths", () => {
     expect(() => parseCliOptions(["--openapi", "--quiet"])).toThrow(
       "--openapi requires a file path",

@@ -202,9 +202,10 @@ observed while frames are forwarded unchanged; secondary-origin socket attempts
 are recorded then closed. Active WebSocket testing is not performed.
 
 Profiles can add exact loopback origins with `attackSurfaceOrigins`, classifying
-each as `attackable` or `visit-only`. Attackable origins participate in form and
-agent workflows. Visit-only origins permit passive document and asset reads,
-but browser interactions, mutations, and agent requests are blocked.
+each as `attackable`, `visit-only`, `auth-only`, or `blocked`. Attackable origins
+participate in form and agent workflows. Visit-only origins permit passive document
+and asset reads. Auth-only origins accept only allowlisted profile setup exchanges,
+and blocked origins are never contacted.
 Explorers may submit multiple findings and continue after each submission.
 Findings carry severity, CWE, impact, mitigation, a safe impact-demonstration level, an ordered reproduction plan
 containing exact REST methods, bodies, headers, and authentication mode, and one
@@ -244,6 +245,18 @@ Quiver deduplicates findings by vulnerability category and normalized endpoint. 
 finding enters independent validation immediately; validation is serialized against a separate
 scoped target while the exploration fleet continues, then any budget-deferred replay is retried after
 unused exploration capacity is reclaimed.
+
+For resumable runs, `--campaign-store <path>` selects an append-only JSONL store
+and `--campaign-id <id>` selects the stable campaign checkpoint. Every action is
+flushed before use and periodic full-state checkpoints are checksum verified.
+The JSONL adapter uses the OS-released `flock` command to enforce one writer
+across processes.
+Read-only validation jobs interrupted by a crash return to the queue; an in-flight
+state-changing proof is quarantined and automatically halts the campaign for
+manual target review. Pause, resume, cancellation, and automatic halts are durable
+campaign actions. A shared request scheduler enforces profile testing windows,
+RPS and concurrency limits, and stops after repeated transport failures or
+disruptive responses such as rate limiting and server unavailability.
 For example, two different vehicle UUIDs affected by the same object-level
 authorization flaw become one finding. The validator replays every unique
 finding. Its LLM supplies an informational review, but cannot set the outcome:
@@ -259,9 +272,10 @@ Current hard boundaries:
 - Profiles may deny operations known to have unwanted side effects; the crAPI profile
   blocks its database- and filesystem-mutating mechanic report handlers
 - Explicit exact-origin enforcement with redirects disabled; configured
-  secondary origins are independently `attackable` or `visit-only`
+  secondary origins are independently `attackable`, `visit-only`, `auth-only`, or `blocked`
 - WebSockets are observed and forwarded unchanged, not actively tested
 - Shared campaign budget with a reserved validation portion
+- Shared RPS/concurrency admission, testing windows, and automatic failure circuit breakers
 - Browser proof documents and assets consume a policy-declared collector budget
 - 12 KB cap for agent-visible responses
 - No shell, browser, filesystem, or arbitrary network tools exposed directly to agents

@@ -75,7 +75,7 @@ function explorationTools(
     async run() {
       const map = await target.mapAttackSurface();
       const operations = map.routeDetails
-        .filter(({ scope }) => scope !== "visit-only")
+        .filter(({ scope }) => scope === undefined || scope === "attackable")
         .flatMap(({ path, methods }) => methods.map((method) => ({ method, path })));
       coordinator.discoverOperations(operations);
       dispatch({

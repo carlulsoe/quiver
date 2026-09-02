@@ -11,12 +11,21 @@ import { RequestBudgetExceededError, ScopedTarget } from "./scoped-target.ts";
 import {
   createCampaignBudget,
   createCampaignState,
+  exploitChainJobId,
   type CampaignAction,
   type CampaignState,
+  validationJobId,
 } from "./state.ts";
 import { assertValidTargetProfile, type TargetProfile } from "./target-profile.ts";
 import { actorIds } from "./sessions.ts";
 import { DefaultVerificationEngine, ReplayBudgetExceededError } from "./verification.ts";
+import {
+  CampaignCancelledError,
+  CampaignHaltedError,
+  CampaignPausedError,
+  OutsideTestingWindowError,
+  RuntimeSafetyController,
+} from "./runtime-safety.ts";
 
 export interface RunCampaignOptions {
   target: URL;
@@ -114,8 +123,23 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         ),
       ],
     ]);
-  let state = campaignStore.load(campaignId);
-  assertFreshCampaign(state, campaignId, options.target);
+  let state: CampaignState;
+  try {
+    state = campaignStore.load(campaignId);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== `Unknown campaign ${campaignId}`) {
+      throw error;
+    }
+    state = campaignStore.create(
+      campaignId,
+      createCampaignState(
+        `${options.target.origin}${options.target.pathname}${options.target.search}`,
+        createCampaignBudget(options.requestBudget ?? 30),
+        explorerCount,
+      ),
+    );
+  }
+  assertCampaignTarget(state, campaignId, options.target);
   const budget = state.budget;
   const dispatch = (action: CampaignAction) => {
     campaignStore.apply(action);
@@ -131,7 +155,31 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     });
     options.onState?.(state, action);
   };
+  dispatch({ type: "recover" });
+  if (state.phase !== "complete" && state.phase !== "failed") {
+    while (state.requests.exploration < state.coordination.budget.consumed) {
+      dispatch({ type: "request", phase: "exploration" });
+    }
+  }
   options.onState?.(state);
+
+  if (
+    state.phase === "complete" ||
+    state.phase === "failed" ||
+    state.runtime.control !== "running"
+  ) {
+    return campaignRun(options, startedAt, usage, state, events);
+  }
+  const resumedPhase = state.phase;
+
+  const runtimeSafety = new RuntimeSafetyController(options.profile.runtimeSafety, {
+    controlStatus: () => campaignStore.checkpoint().runtime.control,
+    initialConsecutiveFailures: state.runtime.consecutiveFailures,
+    initialDisruptiveResponses: state.runtime.disruptiveResponses,
+    onSuccess: () => dispatch({ type: "runtime-success" }),
+    onFailure: (disruptive) => dispatch({ type: "runtime-failure", disruptive }),
+    onHalt: (reason) => dispatch({ type: "halt", reason }),
+  });
 
   try {
     const coordinator = new PersistentCoordinator({
@@ -139,24 +187,43 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       requestBudget: budget.exploration,
       expectedWorkers: explorerCount,
       onChange: (snapshot) => dispatch({ type: "coordinator-snapshot", snapshot }),
+      restore: {
+        snapshot: state.coordination,
+        operations: state.discoveredOperations,
+        testedRequests: state.testedRequests,
+        findings: state.findings,
+        validations: state.validations,
+        explorationRequests: state.requests.exploration,
+      },
     });
+    for (const job of state.runtime.jobs) {
+      if (job.kind === "validation" && job.status === "queued") {
+        coordinator.releaseValidation(job.fingerprint);
+      }
+    }
     dispatch({ type: "coordinator-snapshot", snapshot: coordinator.snapshot() });
+    for (const plan of coordinator.snapshot().specialists) {
+      if (!state.agents.some(({ id }) => id === plan.agentId)) {
+        dispatch({ type: "agent-spawned", id: plan.agentId, role: "specialist" });
+      }
+    }
     const explorationTarget = new ScopedTarget({
       target: options.target,
-      requestBudget: budget.exploration,
+      requestBudget: Math.max(0, budget.exploration - state.requests.exploration),
       allowedRequests: options.profile.allowedRequests,
       setupRequests: options.profile.setupRequests,
       deniedRequests: options.profile.deniedRequests,
       onRequest: (request) => {
-        coordinator.observeBudgetUse();
         record("request", { phase: "exploration", ...request });
         dispatch({ type: "request", phase: "exploration" });
+        coordinator.observeBudgetUse();
       },
       openApi: options.openApi,
       attackSurfaceOrigins: options.profile.attackSurfaceOrigins,
       maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
+      runtimeSafety,
     });
-    let enqueueValidation = (_fingerprint: string) => {};
+    let enqueueValidation: (fingerprint: string, finalAttempt?: boolean) => void = () => {};
     const ledger = new CampaignLedger({
       onTestedRequest: (request) => {
         coordinator.observeRequest(request);
@@ -169,12 +236,6 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       },
       onExploitChain: (chain) => dispatch({ type: "exploit-chain", chain }),
     });
-    if (options.profile.authenticate) {
-      await explorationTarget.runProfileSetup(() =>
-        options.profile.authenticate!(explorationTarget),
-      );
-    }
-    dispatch({ type: "phase", phase: "exploring" });
     const focuses = [
       "broken authorization and cross-object access, using identifiers discovered in one response against other GET endpoints",
       "excessive or sensitive data exposure and security misconfiguration",
@@ -212,7 +273,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     });
     const validationTarget = new ScopedTarget({
       target: options.target,
-      requestBudget: budget.validation,
+      requestBudget: Math.max(0, budget.validation - state.requests.validation),
       allowedRequests: options.profile.allowedRequests,
       setupRequests: options.profile.setupRequests,
       deniedRequests: options.profile.deniedRequests,
@@ -222,6 +283,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       },
       maximumImpactLevel: options.profile.maximumImpactLevel ?? "observation",
       attackSurfaceOrigins: options.profile.attackSurfaceOrigins,
+      runtimeSafety,
     });
     const Validator = createValidatorAgent(
       () => state.findings,
@@ -242,16 +304,19 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     );
     let validationMissionIndex = 0;
     let validationChain = Promise.resolve();
-    const validateFinding = async (fingerprint: string) => {
+    const validateFinding = async (fingerprint: string, finalAttempt = false) => {
       if (state.validations.some((validation) => validation.fingerprint === fingerprint)) {
         return;
       }
       const finding = state.findings.find((item) => item.fingerprint === fingerprint);
       if (!finding) return;
+      const jobId = validationJobId(fingerprint);
+      if (state.runtime.jobs.find((job) => job.id === jobId)?.status !== "queued") return;
       const validatorId =
         validationMissionIndex === 0 ? "validator" : `validator-${validationMissionIndex + 1}`;
       validationMissionIndex += 1;
       if (!coordinator.claimValidation(validatorId, fingerprint)) return;
+      dispatch({ type: "job-started", id: jobId });
       if (validatorId !== "validator") {
         dispatch({ type: "agent-spawned", id: validatorId, role: "validator" });
       }
@@ -269,7 +334,15 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         const completed = state.validations.some(
           (validation) => validation.fingerprint === fingerprint,
         );
-        if (!completed) coordinator.releaseValidation(fingerprint);
+        if (!completed) {
+          coordinator.releaseValidation(fingerprint);
+          dispatch({
+            type: "job-failed",
+            id: jobId,
+            error: "Replay produced no submitted outcome",
+            retryable: !finalAttempt,
+          });
+        }
         dispatch({
           type: "agent",
           id: validatorId,
@@ -280,6 +353,12 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         coordinator.releaseValidation(fingerprint);
         const budgetExhausted = isRequestBudgetExhausted(error);
         dispatch({
+          type: "job-failed",
+          id: jobId,
+          error: error instanceof Error ? error.message : String(error),
+          retryable: isRuntimeStopError(error) || (!finalAttempt && budgetExhausted),
+        });
+        dispatch({
           type: "agent",
           id: validatorId,
           status: budgetExhausted ? "finished" : "failed",
@@ -287,15 +366,55 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
             ? "Deferred until validation budget is reclaimed."
             : String(error),
         });
+        if (isRuntimeStopError(error)) throw error;
       }
     };
-    enqueueValidation = (fingerprint) => {
-      validationChain = validationChain.then(() => validateFinding(fingerprint));
+    enqueueValidation = (fingerprint, finalAttempt = false) => {
+      validationChain = validationChain.then(() => validateFinding(fingerprint, finalAttempt));
     };
 
     await using _campaignRuntime = await start({
       agents: [...explorers, ...specialistDefinitions, Validator],
     });
+    if (resumedPhase === "validating" && options.profile.authenticate) {
+      const pendingFingerprints = new Set(
+        state.runtime.jobs.flatMap((job) => {
+          if (job.status !== "queued") return [];
+          if (job.kind === "validation") return [job.fingerprint];
+          const chain = state.exploitChains.find(
+            ({ fingerprint }) => fingerprint === job.fingerprint,
+          );
+          return chain?.links.flatMap(({ from, to }) => [from.fingerprint, to.fingerprint]) ?? [];
+        }),
+      );
+      const validationActorIds = [
+        ...new Set(
+          state.findings
+            .filter(({ fingerprint }) => pendingFingerprints.has(fingerprint))
+            .flatMap((finding) => [
+              ...finding.reproduction.map(({ actorId }) => actorId),
+              ...(finding.proof.type === "browser-visible-effect"
+                ? [finding.proof.pageActorId]
+                : []),
+            ])
+            .filter((id) => id !== actorIds.anonymous),
+        ),
+      ];
+      if (validationActorIds.length > 0) {
+        try {
+          await validationTarget.runProfileSetup(() =>
+            options.profile.authenticate!(validationTarget, validationActorIds),
+          );
+        } catch (error) {
+          if (isRequestBudgetExhausted(error)) {
+            const reason = "Remaining budget cannot restore validation authentication";
+            dispatch({ type: "halt", reason });
+            throw new CampaignHaltedError(reason);
+          }
+          throw error;
+        }
+      }
+    }
     const runWorker = async (
       Explorer: (typeof explorers)[number],
       id: string,
@@ -313,6 +432,10 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         summary = reply.text.slice(0, 100);
         dispatch({ type: "agent", id, status: "finished", summary });
       } catch (error) {
+        if (isRuntimeStopError(error)) {
+          dispatch({ type: "agent", id, status: "queued", summary: String(error) });
+          throw error;
+        }
         summary = String(error);
         dispatch({ type: "agent", id, status: "failed", summary });
       } finally {
@@ -322,30 +445,61 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         coordinator.release(id);
       }
     };
-    await Promise.all(
-      explorers.map((Explorer, index) =>
-        runWorker(Explorer, `explorer-${index + 1}`, "Begin the bounded REST security campaign."),
-      ),
-    );
-
-    const specialistPlans = coordinator.planSpecialists(specialistLimit);
-    await Promise.all(
-      specialistPlans.map((plan, index) => {
-        dispatch({ type: "agent-spawned", id: plan.agentId, role: "specialist" });
-        return runWorker(
-          specialistDefinitions[index]!,
-          plan.agentId,
-          `Investigate the coordinator's assigned ${plan.specialty} hypotheses with a fresh perspective.`,
+    if (state.phase !== "validating") {
+      if (options.profile.authenticate) {
+        await explorationTarget.runProfileSetup(() =>
+          options.profile.authenticate!(explorationTarget),
         );
-      }),
-    );
+      }
+      dispatch({ type: "phase", phase: "exploring" });
+      await Promise.all(
+        explorers.flatMap((Explorer, index) => {
+          const id = `explorer-${index + 1}`;
+          const agent = state.agents.find((candidate) => candidate.id === id);
+          return agent?.status === "finished"
+            ? []
+            : [runWorker(Explorer, id, "Resume the bounded REST security campaign.")];
+        }),
+      );
 
-    await validationChain;
-    dispatch({ type: "reclaim-exploration-budget" });
-    dispatch({ type: "phase", phase: "validating" });
-    validationTarget.extendRequestBudget(state.budget.validation - validationTarget.requestBudget);
-    for (const item of coordinator.snapshot().validationQueue) {
-      if (item.status === "queued") enqueueValidation(item.fingerprint);
+      if (!state.agents.some(({ role }) => role === "specialist")) {
+        const specialistPlans = coordinator.planSpecialists(specialistLimit);
+        await Promise.all(
+          specialistPlans.map((plan, index) => {
+            dispatch({ type: "agent-spawned", id: plan.agentId, role: "specialist" });
+            return runWorker(
+              specialistDefinitions[index]!,
+              plan.agentId,
+              `Investigate the coordinator's assigned ${plan.specialty} hypotheses with a fresh perspective.`,
+            );
+          }),
+        );
+      } else {
+        const pendingSpecialists = state.agents.filter(
+          ({ role, status }) => role === "specialist" && status !== "finished",
+        );
+        await Promise.all(
+          pendingSpecialists.map((agent) =>
+            runWorker(
+              specialistDefinition(agent.id, specialistDefinitions),
+              agent.id,
+              "Resume the coordinator's assigned specialist investigation.",
+            ),
+          ),
+        );
+      }
+
+      await validationChain;
+      dispatch({ type: "reclaim-exploration-budget" });
+      dispatch({ type: "phase", phase: "validating" });
+      validationTarget.extendRequestBudget(
+        state.budget.validation - state.requests.validation - validationTarget.requestBudget,
+      );
+    }
+    for (const job of state.runtime.jobs) {
+      if (job.kind === "validation" && job.status === "queued") {
+        enqueueValidation(job.fingerprint, true);
+      }
     }
     await validationChain;
     if (state.findings.length === 0) {
@@ -357,6 +511,9 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       });
     }
     for (const chain of state.exploitChains) {
+      const jobId = exploitChainJobId(chain.fingerprint);
+      if (state.runtime.jobs.find((job) => job.id === jobId)?.status !== "queued") continue;
+      dispatch({ type: "job-started", id: jobId });
       try {
         dispatch({
           type: "exploit-chain-validation",
@@ -369,7 +526,16 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
           ),
         });
       } catch (error) {
-        if (error instanceof ChainBudgetExceededError) continue;
+        if (error instanceof ChainBudgetExceededError || isRuntimeStopError(error)) {
+          dispatch({
+            type: "job-failed",
+            id: jobId,
+            error: error instanceof Error ? error.message : String(error),
+            retryable: isRuntimeStopError(error),
+          });
+          if (isRuntimeStopError(error)) throw error;
+          continue;
+        }
         dispatch({
           type: "exploit-chain-validation",
           validation: {
@@ -386,11 +552,32 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         });
       }
     }
+    const unfinishedJobs = state.runtime.jobs.filter(({ status }) =>
+      ["queued", "running"].includes(status),
+    );
+    if (unfinishedJobs.length > 0) {
+      const reason = `Campaign has ${unfinishedJobs.length} unfinished durable proof jobs`;
+      dispatch({ type: "halt", reason });
+      throw new CampaignHaltedError(reason);
+    }
+    runtimeSafety.assertReady();
     dispatch({ type: "phase", phase: "complete" });
   } catch (error) {
-    dispatch({ type: "failed", error: error instanceof Error ? error.message : String(error) });
+    if (!isRuntimeStopError(error)) {
+      dispatch({ type: "failed", error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
+  return campaignRun(options, startedAt, usage, state, events);
+}
+
+function campaignRun(
+  options: RunCampaignOptions,
+  startedAt: number,
+  usage: PromptUsage,
+  state: CampaignState,
+  events: RunEvent[],
+): CampaignRun {
   return {
     profileId: options.profile.id,
     reproductionAuthentication: options.profile.reproductionAuthentication,
@@ -439,24 +626,26 @@ function isRequestBudgetExhausted(error: unknown): boolean {
   );
 }
 
-function assertFreshCampaign(state: CampaignState, campaignId: string, target: URL): void {
+function assertCampaignTarget(state: CampaignState, campaignId: string, target: URL): void {
   const expectedTarget = `${target.origin}${target.pathname}${target.search}`;
-  const hasPriorWork =
-    state.requests.total !== 0 ||
-    state.requests.exploration !== 0 ||
-    state.requests.validation !== 0 ||
-    state.testedRequests.length !== 0 ||
-    state.findings.length !== 0 ||
-    state.validations.length !== 0 ||
-    state.exploitChains.length !== 0 ||
-    state.exploitChainValidations.length !== 0 ||
-    state.agents.some(({ status }) => status !== "queued");
-  if (state.phase !== "starting" || hasPriorWork) {
-    throw new Error(
-      `Campaign ${campaignId} is not a fresh starting checkpoint; campaign resume is not supported`,
-    );
-  }
   if (state.target !== expectedTarget) {
     throw new Error(`Campaign ${campaignId} targets ${state.target}, not ${expectedTarget}`);
   }
+}
+
+function isRuntimeStopError(error: unknown): boolean {
+  return (
+    error instanceof CampaignPausedError ||
+    error instanceof CampaignCancelledError ||
+    error instanceof CampaignHaltedError ||
+    error instanceof OutsideTestingWindowError
+  );
+}
+
+function specialistDefinition<T>(id: string, definitions: readonly T[]): T {
+  const match = /^specialist-(\d+)$/.exec(id);
+  const index = match ? Number(match[1]) - 1 : -1;
+  const definition = definitions[index];
+  if (!definition) throw new Error(`No persisted specialist definition exists for ${id}`);
+  return definition;
 }

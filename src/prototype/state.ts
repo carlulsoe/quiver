@@ -282,6 +282,28 @@ export interface DiscoveredOperation {
   path: string;
 }
 
+export type CampaignControlStatus = "running" | "paused" | "cancelled" | "halted";
+export type CampaignJobStatus = "queued" | "running" | "completed" | "failed" | "interrupted";
+
+/** Durable unit of replay work. A running state-changing job is never retried after recovery. */
+export interface CampaignJob {
+  id: string;
+  kind: "validation" | "exploit-chain";
+  fingerprint: string;
+  impactLevel: ImpactLevel;
+  status: CampaignJobStatus;
+  attempts: number;
+  error?: string;
+}
+
+export interface CampaignRuntimeState {
+  control: CampaignControlStatus;
+  controlReason?: string;
+  consecutiveFailures: number;
+  disruptiveResponses: number;
+  jobs: CampaignJob[];
+}
+
 export interface CampaignState {
   target: string;
   phase: "starting" | "exploring" | "validating" | "complete" | "failed";
@@ -296,6 +318,7 @@ export interface CampaignState {
   coordination: CoordinatorSnapshot;
   exploitChains: ExploitChain[];
   exploitChainValidations: ExploitChainValidation[];
+  runtime: CampaignRuntimeState;
   error?: string;
 }
 
@@ -321,6 +344,15 @@ export type CampaignAction =
   | { type: "validation"; validation: FindingValidation }
   | { type: "exploit-chain"; chain: ExploitChainInput }
   | { type: "exploit-chain-validation"; validation: ExploitChainValidation }
+  | { type: "pause"; reason?: string }
+  | { type: "resume" }
+  | { type: "cancel"; reason?: string }
+  | { type: "halt"; reason: string }
+  | { type: "recover" }
+  | { type: "job-started"; id: string }
+  | { type: "job-failed"; id: string; error: string; retryable: boolean }
+  | { type: "runtime-success" }
+  | { type: "runtime-failure"; disruptive?: boolean }
   | { type: "failed"; error: string };
 
 const nextPhases: Record<CampaignState["phase"], CampaignState["phase"][]> = {
@@ -360,10 +392,138 @@ export function createCampaignState(
     coordination: emptyCoordinatorSnapshot(budget.exploration),
     exploitChains: [],
     exploitChainValidations: [],
+    runtime: {
+      control: "running",
+      consecutiveFailures: 0,
+      disruptiveResponses: 0,
+      jobs: [],
+    },
   };
 }
 
 export function reduceCampaign(state: CampaignState, action: CampaignAction): CampaignState {
+  state = withRuntimeState(state);
+  switch (action.type) {
+    case "pause":
+      return state.runtime.control === "running"
+        ? {
+            ...state,
+            runtime: { ...state.runtime, control: "paused", controlReason: action.reason },
+          }
+        : state;
+    case "resume":
+      return state.runtime.control === "paused"
+        ? {
+            ...state,
+            runtime: { ...state.runtime, control: "running", controlReason: undefined },
+          }
+        : state;
+    case "cancel":
+      return ["cancelled", "halted"].includes(state.runtime.control)
+        ? state
+        : {
+            ...state,
+            runtime: { ...state.runtime, control: "cancelled", controlReason: action.reason },
+          };
+    case "halt":
+      return state.runtime.control === "cancelled"
+        ? state
+        : {
+            ...state,
+            runtime: { ...state.runtime, control: "halted", controlReason: action.reason },
+          };
+    case "recover": {
+      let interruptedStateChange = false;
+      const jobs = state.runtime.jobs.map((job): CampaignJob => {
+        if (job.status !== "running") return job;
+        if (job.impactLevel === "state-change") {
+          interruptedStateChange = true;
+          return {
+            ...job,
+            status: "interrupted",
+            error: "Process exited while a state-changing proof attempt was in flight",
+          };
+        }
+        return { ...job, status: "queued", error: undefined };
+      });
+      return {
+        ...state,
+        agents: state.agents.map((agent) =>
+          agent.status === "running" ? { ...agent, status: "queued" } : agent,
+        ),
+        runtime: {
+          ...state.runtime,
+          jobs,
+          ...(interruptedStateChange
+            ? {
+                control: "halted" as const,
+                controlReason:
+                  "A state-changing proof attempt was interrupted; manual target review is required",
+              }
+            : {}),
+        },
+      };
+    }
+    case "job-started":
+      return {
+        ...state,
+        runtime: {
+          ...state.runtime,
+          jobs: state.runtime.jobs.map((job) =>
+            job.id === action.id &&
+            (job.status === "queued" ||
+              (job.status === "failed" && job.impactLevel !== "state-change"))
+              ? { ...job, status: "running", attempts: job.attempts + 1, error: undefined }
+              : job,
+          ),
+        },
+      };
+    case "job-failed": {
+      let interruptedStateChange = false;
+      const jobs = state.runtime.jobs.map((job): CampaignJob => {
+        if (job.id !== action.id || job.status !== "running") return job;
+        if (job.impactLevel === "state-change") {
+          interruptedStateChange = true;
+          return { ...job, status: "interrupted", error: action.error };
+        }
+        return {
+          ...job,
+          status: action.retryable ? "queued" : "failed",
+          error: action.error,
+        };
+      });
+      return {
+        ...state,
+        runtime: {
+          ...state.runtime,
+          jobs,
+          ...(interruptedStateChange && state.runtime.control !== "cancelled"
+            ? {
+                control: "halted" as const,
+                controlReason:
+                  "A state-changing proof attempt was interrupted; manual target review is required",
+              }
+            : {}),
+        },
+      };
+    }
+    case "runtime-success":
+      return state.runtime.consecutiveFailures === 0
+        ? state
+        : {
+            ...state,
+            runtime: { ...state.runtime, consecutiveFailures: 0 },
+          };
+    case "runtime-failure":
+      return {
+        ...state,
+        runtime: {
+          ...state.runtime,
+          consecutiveFailures: state.runtime.consecutiveFailures + 1,
+          disruptiveResponses: state.runtime.disruptiveResponses + (action.disruptive ? 1 : 0),
+        },
+      };
+  }
   if (state.phase === "complete" || state.phase === "failed") return state;
 
   switch (action.type) {
@@ -435,19 +595,43 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
       const finding = { ...normalized, fingerprint: fingerprintFinding(normalized) };
       return state.findings.some((existing) => existing.fingerprint === finding.fingerprint)
         ? state
-        : { ...state, findings: [...state.findings, finding] };
+        : {
+            ...state,
+            findings: [...state.findings, finding],
+            runtime: {
+              ...state.runtime,
+              jobs: [
+                ...state.runtime.jobs,
+                campaignJob("validation", finding.fingerprint, finding.impactLevel),
+              ],
+            },
+          };
     }
     case "validation":
       return state.validations.some(
         (validation) => validation.fingerprint === action.validation.fingerprint,
       )
         ? state
-        : { ...state, validations: [...state.validations, action.validation] };
+        : {
+            ...state,
+            validations: [...state.validations, action.validation],
+            runtime: completeJob(state.runtime, validationJobId(action.validation.fingerprint)),
+          };
     case "exploit-chain": {
       const chain = { ...action.chain, fingerprint: fingerprintExploitChain(action.chain) };
       return state.exploitChains.some((existing) => existing.fingerprint === chain.fingerprint)
         ? state
-        : { ...state, exploitChains: [...state.exploitChains, chain] };
+        : {
+            ...state,
+            exploitChains: [...state.exploitChains, chain],
+            runtime: {
+              ...state.runtime,
+              jobs: [
+                ...state.runtime.jobs,
+                campaignJob("exploit-chain", chain.fingerprint, chain.impactLevel),
+              ],
+            },
+          };
     }
     case "exploit-chain-validation":
       return state.exploitChainValidations.some(
@@ -457,10 +641,80 @@ export function reduceCampaign(state: CampaignState, action: CampaignAction): Ca
         : {
             ...state,
             exploitChainValidations: [...state.exploitChainValidations, action.validation],
+            runtime: completeJob(state.runtime, exploitChainJobId(action.validation.fingerprint)),
           };
     case "failed":
       return { ...state, phase: "failed", error: action.error };
   }
+}
+
+export function validationJobId(fingerprint: string): string {
+  return `validation:${fingerprint}`;
+}
+
+export function exploitChainJobId(fingerprint: string): string {
+  return `exploit-chain:${fingerprint}`;
+}
+
+/** Adds runtime defaults when loading checkpoints written before durable execution existed. */
+export function withRuntimeState(state: CampaignState): CampaignState {
+  if (state.runtime) return state;
+  return {
+    ...state,
+    runtime: {
+      control: "running",
+      consecutiveFailures: 0,
+      disruptiveResponses: 0,
+      jobs: [
+        ...state.findings
+          .filter(
+            (finding) =>
+              !state.validations.some(
+                (validation) => validation.fingerprint === finding.fingerprint,
+              ),
+          )
+          .map((finding) =>
+            campaignJob(
+              "validation",
+              finding.fingerprint,
+              finding.impactLevel ?? deriveImpactLevel(finding),
+            ),
+          ),
+        ...state.exploitChains
+          .filter(
+            (chain) =>
+              !state.exploitChainValidations.some(
+                (validation) => validation.fingerprint === chain.fingerprint,
+              ),
+          )
+          .map((chain) => campaignJob("exploit-chain", chain.fingerprint, chain.impactLevel)),
+      ],
+    },
+  };
+}
+
+function campaignJob(
+  kind: CampaignJob["kind"],
+  fingerprint: string,
+  impactLevel: ImpactLevel,
+): CampaignJob {
+  return {
+    id: kind === "validation" ? validationJobId(fingerprint) : exploitChainJobId(fingerprint),
+    kind,
+    fingerprint,
+    impactLevel,
+    status: "queued",
+    attempts: 0,
+  };
+}
+
+function completeJob(runtime: CampaignRuntimeState, id: string): CampaignRuntimeState {
+  return {
+    ...runtime,
+    jobs: runtime.jobs.map((job) =>
+      job.id === id ? { ...job, status: "completed", error: undefined } : job,
+    ),
+  };
 }
 
 function emptyCoordinatorSnapshot(requestBudget: number): CoordinatorSnapshot {

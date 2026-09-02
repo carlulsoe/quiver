@@ -70,10 +70,12 @@ describe("OpenAPI server scope", () => {
 });
 
 describe("stateful discovery evidence", () => {
-  it("separates attackable and visit-only exact origins", () => {
+  it("separates attackable, visit-only, auth-only, and blocked exact origins", () => {
     const scopes = normalizeAttackSurfaceOrigins("http://127.0.0.1:8888", [
       { origin: "http://127.0.0.1:9000", scope: "visit-only" },
       { origin: "http://127.0.0.1:9001", scope: "attackable" },
+      { origin: "http://127.0.0.1:9002", scope: "auth-only" },
+      { origin: "http://127.0.0.1:9003", scope: "blocked" },
       { origin: "http://127.0.0.1:8888", scope: "visit-only" },
     ]);
 
@@ -81,6 +83,8 @@ describe("stateful discovery evidence", () => {
       "http://127.0.0.1:8888": "attackable",
       "http://127.0.0.1:9000": "visit-only",
       "http://127.0.0.1:9001": "attackable",
+      "http://127.0.0.1:9002": "auth-only",
+      "http://127.0.0.1:9003": "blocked",
     });
     expect(() =>
       normalizeAttackSurfaceOrigins("http://127.0.0.1:8888", [
