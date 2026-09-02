@@ -92,8 +92,12 @@ or are explicitly authorized to assess.
 
 ## Run a campaign
 
-This requires Bun, Chromium, Docker Compose, and an `OPENROUTER_API_KEY`. The model
-is fixed to `openrouter/z-ai/glm-5.3-flash`.
+This requires Bun, Chromium, Docker Compose, and an `OPENROUTER_API_KEY`. Models are routed per
+mission. Ordinary route triage takes the cheapest compatible route, while fresh specialists declare
+requirements for browser-backed authentication reasoning, payload generation, or large context.
+Validators use an independent route. Each route has an ordered compatible fallback chain; provider
+availability failures may advance the chain only before the mission invokes a tool, so fallback can
+never silently replay a state-changing request.
 
 Start the pinned OWASP crAPI 1.1.5 checkout and run a campaign:
 
@@ -272,6 +276,10 @@ the declared predicate runs over raw replay observations and is authoritative.
 If the validation budget is insufficient, the report leaves the remaining
 findings explicitly unvalidated.
 
+Model selection is capability-gated rather than a single campaign-wide default. Reports retain the
+aggregate token/cost total for evaluation compatibility and also record requirements, attempted
+models, tokens, and approximate cost for every explorer, specialist, and validation mission.
+
 Current hard boundaries:
 
 - Loopback HTTP(S) targets only
@@ -289,7 +297,9 @@ Current hard boundaries:
   collector budget; CSRF sources must be configured cross-origin visit-only pages and
   use a named actor's target-scoped cookies
 - 12 KB cap for agent-visible responses
-- No shell, browser, filesystem, or arbitrary network tools exposed directly to agents
+- No shell, filesystem, raw browser, or arbitrary network tools exposed directly to agents. The
+  non-REST adapter surface accepts only probe/policy identifiers; code owns origins, paths,
+  credentials, markers, request caps, and browser policy.
 
 The OAST listener binds to loopback by default. For a target in Docker, set
 `QUIVER_OAST_BIND_HOST=0.0.0.0` and

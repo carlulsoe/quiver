@@ -5,7 +5,17 @@ import { createExplorerAgent, createValidatorAgent } from "./agents.ts";
 import { CampaignLedger } from "./campaign-ledger.ts";
 import { InMemoryCampaignStore, type CampaignStore } from "./campaign-store.ts";
 import { ChainBudgetExceededError, replayExploitChain } from "./exploit-chain.ts";
-import { GLM_FLASH_MODEL } from "./models.ts";
+import {
+  createModelRouter,
+  estimateTokens,
+  routeTriageRequirements,
+  shouldFallbackModel,
+  specialistRequirements,
+  validationRequirements,
+  type MissionRequirements,
+  type ModelRoute,
+  type ModelRouter,
+} from "./model-routing.ts";
 import { ProofArtifactStore } from "./proof-artifacts.ts";
 import { RequestBudgetExceededError, ScopedTarget } from "./scoped-target.ts";
 import {
@@ -18,6 +28,7 @@ import {
 } from "./state.ts";
 import { assertValidTargetProfile, type TargetProfile } from "./target-profile.ts";
 import { actorIds } from "./sessions.ts";
+import { createBoundedToolAdapters } from "./tool-adapters.ts";
 import { DefaultVerificationEngine, ReplayBudgetExceededError } from "./verification.ts";
 import {
   CampaignCancelledError,
@@ -37,6 +48,16 @@ export interface RunCampaignOptions {
   context?: string;
   campaignId?: string;
   campaignStore?: CampaignStore;
+  modelRouter?: ModelRouter;
+}
+
+export interface MissionUsage {
+  missionId: string;
+  role: "explorer" | "specialist" | "validator";
+  requirements: MissionRequirements;
+  attemptedModels: string[];
+  model?: string;
+  usage: PromptUsage;
 }
 
 export interface CampaignRun {
@@ -45,6 +66,7 @@ export interface CampaignRun {
   model: string;
   durationMs: number;
   usage: PromptUsage;
+  missionUsage: MissionUsage[];
   state: CampaignState;
   events: RunEvent[];
 }
@@ -52,7 +74,7 @@ export interface CampaignRun {
 export interface RunEvent {
   sequence: number;
   elapsedMs: number;
-  type: "state" | "request" | "tool-call" | "tool-output" | "tool-error";
+  type: "state" | "request" | "model-route" | "tool-call" | "tool-output" | "tool-error";
   data: Record<string, unknown>;
 }
 
@@ -64,6 +86,8 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
   const explorerCount = options.explorerCount ?? 2;
   const events: RunEvent[] = [];
   const usage = emptyUsage();
+  const missionUsage: MissionUsage[] = [];
+  const modelRouter = options.modelRouter ?? createModelRouter();
   const record = (type: RunEvent["type"], data: Record<string, unknown>) => {
     events.push({
       sequence: events.length + 1,
@@ -96,19 +120,12 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       });
     }
   };
-  const captureUsage = (metadata: Record<string, unknown> | undefined) => {
+  const captureUsage = (metadata: Record<string, unknown> | undefined, mission: MissionUsage) => {
     const value = metadata?.quiverUsage;
     if (!isPromptUsage(value)) return;
-    usage.input += value.input;
-    usage.output += value.output;
-    usage.cacheRead += value.cacheRead;
-    usage.cacheWrite += value.cacheWrite;
-    usage.totalTokens += value.totalTokens;
-    usage.cost.input += value.cost.input;
-    usage.cost.output += value.cost.output;
-    usage.cost.cacheRead += value.cost.cacheRead;
-    usage.cost.cacheWrite += value.cost.cacheWrite;
-    usage.cost.total += value.cost.total;
+    addUsage(usage, value);
+    addUsage(mission.usage, value);
+    if (typeof metadata?.quiverModel === "string") mission.model = metadata.quiverModel;
   };
   const campaignId = options.campaignId ?? options.profile.id;
   const campaignStore =
@@ -168,7 +185,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     state.phase === "failed" ||
     state.runtime.control !== "running"
   ) {
-    return campaignRun(options, startedAt, usage, state, events);
+    return campaignRun(options, startedAt, usage, missionUsage, state, events);
   }
   const resumedPhase = state.phase;
 
@@ -224,6 +241,11 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       runtimeSafety,
     });
     let enqueueValidation: (fingerprint: string, finalAttempt?: boolean) => void = () => {};
+    const boundedAdapters = createBoundedToolAdapters({
+      target: explorationTarget,
+      profile: options.profile,
+      artifacts,
+    });
     const ledger = new CampaignLedger({
       onTestedRequest: (request) => {
         coordinator.observeRequest(request);
@@ -241,35 +263,57 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       "excessive or sensitive data exposure and security misconfiguration",
       "route-level authentication gaps and object-detail authorization controls not yet tested by the other explorers",
     ];
-    const explorers = Array.from({ length: explorerCount }, (_, index) =>
-      createExplorerAgent(
-        `explorer-${index + 1}`,
-        focuses[index] ?? "the remaining REST attack surface not covered by other explorers",
-        explorationTarget,
-        options.profile,
-        ledger,
-        coordinator,
-        artifacts,
-        verification,
-        dispatch,
-        options.context,
-      ),
-    );
+    const contextTokens = estimateTokens({
+      context: options.context,
+      openApi: options.openApi,
+      manifest: options.profile.manifest,
+    });
+    const triageRoute = () => modelRouter.route(routeTriageRequirements(contextTokens));
+    const explorers = Array.from({ length: explorerCount }, (_, index) => {
+      const id = `explorer-${index + 1}`;
+      const cursor = createRouteCursor(triageRoute());
+      return {
+        id,
+        cursor,
+        definition: createExplorerAgent(
+          id,
+          focuses[index] ?? "the remaining REST attack surface not covered by other explorers",
+          explorationTarget,
+          options.profile,
+          ledger,
+          coordinator,
+          artifacts,
+          boundedAdapters,
+          verification,
+          dispatch,
+          () => currentModel(cursor),
+          options.context,
+        ),
+      };
+    });
     const specialistLimit = Math.min(2, explorerCount);
     const specialistDefinitions = Array.from({ length: specialistLimit }, (_, index) => {
       const id = `specialist-${index + 1}`;
-      return createExplorerAgent(
+      const cursor = createRouteCursor(triageRoute());
+      return {
         id,
-        () => coordinator.focusFor(id) ?? "high-confidence hypotheses retained by the coordinator",
-        explorationTarget,
-        options.profile,
-        ledger,
-        coordinator,
-        artifacts,
-        verification,
-        dispatch,
-        options.context,
-      );
+        cursor,
+        definition: createExplorerAgent(
+          id,
+          () =>
+            coordinator.focusFor(id) ?? "high-confidence hypotheses retained by the coordinator",
+          explorationTarget,
+          options.profile,
+          ledger,
+          coordinator,
+          artifacts,
+          boundedAdapters,
+          verification,
+          dispatch,
+          () => currentModel(cursor),
+          options.context,
+        ),
+      };
     });
     const validationTarget = new ScopedTarget({
       target: options.target,
@@ -285,6 +329,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       attackSurfaceOrigins: options.profile.attackSurfaceOrigins,
       runtimeSafety,
     });
+    const validatorCursor = createRouteCursor(modelRouter.route(validationRequirements(0)));
     const Validator = createValidatorAgent(
       () => state.findings,
       () => validationTarget,
@@ -300,6 +345,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         }
         dispatch(action);
       },
+      () => currentModel(validatorCursor),
       "validator",
     );
     let validationMissionIndex = 0;
@@ -315,22 +361,46 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       const validatorId =
         validationMissionIndex === 0 ? "validator" : `validator-${validationMissionIndex + 1}`;
       validationMissionIndex += 1;
+      const validationRoute = modelRouter.route(validationRequirements(estimateTokens(finding)));
       if (!coordinator.claimValidation(validatorId, fingerprint)) return;
+      resetRoute(validatorCursor, validationRoute);
+      const mission = beginMissionUsage(
+        missionUsage,
+        validatorId,
+        "validator",
+        validatorCursor.route,
+      );
       dispatch({ type: "job-started", id: jobId });
       if (validatorId !== "validator") {
         dispatch({ type: "agent-spawned", id: validatorId, role: "validator" });
       }
       dispatch({ type: "agent", id: validatorId, status: "running" });
       try {
-        const validator = init(Validator, { id: `mission-${validationMissionIndex}` });
-        const receipt = await validator.dispatch({
-          message: `Validate only finding ${fingerprint}, submit its outcome, then finish validation.`,
-          initialData: { fingerprint, validatorId },
-        });
-        const reply = await validator.read(receipt, {
-          onEvent: (chunk) => captureAgentEvent(validatorId, chunk),
-        });
-        captureUsage(reply.metadata);
+        let replyText = "";
+        while (true) {
+          let toolInvoked = false;
+          recordModelAttempt(record, mission, currentModel(validatorCursor));
+          try {
+            const validator = init(Validator, {
+              id: `mission-${validationMissionIndex}-attempt-${validatorCursor.index + 1}`,
+            });
+            const receipt = await validator.dispatch({
+              message: `Validate only finding ${fingerprint}, submit its outcome, then finish validation.`,
+              initialData: { fingerprint, validatorId },
+            });
+            const reply = await validator.read(receipt, {
+              onEvent: (chunk) => {
+                if (chunk.type === "tool-input") toolInvoked = true;
+                captureAgentEvent(validatorId, chunk);
+              },
+            });
+            captureUsage(reply.metadata, mission);
+            replyText = reply.text;
+            break;
+          } catch (error) {
+            if (!advanceFallback(validatorCursor, error, toolInvoked)) throw error;
+          }
+        }
         const completed = state.validations.some(
           (validation) => validation.fingerprint === fingerprint,
         );
@@ -347,7 +417,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
           type: "agent",
           id: validatorId,
           status: "finished",
-          summary: completed ? reply.text.slice(0, 100) : "Replay produced no submitted outcome.",
+          summary: completed ? replyText.slice(0, 100) : "Replay produced no submitted outcome.",
         });
       } catch (error) {
         coordinator.releaseValidation(fingerprint);
@@ -374,7 +444,11 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     };
 
     await using _campaignRuntime = await start({
-      agents: [...explorers, ...specialistDefinitions, Validator],
+      agents: [
+        ...explorers.map(({ definition }) => definition),
+        ...specialistDefinitions.map(({ definition }) => definition),
+        Validator,
+      ],
     });
     if (resumedPhase === "validating" && options.profile.authenticate) {
       const pendingFingerprints = new Set(
@@ -416,20 +490,34 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       }
     }
     const runWorker = async (
-      Explorer: (typeof explorers)[number],
-      id: string,
+      worker: (typeof explorers)[number],
+      role: "explorer" | "specialist",
       instruction: string,
     ) => {
+      const { definition: Explorer, id, cursor } = worker;
+      const mission = beginMissionUsage(missionUsage, id, role, cursor.route);
       dispatch({ type: "agent", id, status: "running" });
       let summary = "Worker exited without a model summary.";
       try {
-        const agent = init(Explorer);
-        const receipt = await agent.dispatch(instruction);
-        const reply = await agent.read(receipt, {
-          onEvent: (chunk) => captureAgentEvent(id, chunk),
-        });
-        captureUsage(reply.metadata);
-        summary = reply.text.slice(0, 100);
+        while (true) {
+          let toolInvoked = false;
+          recordModelAttempt(record, mission, currentModel(cursor));
+          try {
+            const agent = init(Explorer, { id: `${id}-attempt-${cursor.index + 1}` });
+            const receipt = await agent.dispatch(instruction);
+            const reply = await agent.read(receipt, {
+              onEvent: (chunk) => {
+                if (chunk.type === "tool-input") toolInvoked = true;
+                captureAgentEvent(id, chunk);
+              },
+            });
+            captureUsage(reply.metadata, mission);
+            summary = reply.text.slice(0, 100);
+            break;
+          } catch (error) {
+            if (!advanceFallback(cursor, error, toolInvoked)) throw error;
+          }
+        }
         dispatch({ type: "agent", id, status: "finished", summary });
       } catch (error) {
         if (isRuntimeStopError(error)) {
@@ -453,12 +541,11 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       }
       dispatch({ type: "phase", phase: "exploring" });
       await Promise.all(
-        explorers.flatMap((Explorer, index) => {
-          const id = `explorer-${index + 1}`;
-          const agent = state.agents.find((candidate) => candidate.id === id);
+        explorers.flatMap((worker) => {
+          const agent = state.agents.find((candidate) => candidate.id === worker.id);
           return agent?.status === "finished"
             ? []
-            : [runWorker(Explorer, id, "Resume the bounded REST security campaign.")];
+            : [runWorker(worker, "explorer", "Resume the bounded REST security campaign.")];
         }),
       );
 
@@ -467,9 +554,20 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
         await Promise.all(
           specialistPlans.map((plan, index) => {
             dispatch({ type: "agent-spawned", id: plan.agentId, role: "specialist" });
+            const worker = specialistDefinitions[index]!;
+            resetRoute(
+              worker.cursor,
+              modelRouter.route(
+                specialistRequirements({
+                  specialty: plan.specialty,
+                  contextTokens,
+                  browserBacked: isBrowserBacked(options.profile),
+                }),
+              ),
+            );
             return runWorker(
-              specialistDefinitions[index]!,
-              plan.agentId,
+              worker,
+              "specialist",
               `Investigate the coordinator's assigned ${plan.specialty} hypotheses with a fresh perspective.`,
             );
           }),
@@ -479,13 +577,28 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
           ({ role, status }) => role === "specialist" && status !== "finished",
         );
         await Promise.all(
-          pendingSpecialists.map((agent) =>
-            runWorker(
-              specialistDefinition(agent.id, specialistDefinitions),
-              agent.id,
+          pendingSpecialists.map((agent) => {
+            const worker = specialistDefinition(agent.id, specialistDefinitions);
+            const plan = coordinator
+              .snapshot()
+              .specialists.find(({ agentId }) => agentId === agent.id);
+            if (!plan) throw new Error(`No persisted specialist plan exists for ${agent.id}`);
+            resetRoute(
+              worker.cursor,
+              modelRouter.route(
+                specialistRequirements({
+                  specialty: plan.specialty,
+                  contextTokens,
+                  browserBacked: isBrowserBacked(options.profile),
+                }),
+              ),
+            );
+            return runWorker(
+              worker,
+              "specialist",
               "Resume the coordinator's assigned specialist investigation.",
-            ),
-          ),
+            );
+          }),
         );
       }
 
@@ -568,25 +681,98 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     }
   }
 
-  return campaignRun(options, startedAt, usage, state, events);
+  return campaignRun(options, startedAt, usage, missionUsage, state, events);
 }
 
 function campaignRun(
   options: RunCampaignOptions,
   startedAt: number,
   usage: PromptUsage,
+  missionUsage: MissionUsage[],
   state: CampaignState,
   events: RunEvent[],
 ): CampaignRun {
   return {
     profileId: options.profile.id,
     reproductionAuthentication: options.profile.reproductionAuthentication,
-    model: GLM_FLASH_MODEL,
+    model: missionUsage[0]?.model ?? missionUsage[0]?.attemptedModels[0] ?? "unrouted",
     durationMs: Math.round(performance.now() - startedAt),
     usage,
+    missionUsage,
     state,
     events,
   };
+}
+
+interface RouteCursor {
+  route: ModelRoute;
+  index: number;
+}
+
+function createRouteCursor(route: ModelRoute): RouteCursor {
+  return { route, index: 0 };
+}
+
+function resetRoute(cursor: RouteCursor, route: ModelRoute): void {
+  cursor.route = route;
+  cursor.index = 0;
+}
+
+function currentModel(cursor: RouteCursor) {
+  const model = cursor.route.candidates[cursor.index];
+  if (!model) throw new Error("Model route has no current candidate");
+  return model;
+}
+
+function advanceFallback(cursor: RouteCursor, error: unknown, toolInvoked: boolean): boolean {
+  if (!shouldFallbackModel(error, toolInvoked)) return false;
+  if (cursor.index + 1 >= cursor.route.candidates.length) return false;
+  cursor.index += 1;
+  return true;
+}
+
+function beginMissionUsage(
+  accounts: MissionUsage[],
+  missionId: string,
+  role: MissionUsage["role"],
+  route: ModelRoute,
+): MissionUsage {
+  const account: MissionUsage = {
+    missionId,
+    role,
+    requirements: {
+      ...route.requirements,
+      capabilities: [...route.requirements.capabilities],
+    },
+    attemptedModels: [],
+    usage: emptyUsage(),
+  };
+  accounts.push(account);
+  return account;
+}
+
+function recordModelAttempt(
+  record: (type: RunEvent["type"], data: Record<string, unknown>) => void,
+  mission: MissionUsage,
+  model: ModelRoute["candidates"][number],
+): void {
+  mission.attemptedModels.push(model.model);
+  record("model-route", {
+    missionId: mission.missionId,
+    role: mission.role,
+    model: model.model,
+    attempt: mission.attemptedModels.length,
+    requirements: mission.requirements,
+  });
+}
+
+function isBrowserBacked(profile: TargetProfile): boolean {
+  return (
+    profile.proofPolicies?.some(({ kind }) => kind === "browser-effect") === true ||
+    profile.manifest?.identities.some(
+      ({ authentication }) => authentication?.kind === "browser-login",
+    ) === true
+  );
 }
 
 function emptyUsage(): PromptUsage {
@@ -598,6 +784,19 @@ function emptyUsage(): PromptUsage {
     totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
+}
+
+function addUsage(total: PromptUsage, value: PromptUsage): void {
+  total.input += value.input;
+  total.output += value.output;
+  total.cacheRead += value.cacheRead;
+  total.cacheWrite += value.cacheWrite;
+  total.totalTokens += value.totalTokens;
+  total.cost.input += value.cost.input;
+  total.cost.output += value.cost.output;
+  total.cost.cacheRead += value.cost.cacheRead;
+  total.cost.cacheWrite += value.cost.cacheWrite;
+  total.cost.total += value.cost.total;
 }
 
 function isPromptUsage(value: unknown): value is PromptUsage {

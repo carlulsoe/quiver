@@ -270,6 +270,7 @@ function campaignRun(input: FindingInput | FindingInput[]): CampaignRun {
       totalTokens: 321,
       cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 },
     },
+    missionUsage: [],
     state,
     events: [],
   };

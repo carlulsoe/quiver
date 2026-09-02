@@ -3,7 +3,7 @@ import * as v from "valibot";
 import type { AdaptiveCoordinator } from "./adaptive-coordinator.ts";
 import type { CampaignLedger } from "./campaign-ledger.ts";
 import { chainInputFingerprint, evaluateExploitChain } from "./exploit-chain.ts";
-import { GLM_FLASH_MODEL } from "./models.ts";
+import type { RoutedModel } from "./model-routing.ts";
 import type { ProofArtifactStore } from "./proof-artifacts.ts";
 import type { ScopedTarget } from "./scoped-target.ts";
 import { createSerialExecutor } from "./serial-executor.ts";
@@ -16,7 +16,8 @@ import {
   type ExploitChainInput,
   type ProofResult,
 } from "./state.ts";
-import { browserPolicyPath, type TargetProfile } from "./target-profile.ts";
+import type { TargetProfile } from "./target-profile.ts";
+import type { BoundedToolAdapters } from "./tool-adapters.ts";
 import { actorIds } from "./sessions.ts";
 import {
   proofPredicateSchema,
@@ -54,8 +55,11 @@ const jsonPointerSchema = v.pipe(
   v.string(),
   v.regex(/^(?:\/[^/]*)*$/, "Use an RFC 6901 JSON pointer such as /user/email"),
 );
-function useUsageMetadata() {
-  useResponseFinish(({ response }) => ({ quiverUsage: response.usage }));
+function useUsageMetadata(model: RoutedModel) {
+  useResponseFinish(({ response }) => ({
+    quiverUsage: response.usage,
+    quiverModel: model.model,
+  }));
 }
 
 function explorationTools(
@@ -65,6 +69,7 @@ function explorationTools(
   ledger: CampaignLedger,
   coordinator: AdaptiveCoordinator,
   artifacts: ProofArtifactStore,
+  adapters: BoundedToolAdapters,
   verification: VerificationEngine,
   dispatch: (action: CampaignAction) => void,
 ) {
@@ -73,7 +78,7 @@ function explorationTools(
     description:
       "Map browser-observed requests and supplied OpenAPI operations into a REST attack surface. Use this first.",
     async run() {
-      const map = await target.mapAttackSurface();
+      const map = await adapters.discovery.map();
       const operations = map.routeDetails
         .filter(({ scope }) => scope === undefined || scope === "attackable")
         .flatMap(({ path, methods }) => methods.map((method) => ({ method, path })));
@@ -220,8 +225,7 @@ function explorationTools(
     name: "create_oast_probe",
     description: "Issue a campaign-local loopback HTTP callback URL with an unguessable token.",
     run() {
-      target.assertImpactLevel("bounded");
-      const { probeId, token, url } = artifacts.issueOastProbe();
+      const { probeId, token, url } = adapters.oast.issue();
       return { output: { probeId, token, url } };
     },
   });
@@ -229,8 +233,7 @@ function explorationTools(
     name: "create_browser_probe",
     description: "Issue an unguessable marker for one browser-visible-effect proof attempt.",
     run() {
-      target.assertImpactLevel("bounded");
-      const { probeId, marker } = artifacts.issueBrowserProbe();
+      const { probeId, marker } = adapters.browser.issue();
       return { output: { probeId, marker } };
     },
   });
@@ -239,7 +242,7 @@ function explorationTools(
     description: "Wait briefly for a callback to one issued OAST probe.",
     input: v.object({ probeId: v.string(), token: v.string() }),
     async run({ data }) {
-      const callback = await artifacts.waitForOastCallback(data.probeId, data.token);
+      const callback = await adapters.oast.poll(data);
       return {
         output: {
           observed: callback !== undefined,
@@ -266,24 +269,7 @@ function explorationTools(
       probeId: v.string(),
     }),
     async run({ data }) {
-      const policy = profile.proofPolicies?.find(
-        (candidate) => candidate.kind === "browser-effect" && candidate.id === data.policyId,
-      );
-      if (policy?.kind !== "browser-effect") {
-        throw new Error("Unknown browser-effect proof policy");
-      }
-      const probe = artifacts.browserProbe(data.probeId);
-      if (!probe) throw new Error("Unknown browser proof probe");
-      const path = browserPolicyPath(policy, probe.marker);
-      const evidence = await target.observeBrowserEffect({
-        probeId: data.probeId,
-        marker: probe.marker,
-        path,
-        kind: policy.effect,
-        actorId: policy.pageActorId,
-        requestBudget: policy.requestBudget,
-      });
-      if (evidence) artifacts.recordBrowserEffect(evidence);
+      const evidence = await adapters.browser.observe(data);
       return {
         output: {
           observed: evidence !== undefined,
@@ -350,8 +336,10 @@ export function createExplorerAgent(
   ledger: CampaignLedger,
   coordinator: AdaptiveCoordinator,
   artifacts: ProofArtifactStore,
+  adapters: BoundedToolAdapters,
   verification: VerificationEngine,
   dispatch: (action: CampaignAction) => void,
+  getModel: () => RoutedModel,
   suppliedContext?: string,
 ) {
   const tools = explorationTools(
@@ -361,6 +349,7 @@ export function createExplorerAgent(
     ledger,
     coordinator,
     artifacts,
+    adapters,
     verification,
     dispatch,
   );
@@ -509,8 +498,9 @@ export function createExplorerAgent(
 
   return Object.assign(
     function Explorer() {
-      useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
-      useUsageMetadata();
+      const model = getModel();
+      useModel(model.model, { thinkingLevel: model.thinkingLevel });
+      useUsageMetadata(model);
       useTool(tools.mapAttackSurface);
       useTool(tools.request);
       useTool(tools.review);
@@ -574,6 +564,7 @@ export function createValidatorAgent(
   profile: TargetProfile,
   verification: VerificationEngine,
   dispatch: (action: CampaignAction, mission: ValidatorMission) => void,
+  getModel: () => RoutedModel,
   validatorId = "validator",
 ) {
   const replays = new Map<string, VerificationReplay>();
@@ -699,8 +690,9 @@ export function createValidatorAgent(
           return { output: { finished: true }, terminate: true };
         },
       });
-      useModel(GLM_FLASH_MODEL, { thinkingLevel: "medium" });
-      useUsageMetadata();
+      const model = getModel();
+      useModel(model.model, { thinkingLevel: model.thinkingLevel });
+      useUsageMetadata(model);
       useTool(replay);
       useTool(submit);
       useTool(finish);
