@@ -1,5 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
+import { object, record, safeParse, string, unknown } from "valibot";
+
+const openApiSchema = object({ paths: record(string(), unknown()) });
 
 export async function loadOpenApi(path: string): Promise<unknown> {
   const source = await readSuppliedFile(path, "OpenAPI");
@@ -9,14 +12,7 @@ export async function loadOpenApi(path: string): Promise<unknown> {
   } catch (error) {
     throw new Error(`Could not parse OpenAPI file ${path}: ${String(error)}`);
   }
-  if (
-    !document ||
-    typeof document !== "object" ||
-    !("paths" in document) ||
-    !(document as { paths?: unknown }).paths ||
-    typeof (document as { paths?: unknown }).paths !== "object" ||
-    Array.isArray((document as { paths?: unknown }).paths)
-  ) {
+  if (!safeParse(openApiSchema, document).success) {
     throw new Error(`OpenAPI file ${path} must contain a paths object`);
   }
   return document;

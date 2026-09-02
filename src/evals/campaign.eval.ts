@@ -31,25 +31,26 @@ const target =
 const heldOutSeed = profileId === "held-out" ? process.env.QUIVER_EVAL_HELD_OUT_SEED : undefined;
 const trialIndex = Number.parseInt(process.env.QUIVER_EVAL_TRIAL_INDEX ?? "1", 10);
 const trialTotal = Number.parseInt(process.env.QUIVER_EVAL_TRIAL_TOTAL ?? "1", 10);
-const requestBudget: Record<SecurityEvalProfileId, number> = {
+const requestBudget = {
   crapi: 42,
   "vampi-vulnerable": 42,
   "vampi-secure": 42,
   vulnerableapp: 60,
   "held-out": 30,
-};
+} satisfies Record<SecurityEvalProfileId, number>;
 
 describeEval(`${profileId} vulnerability campaign`, { harness: securityHarness }, (it) => {
   it(`finds and deterministically validates vulnerabilities within budget (trial ${trialIndex} of ${trialTotal})`, async ({
     run,
   }) => {
-    const result = await run({
+    const input: SecurityEvalInput = {
       profileId,
-      ...(target ? { target } : {}),
-      ...(heldOutSeed ? { heldOutSeed } : {}),
       requestBudget: requestBudget[profileId],
       explorerCount: 3,
-    });
+    };
+    if (target) input.target = target;
+    if (heldOutSeed) input.heldOutSeed = heldOutSeed;
+    const result = await run(input);
 
     expect(result.output).toMatchObject({
       profileId,

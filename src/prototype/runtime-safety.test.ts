@@ -68,7 +68,7 @@ describe("runtime safety controller", () => {
         releaseFirst = resolve;
       });
     });
-    while (typeof releaseFirst !== "function") await Promise.resolve();
+    while (releaseFirst === undefined) await Promise.resolve();
     const queued = [1, 2, 3].map(() =>
       controller.execute(async () => {
         starts.push(now);

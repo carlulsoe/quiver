@@ -85,16 +85,15 @@ export class InMemorySessions implements Sessions {
   async browserState(actorId: ActorId): Promise<BrowserState> {
     const session = await this.#resolve(actorId);
     if (!session) throw new Error(`This target has no browser session for actor ${actorId}`);
-    return {
-      ...(session.headers ? { headers: { ...session.headers } } : {}),
-      ...(session.browserState?.localStorage
-        ? { localStorage: { ...session.browserState.localStorage } }
-        : {}),
-      ...(session.browserState?.sessionStorage
-        ? { sessionStorage: { ...session.browserState.sessionStorage } }
-        : {}),
+    const state: BrowserState = {
       cookies: session.browserState?.cookies?.map((cookie) => ({ ...cookie })),
     };
+    if (session.headers) state.headers = { ...session.headers };
+    if (session.browserState?.localStorage)
+      state.localStorage = { ...session.browserState.localStorage };
+    if (session.browserState?.sessionStorage)
+      state.sessionStorage = { ...session.browserState.sessionStorage };
+    return state;
   }
 
   async #resolve(actorId: ActorId): Promise<StoredSession | undefined> {
@@ -134,16 +133,14 @@ function pathMatches(cookiePath: string, requestPath: string): boolean {
 }
 
 function cloneStoredSession(session: StoredSession): StoredSession {
-  return {
-    ...(session.headers ? { headers: { ...session.headers } } : {}),
-    browserState: {
-      ...(session.browserState?.localStorage
-        ? { localStorage: { ...session.browserState.localStorage } }
-        : {}),
-      ...(session.browserState?.sessionStorage
-        ? { sessionStorage: { ...session.browserState.sessionStorage } }
-        : {}),
-      cookies: session.browserState?.cookies?.map((cookie) => ({ ...cookie })),
-    },
+  const browserState: Omit<BrowserState, "headers"> = {
+    cookies: session.browserState?.cookies?.map((cookie) => ({ ...cookie })),
   };
+  if (session.browserState?.localStorage)
+    browserState.localStorage = { ...session.browserState.localStorage };
+  if (session.browserState?.sessionStorage)
+    browserState.sessionStorage = { ...session.browserState.sessionStorage };
+  const clone: StoredSession = { browserState };
+  if (session.headers) clone.headers = { ...session.headers };
+  return clone;
 }

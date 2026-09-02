@@ -1,21 +1,17 @@
-import { createHarness, toJsonValue, type JsonValue, type TranscriptEvent } from "vitest-evals";
-import { campaignOperationCoverage, type Finding } from "../prototype/state.ts";
-import { normalizeEndpoint } from "../prototype/endpoint.ts";
+import { createHarness, toJsonValue } from "vitest-evals";
+import { campaignOperationCoverage } from "../prototype/state.ts";
 import { runCampaign, type CampaignRun } from "../prototype/runner.ts";
 import { getDefaultTarget, getTargetProfile } from "../targets/profiles.ts";
 import { createHeldOutFixture } from "../targets/held-out-fixture.ts";
 import { createHeldOutProfile } from "../targets/held-out.ts";
-import { scoreCrapiReadOnlyBenchmark } from "./crapi-benchmark.ts";
+import { emptyScore, evalFinding, scoreProfile, type NormalizedScore } from "./eval-scoring.ts";
 import { classifyCampaignFailures } from "./failure-classification.ts";
 import type {
-  CoverageKind,
-  EvalFinding,
-  ScoreKind,
   SecurityEvalInput,
   SecurityEvalOutput,
   SecurityEvalProfileId,
 } from "./security-eval.ts";
-import { scoreVulnerableAppBenchmark } from "./vulnerableapp-benchmark.ts";
+import { transcriptEvents } from "./transcript-events.ts";
 
 export { applyVampiDifferentialScoring, SECURITY_EVAL_PROFILE_IDS } from "./security-eval.ts";
 export type {
@@ -26,21 +22,6 @@ export type {
   SecurityEvalOutput,
   SecurityEvalProfileId,
 } from "./security-eval.ts";
-
-interface NormalizedScore {
-  kind: ScoreKind;
-  coverage: number;
-  coverageKind: CoverageKind;
-  precision: number;
-  truePositiveCount: number;
-  falsePositiveCount: number;
-  missedCount: number;
-  unscoredCount: number;
-  requestsPerTruePositive: number | null;
-  matchedIds: string[];
-  missedIds: string[];
-  details: Record<string, JsonValue>;
-}
 
 export const securityHarness = createHarness<SecurityEvalInput, SecurityEvalOutput>({
   name: "bounded-security-campaign",
@@ -175,172 +156,4 @@ export async function createSecurityEvalOutput(
     error: run.state.error ?? null,
     heldOutSeed: metadata.heldOutSeed ?? null,
   };
-}
-
-async function scoreProfile(
-  profileId: SecurityEvalProfileId,
-  target: URL,
-  confirmed: readonly Finding[],
-  requestsUsed: number,
-  operationCoverage: number,
-): Promise<NormalizedScore> {
-  if (profileId === "crapi") {
-    const result = scoreCrapiReadOnlyBenchmark({
-      confirmedFindings: [...confirmed],
-      requestsUsed,
-    });
-    return {
-      kind: "crapi-read-only",
-      coverage: result.coverage,
-      coverageKind: "benchmark",
-      precision: result.precision,
-      truePositiveCount: result.truePositiveCount,
-      falsePositiveCount: result.falsePositiveCount,
-      missedCount: result.missedCount,
-      unscoredCount: result.unscoredCount,
-      requestsPerTruePositive: result.requestsPerTruePositive,
-      matchedIds: result.matchedBenchmarkIds,
-      missedIds: result.missedBenchmarkIds,
-      details: {
-        falsePositiveFingerprints: result.falsePositiveFingerprints,
-        unscoredFingerprints: result.unscoredFingerprints,
-      },
-    };
-  }
-  if (profileId === "vulnerableapp") {
-    const result = await scoreVulnerableAppBenchmark({ target, confirmedFindings: confirmed });
-    return {
-      kind: "vulnerableapp-native",
-      coverage: result.coverage,
-      coverageKind: "benchmark",
-      precision: result.precision,
-      truePositiveCount: result.truePositiveCount,
-      falsePositiveCount: result.falsePositiveCount,
-      missedCount: result.missedCount,
-      unscoredCount: 0,
-      requestsPerTruePositive:
-        result.truePositiveCount === 0 ? null : requestsUsed / result.truePositiveCount,
-      matchedIds: [],
-      missedIds: result.missedItems.map((_item, index) => `native-miss-${index + 1}`),
-      details: {
-        missedItems: toJsonValue(result.missedItems) ?? [],
-        falsePositiveItems: toJsonValue(result.falsePositiveItems) ?? [],
-      },
-    };
-  }
-  if (profileId === "held-out") return scoreHeldOut(confirmed, requestsUsed);
-  return emptyScore(profileId, operationCoverage);
-}
-
-function scoreHeldOut(confirmed: readonly Finding[], requestsUsed: number): NormalizedScore {
-  const matchedFindings = confirmed.filter(matchesHeldOutBenchmark);
-  const truePositiveCount = Math.min(matchedFindings.length, 1);
-  const falsePositiveCount = confirmed.length - matchedFindings.length;
-  return {
-    kind: "held-out-canary",
-    coverage: truePositiveCount,
-    coverageKind: "held-out-fixture",
-    precision:
-      confirmed.length === 0 ? 0 : truePositiveCount / (truePositiveCount + falsePositiveCount),
-    truePositiveCount,
-    falsePositiveCount,
-    missedCount: 1 - truePositiveCount,
-    unscoredCount: 0,
-    requestsPerTruePositive: truePositiveCount === 0 ? null : requestsUsed / truePositiveCount,
-    matchedIds: truePositiveCount === 0 ? [] : ["held-out-record-canary"],
-    missedIds: truePositiveCount === 0 ? ["held-out-record-canary"] : [],
-    details: {},
-  };
-}
-
-function matchesHeldOutBenchmark(finding: Finding): boolean {
-  if (
-    finding.proof.type === "canary-retrieval" &&
-    finding.proof.policyId === "held-out-record-canary"
-  ) {
-    return true;
-  }
-  return (
-    finding.category === "broken-object-authorization" &&
-    finding.proof.type === "cross-principal-access" &&
-    /^\/api\/[^/]+\/vaults\/\{id\}$/.test(normalizeEndpoint(finding.endpoint))
-  );
-}
-
-function emptyScore(profileId: SecurityEvalProfileId, operationCoverage: number): NormalizedScore {
-  return {
-    kind: profileId.startsWith("vampi-")
-      ? "vampi-differential-pending"
-      : profileId === "vulnerableapp"
-        ? "vulnerableapp-native"
-        : profileId === "held-out"
-          ? "held-out-canary"
-          : "crapi-read-only",
-    coverage: operationCoverage,
-    coverageKind: "operation",
-    precision: 0,
-    truePositiveCount: 0,
-    falsePositiveCount: 0,
-    missedCount: 0,
-    unscoredCount: 0,
-    requestsPerTruePositive: null,
-    matchedIds: [],
-    missedIds: [],
-    details: {},
-  };
-}
-
-function evalFinding(finding: Finding): EvalFinding {
-  return {
-    category: finding.category,
-    endpoint: finding.endpoint,
-    method: finding.method ?? "GET",
-    cwe: finding.cwe,
-    proofType: finding.proof.type,
-    proofPolicyId: "policyId" in finding.proof ? finding.proof.policyId : null,
-  };
-}
-
-function transcriptEvents(run: CampaignRun): TranscriptEvent[] {
-  const toolNames = new Map<string, string>();
-  const events: TranscriptEvent[] = [];
-  for (const event of run.events) {
-    const toolCallId = event.data.toolCallId;
-    if (typeof toolCallId !== "string") continue;
-    if (event.type === "tool-call") {
-      const toolName = event.data.toolName;
-      if (typeof toolName !== "string") continue;
-      toolNames.set(toolCallId, toolName);
-      const inputValue = toJsonValue(event.data.input);
-      events.push({
-        type: "tool_call",
-        id: toolCallId,
-        name: toolName,
-        arguments:
-          inputValue && typeof inputValue === "object" && !Array.isArray(inputValue)
-            ? inputValue
-            : { value: inputValue ?? null },
-        metadata: { agentId: String(event.data.agentId) },
-      });
-    } else if (event.type === "tool-output") {
-      events.push({
-        type: "tool_result",
-        toolCallId,
-        name: toolNames.get(toolCallId),
-        content: toJsonValue(event.data.output),
-        durationMs: typeof event.data.durationMs === "number" ? event.data.durationMs : undefined,
-        metadata: { agentId: String(event.data.agentId) },
-      });
-    } else if (event.type === "tool-error") {
-      events.push({
-        type: "tool_result",
-        toolCallId,
-        name: toolNames.get(toolCallId),
-        error: { name: "ToolError", message: String(event.data.error) },
-        durationMs: typeof event.data.durationMs === "number" ? event.data.durationMs : undefined,
-        metadata: { agentId: String(event.data.agentId) },
-      });
-    }
-  }
-  return events;
 }

@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@flue/runtime";
+import { number, safeParse } from "valibot";
 import type { SpecialistKind } from "./adaptive-coordinator.ts";
-import { GLM_FLASH_MODEL } from "./models.ts";
+import { blendedCost, cloneModel, preferredModels, routedModelCatalog } from "./model-catalog.ts";
 
 export type ModelCapability = "browser-reasoning" | "payload-generation" | "large-context";
 export type MissionCostPreference = "cheap" | "balanced" | "quality";
@@ -38,67 +39,11 @@ export interface SpecialistRequirementInput {
   browserBacked: boolean;
 }
 
-const modelCatalog: readonly RoutedModel[] = [
-  {
-    model: GLM_FLASH_MODEL,
-    thinkingLevel: "medium",
-    contextWindow: 1_048_576,
-    capabilities: ["payload-generation", "large-context"],
-    inputCostPerMillion: 0.075,
-    outputCostPerMillion: 0.25,
-  },
-  {
-    model: "openrouter/google/gemini-2.5-flash-lite",
-    thinkingLevel: "medium",
-    contextWindow: 1_048_576,
-    capabilities: ["browser-reasoning", "large-context"],
-    inputCostPerMillion: 0.1,
-    outputCostPerMillion: 0.4,
-  },
-  {
-    model: "openrouter/openai/gpt-5-mini",
-    thinkingLevel: "medium",
-    contextWindow: 400_000,
-    capabilities: ["browser-reasoning", "payload-generation"],
-    inputCostPerMillion: 0.25,
-    outputCostPerMillion: 2,
-  },
-  {
-    model: "openrouter/google/gemini-2.5-pro",
-    thinkingLevel: "high",
-    contextWindow: 1_048_576,
-    capabilities: ["browser-reasoning", "payload-generation", "large-context"],
-    inputCostPerMillion: 1.25,
-    outputCostPerMillion: 10,
-  },
-] as const;
-
-const preferredModels: Record<MissionKind, readonly string[]> = {
-  "route-triage": [
-    GLM_FLASH_MODEL,
-    "openrouter/google/gemini-2.5-flash-lite",
-    "openrouter/openai/gpt-5-mini",
-    "openrouter/google/gemini-2.5-pro",
-  ],
-  specialist: [
-    "openrouter/openai/gpt-5-mini",
-    "openrouter/google/gemini-2.5-flash-lite",
-    GLM_FLASH_MODEL,
-    "openrouter/google/gemini-2.5-pro",
-  ],
-  validation: [
-    GLM_FLASH_MODEL,
-    "openrouter/openai/gpt-5-mini",
-    "openrouter/google/gemini-2.5-flash-lite",
-    "openrouter/google/gemini-2.5-pro",
-  ],
-};
-
 export function createModelRouter(available: (model: string) => boolean = () => true): ModelRouter {
   return {
     route(requirements) {
       assertRequirements(requirements);
-      const compatible = modelCatalog.filter(
+      const compatible = routedModelCatalog.filter(
         (candidate) =>
           available(candidate.model) &&
           candidate.contextWindow >= requirements.estimatedInputTokens &&
@@ -174,7 +119,7 @@ export function validationRequirements(findingTokens: number): MissionRequiremen
  * A model fallback is safe only before the mission has invoked a tool. This avoids replaying
  * state-changing requests merely because a provider failed after receiving tool output.
  */
-export function shouldFallbackModel(error: unknown, toolInvoked: boolean): boolean {
+export function shouldFallbackModel<Failure>(error: Failure, toolInvoked: boolean): boolean {
   if (toolInvoked) return false;
   const status = errorStatus(error);
   if (status !== undefined) return status === 408 || status === 429 || status >= 500;
@@ -192,8 +137,11 @@ export function shouldFallbackModel(error: unknown, toolInvoked: boolean): boole
   ].some((marker) => message.includes(marker));
 }
 
-export function estimateTokens(value: unknown): number {
-  const text = typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+export function estimateTokens<Value>(value: Value): number {
+  const text =
+    Object.prototype.toString.call(value) === "[object String]"
+      ? String(value)
+      : (JSON.stringify(value) ?? "");
   return Math.ceil(text.length / 4);
 }
 
@@ -215,25 +163,18 @@ function normalizedTokenEstimate(value: number): number {
   return Math.ceil(value);
 }
 
-function blendedCost(model: RoutedModel): number {
-  return model.inputCostPerMillion + model.outputCostPerMillion;
-}
-
-function cloneModel(model: RoutedModel): RoutedModel {
-  return { ...model, capabilities: [...model.capabilities] };
-}
-
 function cloneRequirements(requirements: MissionRequirements): MissionRequirements {
   return { ...requirements, capabilities: [...requirements.capabilities] };
 }
 
-function errorStatus(error: unknown): number | undefined {
-  let current: unknown = error;
-  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
-    const record = current as { status?: unknown; statusCode?: unknown; cause?: unknown };
-    const status = record.status ?? record.statusCode;
-    if (typeof status === "number") return status;
-    current = record.cause;
+function errorStatus<Failure>(error: Failure): number | undefined {
+  let current: object | undefined = error instanceof Object ? error : undefined;
+  for (let depth = 0; depth < 4 && current; depth += 1) {
+    const status = Reflect.get(current, "status") ?? Reflect.get(current, "statusCode");
+    const parsed = safeParse(number(), status);
+    if (parsed.success) return parsed.output;
+    const cause = Reflect.get(current, "cause");
+    current = cause instanceof Object ? cause : undefined;
   }
   return undefined;
 }

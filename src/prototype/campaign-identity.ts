@@ -68,16 +68,24 @@ function stableConfiguration(configuration: CampaignConfiguration): string {
   });
 }
 
-function stableStringify(value: unknown): string {
+function stableStringify<Value>(value: Value): string {
   return JSON.stringify(normalize(value)) ?? "null";
 }
 
-function normalize(value: unknown): unknown {
+type StableValue =
+  | string
+  | number
+  | boolean
+  | null
+  | StableValue[]
+  | { [key: string]: StableValue };
+
+function normalize<Value>(value: Value): Value | StableValue {
   // Source text detects code changes. Closed-over values are bound separately by the
   // profile's callbackConfigurationFingerprint; profiles without one are non-resumable.
-  if (typeof value === "function") return { $function: Function.prototype.toString.call(value) };
+  if (value instanceof Function) return { $function: Function.prototype.toString.call(value) };
   if (Array.isArray(value)) return value.map(normalize);
-  if (!value || typeof value !== "object") return value;
+  if (!(value instanceof Object)) return value;
   return Object.fromEntries(
     Object.entries(value)
       .filter(([, entry]) => entry !== undefined)
@@ -86,9 +94,9 @@ function normalize(value: unknown): unknown {
   );
 }
 
-function containsFunction(value: unknown, seen = new Set<object>()): boolean {
-  if (typeof value === "function") return true;
-  if (!value || typeof value !== "object" || seen.has(value)) return false;
+function containsFunction<Value>(value: Value, seen = new Set<object>()): boolean {
+  if (value instanceof Function) return true;
+  if (!(value instanceof Object) || seen.has(value)) return false;
   seen.add(value);
   return Array.isArray(value)
     ? value.some((entry) => containsFunction(entry, seen))

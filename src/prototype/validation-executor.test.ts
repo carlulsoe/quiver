@@ -1,4 +1,3 @@
-import type { PersistentCoordinator } from "./adaptive-coordinator.ts";
 import { CampaignSession } from "./campaign-session.ts";
 import { createModelRouter } from "./model-routing.ts";
 import { RuntimeSafetyController } from "./runtime-safety.ts";
@@ -104,7 +103,11 @@ describe("validation executor", () => {
         target: new URL(server.url),
         profile,
         session,
-        coordinator: { recordValidation: () => undefined } as unknown as PersistentCoordinator,
+        coordinator: {
+          recordValidation: () => undefined,
+          claimValidation: () => "claimed",
+          releaseValidation: () => undefined,
+        },
         modelRouter: createModelRouter(),
         verification,
         runtimeSafety: new RuntimeSafetyController(),

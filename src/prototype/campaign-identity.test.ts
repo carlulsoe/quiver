@@ -77,11 +77,13 @@ describe("campaign identity", () => {
 });
 
 function callbackProfile(closedValue: string, callbackConfigurationFingerprint?: string) {
-  return {
+  const profile = {
     id: "callback-profile",
     displayName: "Callback profile",
     objective: "Bind closed-over callback configuration.",
     authenticate: async () => ({ authContext: closedValue }),
-    ...(callbackConfigurationFingerprint ? { callbackConfigurationFingerprint } : {}),
   };
+  if (callbackConfigurationFingerprint)
+    Object.assign(profile, { callbackConfigurationFingerprint });
+  return profile;
 }
