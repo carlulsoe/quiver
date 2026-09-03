@@ -1,0 +1,2 @@
+const payloadShape = 1;
+void payloadShape;

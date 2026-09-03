@@ -1,4 +1,5 @@
 import * as v from "valibot";
+import { redactCredentialPathValue } from "./security/redaction.ts";
 import type { ProofCheck, ValidationObservation } from "./state.ts";
 
 type ProofValue = ProofCheck["actual"];
@@ -27,10 +28,18 @@ export function canonicalJson(value: ProofValue): string {
 export function pointerChecks(
   observation: ValidationObservation | undefined,
   pointers: readonly string[],
+  credentialContext:
+    | readonly ValidationObservation[]
+    | ValidationObservation
+    | undefined = observation,
 ): ProofCheck[] {
   return pointers.map((pointer) => {
     const selected = observation ? jsonPointer(observation.body, pointer) : { found: false };
-    return check(selected.found, `response contains ${pointer}`, selected.value);
+    return check(
+      selected.found,
+      `response contains ${pointer}`,
+      selectedEvidence(pointer, selected.value, credentialContext),
+    );
   });
 }
 
@@ -46,16 +55,19 @@ export function differentialPointerChecks(
     ...pointers.flatMap((pointer) => {
       const controlValue = control ? jsonPointer(control.body, pointer) : { found: false };
       const probeValue = probe ? jsonPointer(probe.body, pointer) : { found: false };
+      const credentialContext = [control, probe].filter(
+        (observation): observation is ValidationObservation => observation !== undefined,
+      );
       return [
         check(
           controlValue.found && isScalar(controlValue.value),
           `${controlLabel} contains scalar ${pointer}`,
-          controlValue.value,
+          selectedEvidence(pointer, controlValue.value, credentialContext),
         ),
         check(
           probeValue.found && isScalar(probeValue.value),
           `${probeLabel} contains scalar ${pointer}`,
-          probeValue.value,
+          selectedEvidence(pointer, probeValue.value, credentialContext),
         ),
         check(
           controlValue.found &&
@@ -64,7 +76,7 @@ export function differentialPointerChecks(
             sameValue(controlValue.value, probeValue.value),
           `${controlLabel} and ${probeLabel} match at ${pointer}`,
           controlValue.found && probeValue.found
-            ? `${String(controlValue.value)} == ${String(probeValue.value)}`
+            ? `${String(selectedEvidence(pointer, controlValue.value, credentialContext))} == ${String(selectedEvidence(pointer, probeValue.value, credentialContext))}`
             : undefined,
         ),
       ];
@@ -78,6 +90,19 @@ export function selectedValue(
 ): PointerSelection {
   const observation = observations[selector.requestIndex];
   return observation ? jsonPointer(observation.body, selector.jsonPointer) : { found: false };
+}
+
+export function selectedEvidence<Context = ProofValue>(
+  pointer: string,
+  value: ProofValue,
+  credentialContext?: Context,
+): ProofValue {
+  if (value === undefined) return undefined;
+  return redactCredentialPathValue(
+    pointer,
+    value,
+    credentialContext === undefined ? value : credentialContext,
+  );
 }
 
 export function jsonPointer(value: ProofValue, pointer: string): PointerSelection {

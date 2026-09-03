@@ -107,4 +107,9 @@ Options:
   --campaign-store <path> Append-only JSONL campaign checkpoint file
   --quiet          Suppress live state rendering
   -h, --help       Show this help
+
+Exit codes:
+  0  Campaign completed with at least one confirmed finding
+  1  Campaign failed
+  2  Campaign completed without a confirmed finding
 `;

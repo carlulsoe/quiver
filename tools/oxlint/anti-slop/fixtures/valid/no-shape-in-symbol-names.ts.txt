@@ -1,0 +1,2 @@
+const payloadSchema = 1;
+void payloadSchema;

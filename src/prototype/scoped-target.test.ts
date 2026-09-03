@@ -166,13 +166,17 @@ describe("scoped target", () => {
     });
 
     await expect(
-      target.runProfileSetup(() => target.request({ path: "/login", method: "POST" })),
+      target.runProfileSetup("authentication", () =>
+        target.request({ path: "/login", method: "POST" }),
+      ),
     ).resolves.toMatchObject({ status: 200 });
     await expect(
-      target.runProfileSetup(() => target.request({ path: "/other", method: "POST" })),
+      target.runProfileSetup("authentication", () =>
+        target.request({ path: "/other", method: "POST" }),
+      ),
     ).rejects.toThrow("not a profile setup operation");
     await expect(
-      target.runProfileSetup(() =>
+      target.runProfileSetup("authentication", () =>
         target.request({ path: "/synthetic-session", method: "DELETE" }),
       ),
     ).resolves.toMatchObject({ status: 200 });

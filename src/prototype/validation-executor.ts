@@ -34,7 +34,7 @@ export class ValidationExecutor {
       onRequest: (request) => {
         if (
           this.#activeJobId &&
-          !request.setup &&
+          request.context !== "authentication" &&
           !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase()) &&
           !session.state.runtime.jobs.find(({ id }) => id === this.#activeJobId)?.mutationStarted
         ) {
@@ -102,7 +102,7 @@ export class ValidationExecutor {
     ];
     if (actorIdsToRestore.length === 0) return;
     try {
-      await this.target.runProfileSetup(() =>
+      await this.target.runProfileSetup("authentication", () =>
         profile.authenticate!(this.target, actorIdsToRestore),
       );
     } catch (error) {

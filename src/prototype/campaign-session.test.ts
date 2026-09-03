@@ -1,10 +1,10 @@
 import type { ConversationStreamChunk } from "@flue/runtime";
 import { describe, expect, it } from "vitest";
-import { CampaignSession } from "./campaign-session.ts";
+import { CampaignSession, type CampaignSessionOptions } from "./campaign-session.ts";
 
 describe("campaign session", () => {
   it("redacts tool inputs and omits tool results before persisting history", () => {
-    const session = new CampaignSession({
+    const options: CampaignSessionOptions = {
       target: new URL("http://127.0.0.1:8888/"),
       profile: {
         id: "history-redaction",
@@ -13,7 +13,8 @@ describe("campaign session", () => {
       },
       requestBudget: 6,
       explorerCount: 1,
-    });
+    };
+    const session = new CampaignSession(options);
     session.captureAgentEvent(
       "explorer-1",
       chunk({
@@ -48,6 +49,12 @@ describe("campaign session", () => {
       }),
     );
     session.record("request", { path: "/authors?token=request-secret" });
+    session.record("request", {
+      requestsUsed: 200,
+      findingCount: 1,
+      durationMs: 200,
+      input: { pin: 200, otp: 1, diagnosticValue: 200 },
+    });
 
     const persisted = JSON.stringify(session.state.history.events);
     expect(persisted).not.toContain("input-secret");
@@ -58,6 +65,16 @@ describe("campaign session", () => {
     expect(persisted).not.toContain("request-secret");
     expect(persisted).toContain("other:GET:/authors");
     expect(persisted).toContain("Ada");
+    expect(session.state.history.events.at(-1)?.data).toMatchObject({
+      requestsUsed: 200,
+      findingCount: 1,
+      durationMs: 200,
+      input: {
+        pin: "[REDACTED]",
+        otp: "[REDACTED]",
+        diagnosticValue: "[REDACTED]",
+      },
+    });
   });
 });
 

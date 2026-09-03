@@ -1,7 +1,7 @@
 import { number, object, optional, safeParse, string } from "valibot";
 import type { ConversationStreamChunk } from "@flue/runtime";
 import type { RunEvent, RunEventData } from "./campaign-history.ts";
-import { redactCredentials } from "./security/redaction.ts";
+import { redactCredentials, redactStructuredCredentials } from "./security/redaction.ts";
 import type { CampaignState } from "./state.ts";
 
 const promptUsageSchema = object({
@@ -67,6 +67,19 @@ export function agentStreamEvent(
       },
     };
   return undefined;
+}
+export function createRunEvent(
+  previousSequence: number,
+  elapsedMs: number,
+  type: RunEvent["type"],
+  data: RunEventData,
+): RunEvent {
+  return {
+    sequence: previousSequence + 1,
+    elapsedMs,
+    type,
+    data: redactStructuredCredentials(data),
+  };
 }
 export function assertCampaignTarget(state: CampaignState, campaignId: string, target: URL): void {
   const expected = `${target.origin}${target.pathname}${target.search}`;

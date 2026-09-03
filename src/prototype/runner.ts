@@ -1,16 +1,17 @@
 import type { PromptUsage } from "@flue/runtime";
-import { start } from "@flue/runtime/node";
+import {
+  createCampaignOrchestration,
+  type CampaignOrchestrationFactory,
+} from "./campaign-orchestration.ts";
 import type { MissionUsage, RunEvent } from "./campaign-history.ts";
 import { CampaignSession } from "./campaign-session.ts";
 import type { CampaignStore } from "./campaign-store.ts";
-import { ExplorationExecutor } from "./exploration-executor.ts";
 import { createModelRouter, type ModelRouter } from "./model-routing.ts";
 import { ProofArtifactStore } from "./proof-artifacts.ts";
 import { isRuntimeStopError } from "./runner-errors.ts";
 import { RuntimeSafetyController } from "./runtime-safety.ts";
 import type { CampaignAction, CampaignState } from "./state.ts";
 import { assertValidTargetProfile, type TargetProfile } from "./target-profile.ts";
-import { ValidationExecutor } from "./validation-executor.ts";
 import { DefaultVerificationEngine } from "./verification.ts";
 
 export interface RunCampaignOptions {
@@ -24,6 +25,7 @@ export interface RunCampaignOptions {
   campaignId?: string;
   campaignStore?: CampaignStore;
   modelRouter?: ModelRouter;
+  orchestrationFactory?: CampaignOrchestrationFactory;
 }
 
 export type { MissionUsage, RunEvent } from "./campaign-history.ts";
@@ -61,7 +63,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
   const verification = new DefaultVerificationEngine(options.profile, artifacts);
   const modelRouter = options.modelRouter ?? createModelRouter();
   const runtimeSafety = new RuntimeSafetyController(options.profile.runtimeSafety, {
-    controlStatus: () => session.checkpoint().runtime.control,
+    controlStatus: () => session.controlStatus(),
     initialConsecutiveFailures: session.state.runtime.consecutiveFailures,
     initialDisruptiveResponses: session.state.runtime.disruptiveResponses,
     onSuccess: () => dispatch({ type: "runtime-success" }),
@@ -69,7 +71,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
     onHalt: (reason) => dispatch({ type: "halt", reason }),
   });
   try {
-    const exploration = new ExplorationExecutor({
+    const orchestration = (options.orchestrationFactory ?? createCampaignOrchestration)({
       target: options.target,
       profile: options.profile,
       explorerCount,
@@ -81,28 +83,16 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
       verification,
       runtimeSafety,
     });
-    const validation = new ValidationExecutor({
-      target: options.target,
-      profile: options.profile,
-      session,
-      coordinator: exploration.coordinator,
-      modelRouter,
-      verification,
-      runtimeSafety,
-    });
-    exploration.setValidationEnqueuer((fingerprint) => validation.enqueue(fingerprint));
-    await using _campaignRuntime = await start({
-      agents: [...exploration.agentDefinitions, validation.agentDefinition],
-    });
-    await validation.restoreAuthentication(resumedPhase);
+    await using _campaignRuntime = await orchestration.startRuntime();
+    await orchestration.restoreAuthentication(resumedPhase);
     if (session.state.phase !== "validating") {
-      await exploration.run();
-      await validation.drain();
-      validation.reclaimExplorationBudget();
+      await orchestration.runExploration();
+      await orchestration.drainValidation();
+      orchestration.reclaimExplorationBudget();
     }
-    await validation.runPendingFindings();
-    await validation.runExploitChains();
-    validation.assertAllJobsFinished();
+    await orchestration.runPendingFindings();
+    await orchestration.runExploitChains();
+    orchestration.assertAllJobsFinished();
     runtimeSafety.assertReady();
     dispatch({ type: "phase", phase: "complete" });
   } catch (error) {

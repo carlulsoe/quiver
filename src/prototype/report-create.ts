@@ -1,5 +1,5 @@
 import type { CampaignRun } from "./runner.ts";
-import { redactCredentials } from "./security/redaction.ts";
+import { redactStructuredCredentials } from "./security/redaction.ts";
 import {
   campaignOperationCoverage,
   type ExploitChain,
@@ -46,7 +46,7 @@ export interface RunReport {
 
 export function createRunReport(run: CampaignRun, generatedAt = new Date()): RunReport {
   const findings = run.state.findings.map((finding): ReportedFinding =>
-    redactCredentials({
+    redactStructuredCredentials({
       ...finding,
       validation: run.state.validations.find(
         ({ fingerprint }) => fingerprint === finding.fingerprint,
@@ -93,7 +93,7 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
       ).length,
     },
     findings,
-    exploitChains: redactCredentials(
+    exploitChains: redactStructuredCredentials(
       run.state.exploitChains.map((chain) => ({
         ...chain,
         validation: run.state.exploitChainValidations.find(
@@ -101,7 +101,7 @@ export function createRunReport(run: CampaignRun, generatedAt = new Date()): Run
         ),
       })),
     ),
-    events: redactCredentials(run.events),
+    events: redactStructuredCredentials(run.events),
   };
 }
 

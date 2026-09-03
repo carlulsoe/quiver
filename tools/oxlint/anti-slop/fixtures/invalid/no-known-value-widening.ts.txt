@@ -1,0 +1,2 @@
+const value: unknown = { id: 1 };
+void value;

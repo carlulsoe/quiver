@@ -49,7 +49,7 @@ export const canaryRetrievalHandler: ProofCheckHandler<"canary-retrieval"> = (
         ) &&
         support.verifyCanary(policy, canaryValue),
       "retrieved value passes the verifier-only canary contract and was not reflected",
-      selected.value,
+      support.selectedEvidence(finding.proof.jsonPointer, selected.value, observations),
     ),
   );
 };

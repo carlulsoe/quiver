@@ -67,14 +67,18 @@ export const sqlSemanticDifferentialHandler: ProofCheckHandler<"sql-semantic-dif
         controlResult.found &&
         support.sameValue(controlResult.value, policy.response.controlValue),
       "SQL control produced the target-owned semantic result",
-      controlResult.value,
+      support.selectedEvidence(
+        policy?.response.jsonPointer ?? "",
+        controlResult.value,
+        observations,
+      ),
     ),
     support.check(
       policy !== undefined &&
         probeResult.found &&
         support.sameValue(probeResult.value, policy.response.probeValue),
       "SQL probe produced the target-owned semantic result",
-      probeResult.value,
+      support.selectedEvidence(policy?.response.jsonPointer ?? "", probeResult.value, observations),
     ),
   );
 };
@@ -134,7 +138,7 @@ export const commandExecutionChallengeHandler: ProofCheckHandler<"command-execut
         expectedOutput !== undefined &&
         support.stringValue(selected.value)?.includes(expectedOutput) === true,
       "response contains the computed command-execution result",
-      selected.value,
+      support.selectedEvidence(policy?.outputJsonPointer ?? "", selected.value, observations),
     ),
     support.check(
       request !== undefined &&

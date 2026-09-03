@@ -92,12 +92,29 @@ or are explicitly authorized to assess.
 
 ## Run a campaign
 
-This requires Bun, Chromium, Docker Compose, and an `OPENROUTER_API_KEY`. Models are routed per
-mission. Ordinary route triage takes the cheapest compatible route, while fresh specialists declare
-requirements for browser-backed authentication reasoning, payload generation, or large context.
-Validators use an independent route. Each route has an ordered compatible fallback chain; provider
-availability failures may advance the chain only before the mission invokes a tool, so fallback can
-never silently replay a state-changing request.
+Development and CI use Bun 1.4.0. Install the locked dependencies without changing their resolved
+versions:
+
+```sh
+bun install --frozen-lockfile
+```
+
+Install the Chromium release matched to the pinned Playwright client, then provide Docker Compose and
+an `OPENROUTER_API_KEY` to run a campaign:
+
+```sh
+bun run browser:install
+```
+
+The managed browser occupies a few hundred megabytes in Playwright's operating-system cache. In an
+offline or centrally managed environment, skip the browser-install command and set
+`QUIVER_BROWSER_PATH` to a Playwright-compatible Chromium executable. Quiver checks that override and
+does not silently fall back to the managed browser when it is missing or incompatible. Models are
+routed per mission. Ordinary route triage takes the cheapest compatible route, while fresh
+specialists declare requirements for browser-backed authentication reasoning, payload generation, or
+large context. Validators use an independent route. Each route has an ordered compatible fallback
+chain; provider availability failures may advance the chain only before the mission invokes a tool,
+so fallback can never silently replay a state-changing request.
 
 Start the pinned OWASP crAPI 1.1.5 checkout and run a campaign:
 
@@ -123,9 +140,9 @@ bun run campaign -- http://127.0.0.1:8888 \
   --budget 36
 ```
 
-OpenAPI operations are merged with browser-observed methods and paths. Context is
-shown to explorers as target data, not treated as tool instructions. Set
-`QUIVER_BROWSER_PATH` when Chromium is not installed in a standard location.
+OpenAPI operations are merged with browser-observed methods and paths. Context is shown to explorers
+as target data, not treated as tool instructions. On launch, Quiver reports the selected Chromium
+version and executable path so local and CI runs can be compared directly.
 
 Write the complete finding set, outcomes, budget usage, HTTP activity, and Flue
 tool trace to JSON without the live terminal view:
@@ -147,8 +164,9 @@ bun run campaign -- http://127.0.0.1:8888 \
   --report .prototype/runs/latest.md
 ```
 
-Run `bun run campaign -- --help` for all options. Stop crAPI without deleting its
-database volumes with `bun run target:down`.
+Run `bun run campaign -- --help` for all options. A campaign exits with status 0 when it completes
+with at least one confirmed finding, 1 when it fails, and 2 when it completes without a confirmed
+finding. Stop crAPI without deleting its database volumes with `bun run target:down`.
 
 ## Additional test targets
 
@@ -260,7 +278,9 @@ unused exploration capacity is reclaimed.
 
 For resumable runs, `--campaign-store <path>` selects an append-only JSONL store
 and `--campaign-id <id>` selects the stable campaign checkpoint. Every action is
-flushed before use and periodic full-state checkpoints are checksum verified.
+flushed before use; an originating transition and its derived state telemetry share one durable
+write. Checksum-verified full-state checkpoints follow at most 32 action records and every lifecycle
+boundary, including normal store closure.
 The JSONL adapter uses the OS-released `flock` command to enforce one writer
 across processes. A checkpoint is bound to its target profile and safety-relevant
 campaign configuration; Quiver rejects a resume when either changes. Event history,
@@ -426,6 +446,11 @@ bun run evals             # isolated live GLM profile matrix (set XBOW_EVAL_TRIA
 bun run verify            # formatting, linting, types, and fast tests
 bun run security:secrets  # scan committable files for credentials (requires Docker)
 ```
+
+`bun run verify` is the deterministic fast gate and does not require a live target or model access.
+The integration tier requires its corresponding local target, while the evaluation tier requires
+live model access through `OPENROUTER_API_KEY`; run those expensive tiers separately with
+`bun run test:integration` and `bun run evals`.
 
 ## Security and disclosure
 

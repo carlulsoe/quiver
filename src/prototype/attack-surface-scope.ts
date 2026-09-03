@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { chromium, type Browser, type Request } from "playwright-core";
 import type { AttackSurfaceState } from "./attack-surface-state.ts";
@@ -52,27 +53,51 @@ export function scopedUrl(
   return scope && scope !== "blocked" && scope !== "auth-only" ? { url, origin, scope } : undefined;
 }
 
-export async function launchChromium(executablePath: string): Promise<Browser> {
-  return chromium.launch({ executablePath, headless: true });
+type BrowserLauncher = (options: { executablePath: string; headless: true }) => Promise<Browser>;
+
+interface BrowserResolutionDependencies {
+  environmentPath: string | undefined;
+  managedPath: string;
+  canAccess: (path: string) => Promise<boolean>;
 }
 
-export async function findBrowserExecutable(): Promise<string> {
-  const candidates = [
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  ];
-  for (const candidate of candidates) {
-    if (
-      await access(candidate)
-        .then(() => true)
-        .catch(() => false)
-    )
-      return candidate;
+export async function launchChromium(
+  executablePath: string,
+  launch: BrowserLauncher = (options) => chromium.launch(options),
+  report: (message: string) => void = console.error,
+): Promise<Browser> {
+  try {
+    const browser = await launch({ executablePath, headless: true });
+    report(`[quiver] Chromium ${browser.version()} (${executablePath})`);
+    return browser;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to launch Chromium at ${executablePath}: ${reason}`, { cause: error });
   }
+}
+
+export async function findBrowserExecutable(
+  configuredPath?: string,
+  dependencies: BrowserResolutionDependencies = {
+    environmentPath: process.env.QUIVER_BROWSER_PATH,
+    managedPath: chromium.executablePath(),
+    canAccess: async (path) =>
+      access(path, constants.X_OK)
+        .then(() => true)
+        .catch(() => false),
+  },
+): Promise<string> {
+  const executablePath = configuredPath ?? dependencies.environmentPath ?? dependencies.managedPath;
+  if (await dependencies.canAccess(executablePath)) return executablePath;
+  const source =
+    configuredPath !== undefined
+      ? "configured browser"
+      : dependencies.environmentPath !== undefined
+        ? "QUIVER_BROWSER_PATH override"
+        : "Playwright-managed browser";
   throw new Error(
-    "No Chromium browser found. Install Chromium or set QUIVER_BROWSER_PATH to its executable.",
+    `The ${source} was not found at ${executablePath}. Run \`bun run browser:install\` ` +
+      "or set QUIVER_BROWSER_PATH to a Playwright-compatible Chromium executable.",
   );
 }
 

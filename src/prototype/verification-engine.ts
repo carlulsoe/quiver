@@ -92,7 +92,9 @@ export class DefaultVerificationEngine implements VerificationEngine {
       );
     }
     if (proofHandler.requiresStateReset && this.#profile.prepareValidation) {
-      await target.runProfileSetup(() => this.#profile.prepareValidation!(target));
+      await target.runProfileSetup("validation-reset", () =>
+        this.#profile.prepareValidation!(target),
+      );
     }
 
     const replay = await replayFinding(
@@ -136,7 +138,9 @@ export class DefaultVerificationEngine implements VerificationEngine {
       .then(async () => {
         const stillMissing = await missingSessions(target, missingActorIds);
         if (stillMissing.length === 0) return;
-        await target.runProfileSetup(() => this.#profile.authenticate!(target, stillMissing));
+        await target.runProfileSetup("authentication", () =>
+          this.#profile.authenticate!(target, stillMissing),
+        );
       });
     this.#authentication.set(target, authentication);
     try {
