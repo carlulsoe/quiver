@@ -28,6 +28,7 @@ import type {
   ScopedRequest,
   ScopedTargetOptions,
   SetupHttpObservation,
+  TargetRequestContext,
 } from "./scoped-target-types.ts";
 
 export type {
@@ -102,12 +103,17 @@ export class ScopedTarget {
     assertImpactLevel(this.#state, level);
   }
 
-  async runProfileSetup<T>(setup: () => Promise<T>): Promise<T> {
+  async runProfileSetup<T>(
+    context: Extract<TargetRequestContext, "authentication" | "validation-reset">,
+    setup: () => Promise<T>,
+  ): Promise<T> {
     this.#state.setupAccess = true;
+    this.#state.setupContext = context;
     try {
       return await setup();
     } finally {
       this.#state.setupAccess = false;
+      this.#state.setupContext = undefined;
     }
   }
 

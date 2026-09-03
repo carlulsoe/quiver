@@ -8,6 +8,7 @@ import {
   isAuthorizedOperation,
   isDenied,
   isStateChanging,
+  operationKey,
   operationAllowed,
   resolvePath,
   targetIdentifier,
@@ -26,6 +27,7 @@ export async function scopedRequest(
   includeResponseHeaders = false,
 ): Promise<HttpObservation | SetupHttpObservation> {
   const method = request.method ?? "GET";
+  operationKey(method, request.path);
   const url = resolvePath(
     state,
     request.path,
@@ -52,7 +54,8 @@ export async function scopedRequest(
       number: state.requestsUsed,
       method,
       path: targetPath,
-      setup: includeResponseHeaders || state.setupAccess,
+      context:
+        state.setupContext ?? (includeResponseHeaders ? "authentication" : state.requestContext),
     });
     const startedAt = performance.now();
     const headers = { ...request.headers };

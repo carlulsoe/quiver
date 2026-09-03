@@ -66,6 +66,7 @@ export function createExplorationResources(
     allowedRequests: profile.allowedRequests,
     setupRequests: profile.setupRequests,
     deniedRequests: profile.deniedRequests,
+    requestContext: "discovery",
     onRequest: (request) => {
       session.record("request", { phase: "exploration", ...request });
       dispatch({ type: "request", phase: "exploration" });

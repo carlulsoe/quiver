@@ -2,8 +2,11 @@ import type { AttackSurfaceScope, BrowserRequestDecision } from "./attack-surfac
 import { impactAtMost } from "./impact.ts";
 import { containsCredentialHeader, isCredentialHeaderName } from "./security/credentials.ts";
 import { TargetScopeError } from "./scoped-target-errors.ts";
+import { operationAllowed, operationKey } from "./scoped-target-operation.ts";
 import type { ScopedTargetState } from "./scoped-target-state.ts";
 import type { ImpactLevel } from "./state.ts";
+
+export { operationAllowed, operationKey } from "./scoped-target-operation.ts";
 
 export function assertImpactLevel(state: ScopedTargetState, level: ImpactLevel): void {
   if (!impactAtMost(level, state.maximumImpactLevel)) {
@@ -30,6 +33,7 @@ export function decideBrowserRequest(
   let url: URL;
   try {
     state.runtimeSafety?.assertReady();
+    operationKey(method, targetPath);
     url = scope === "visit-only" ? new URL(path, origin) : resolvePath(state, targetPath);
   } catch (error) {
     return { allowed: false, reason: error instanceof Error ? error.message : String(error) };
@@ -47,8 +51,12 @@ export function decideBrowserRequest(
       return { allowed: false, reason: error instanceof Error ? error.message : String(error) };
     }
   }
-  if (isDenied(state, method, url.pathname))
-    return { allowed: false, reason: "denied by target profile" };
+  try {
+    if (isDenied(state, method, url.pathname))
+      return { allowed: false, reason: "denied by target profile" };
+  } catch (error) {
+    return { allowed: false, reason: error instanceof Error ? error.message : String(error) };
+  }
   if (
     isStateChanging(method) &&
     !operationAllowed(state.browserAllowedOperations, method, targetPath)
@@ -71,7 +79,12 @@ export function commitBrowserRequest(
   if (state.requestsUsed >= state.requestBudget)
     return { allowed: false, reason: "request budget exhausted" };
   state.requestsUsed += 1;
-  state.onRequest?.({ number: state.requestsUsed, method, path: targetPath, setup: false });
+  state.onRequest?.({
+    number: state.requestsUsed,
+    method,
+    path: targetPath,
+    context: state.requestContext,
+  });
   return { allowed: true };
 }
 
@@ -109,7 +122,7 @@ export function targetIdentifier(state: ScopedTargetState, url: URL): string {
   return url.origin === state.origin ? path : `${url.origin}${path}`;
 }
 export function isDenied(state: ScopedTargetState, method: string, pathname: string): boolean {
-  return state.deniedRequests.has(`${method} ${pathname}`);
+  return operationAllowed(state.deniedRequests, method, pathname);
 }
 export function isAuthorizedOperation(
   state: ScopedTargetState,
@@ -145,45 +158,4 @@ export function isCredentialCapableHeader(name: string): boolean {
 }
 export function isStateChanging(method: string): boolean {
   return !["GET", "HEAD", "OPTIONS"].includes(method);
-}
-export function operationKey(method: string, path: string): string {
-  return `${method.toUpperCase()} ${canonicalOperationPath(path)}`;
-}
-export function operationAllowed(
-  operations: ReadonlySet<string>,
-  method: string,
-  path: string,
-): boolean {
-  const concrete = canonicalOperationPath(path);
-  if (operations.has(`${method.toUpperCase()} ${concrete}`)) return true;
-  for (const operation of operations) {
-    const separator = operation.indexOf(" ");
-    if (
-      operation.slice(0, separator) === method.toUpperCase() &&
-      pathTemplateMatches(operation.slice(separator + 1), concrete)
-    )
-      return true;
-  }
-  return false;
-}
-function canonicalOperationPath(path: string): string {
-  const absolute = /^https?:\/\//i.test(path);
-  const url = new URL(path, "http://scope.invalid");
-  const pathname = url.pathname
-    .split("/")
-    .map((encoded) => {
-      const segment = decodeURIComponent(encoded);
-      return /^(?:\{[^}]+\}|<[^>]+>|:[A-Za-z_$][\w$]*)$/.test(segment) ? "{id}" : segment;
-    })
-    .join("/");
-  const canonical = pathname === "/" ? pathname : pathname.replace(/\/+$/, "");
-  return absolute ? `${url.origin}${canonical}` : canonical;
-}
-function pathTemplateMatches(template: string, concrete: string): boolean {
-  const expected = template.split("/").map(decodeURIComponent);
-  const actual = concrete.split("/").map(decodeURIComponent);
-  return (
-    expected.length === actual.length &&
-    expected.every((segment, index) => segment === "{id}" || segment === actual[index])
-  );
 }

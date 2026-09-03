@@ -40,9 +40,10 @@ export interface TargetRequestEvent {
   number: number;
   method: string;
   path: string;
-  /** True for repeatable profile authentication/reset traffic, not proof reproduction. */
-  setup: boolean;
+  context: TargetRequestContext;
 }
+
+export type TargetRequestContext = "authentication" | "validation-reset" | "discovery" | "replay";
 
 export interface AllowedRequest {
   method: RestMethod;
@@ -62,6 +63,8 @@ export interface ScopedTargetOptions {
   setupRequests?: AllowedRequest[];
   deniedRequests?: DeniedRequest[];
   onRequest?: (request: TargetRequestEvent) => void;
+  /** Identifies ordinary requests made by this target instance. */
+  requestContext?: Extract<TargetRequestContext, "discovery" | "replay">;
   transport?: HttpTransport;
   timeoutMs?: number;
   maxResponseChars?: number;
