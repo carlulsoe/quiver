@@ -1,6 +1,8 @@
 import type { CampaignRun } from "./runner.ts";
 import { createCampaignState, reduceCampaign } from "./state.ts";
 
+export const reportCredentialSentinel = "derived-report-credential-sentinel";
+
 export function confirmedCampaignRun(): CampaignRun {
   let state = createCampaignState(
     "http://127.0.0.1:8888",
@@ -50,23 +52,40 @@ export function confirmedCampaignRun(): CampaignRun {
     validation: {
       fingerprint: state.findings[0]!.fingerprint,
       status: "confirmed",
-      evidence: "Predicate passed.",
+      evidence: `Predicate passed without exposing ${reportCredentialSentinel}.`,
       proof: {
         predicate: "cross-principal-access",
         passed: true,
         summary: "passed",
-        checks: [{ description: "different principals", passed: true, actual: "me != owner" }],
+        checks: [
+          { description: "selected credential", passed: true, actual: reportCredentialSentinel },
+          {
+            description: "credential differential",
+            passed: true,
+            actual: `${reportCredentialSentinel} == ${reportCredentialSentinel}`,
+          },
+          { description: "different principals", passed: true, actual: "me != owner" },
+        ],
       },
       observations: [
         {
           status: 200,
           path: "/vehicles/vehicle-2/location",
           actorId: "ordinary-user",
-          body: { email: "owner@example.com" },
+          body: {
+            email: "owner@example.com",
+            apiToken: reportCredentialSentinel,
+            buildId: "build-7",
+          },
           truncated: false,
+          redirectLocation: `https://redirect.invalid/landing?access_token=${reportCredentialSentinel}`,
+          redirected: false,
         },
       ],
-      reviewer: { assessment: "supported", evidence: "Fresh replay supports the claim." },
+      reviewer: {
+        assessment: "supported",
+        evidence: `Fresh replay supports the claim. Credential ${reportCredentialSentinel} was present.`,
+      },
     },
   });
   state = reduceCampaign(state, { type: "phase", phase: "complete" });

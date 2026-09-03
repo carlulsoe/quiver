@@ -11,6 +11,7 @@ export const crossPrincipalAccessHandler: ProofCheckHandler<"cross-principal-acc
   const actor = support.selectedValue(observations, finding.proof.actor);
   const owner = support.selectedValue(observations, finding.proof.resourceOwner);
   const access = observations[finding.proof.accessRequestIndex];
+  const accessRequest = finding.reproduction[finding.proof.accessRequestIndex];
   checks.push(
     support.check(
       finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
@@ -19,22 +20,28 @@ export const crossPrincipalAccessHandler: ProofCheckHandler<"cross-principal-acc
     support.check(
       actor.found && support.isScalar(actor.value),
       "actor identity exists",
-      actor.value,
+      support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value),
     ),
     support.check(
       owner.found && support.isScalar(owner.value),
       "resource-owner identity exists",
-      owner.value,
+      support.selectedEvidence(finding.proof.resourceOwner.jsonPointer, owner.value),
     ),
     support.check(
       actor.found && owner.found && !support.sameValue(actor.value, owner.value),
       "actor and resource owner are different principals",
-      actor.found && owner.found ? `${String(actor.value)} != ${String(owner.value)}` : undefined,
+      actor.found && owner.found
+        ? `${String(support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value))} != ${String(support.selectedEvidence(finding.proof.resourceOwner.jsonPointer, owner.value))}`
+        : undefined,
     ),
     support.check(
       access !== undefined && support.isSuccess(access.status),
       "cross-principal request returned a successful response",
       access?.status,
+    ),
+    support.check(
+      support.affectedOperationMatches(finding, accessRequest),
+      "cross-principal access request matches the affected operation",
     ),
     support.check(
       finding.reproduction[finding.proof.accessRequestIndex]?.actorId ===

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRunReport, renderMarkdownReport } from "./report.ts";
-import { confirmedCampaignRun } from "./report-test-fixture.ts";
+import { confirmedCampaignRun, reportCredentialSentinel } from "./report-test-fixture.ts";
 
 describe("Markdown campaign report", () => {
   it("renders an evidence-first handoff with reproducible requests", () => {
@@ -23,5 +23,10 @@ describe("Markdown campaign report", () => {
     expect(markdown).toContain('--data-raw "$QUIVER_REQUEST_BODY"');
     expect(markdown).not.toContain("report-secret");
     expect(markdown).not.toContain("body-secret");
+    expect(markdown).not.toContain(reportCredentialSentinel);
+    expect(markdown).toContain("[REDACTED] == [REDACTED]");
+    expect(markdown).toContain('"apiToken": "[REDACTED]"');
+    expect(markdown).toContain('"buildId": "build-7"');
+    expect(markdown).toContain("→ **200**");
   });
 });
