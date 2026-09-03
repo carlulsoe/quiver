@@ -89,7 +89,7 @@ describe("browser state-transition proof collector", () => {
           method: "POST",
           timeoutMs: 1_000,
           cookies: [{ name: "session", value: "victim", url: "http://127.0.0.1:8888" }],
-          executablePath: "/synthetic/chromium",
+          executablePath: process.execPath,
           decideRequest: () => true,
           acquireRequest: async () => {
             const leaseId = leaseSequence++;

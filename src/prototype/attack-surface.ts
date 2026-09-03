@@ -45,8 +45,7 @@ export class BrowserAttackSurfaceMapper {
   async map(): Promise<AttackSurfaceMap> {
     const { options } = this.#state;
     addOpenApi(this.#state, options.openApi);
-    const executablePath =
-      options.executablePath ?? process.env.QUIVER_BROWSER_PATH ?? (await findBrowserExecutable());
+    const executablePath = await findBrowserExecutable(options.executablePath);
     const browser = await (options.launch ?? launchChromium)(executablePath);
     await this.#mapBrowser(browser);
     return buildAttackSurfaceResult(this.#state);

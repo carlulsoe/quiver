@@ -10,8 +10,7 @@ export async function collectBrowserEffect(
   probe: BrowserProofProbe,
   launch: (executablePath: string) => Promise<Browser> = launchChromium,
 ): Promise<BrowserEffectEvidence | undefined> {
-  const executablePath =
-    probe.executablePath ?? process.env.QUIVER_BROWSER_PATH ?? (await findBrowserExecutable());
+  const executablePath = await findBrowserExecutable(probe.executablePath);
   const browser = await launch(executablePath);
   const requestLeases = new Map<BrowserRequest, RuntimeRequestLease>();
   try {
