@@ -1,0 +1,5 @@
+type Input = { id: number };
+function read(value: Input): void {
+  void value;
+}
+void read;

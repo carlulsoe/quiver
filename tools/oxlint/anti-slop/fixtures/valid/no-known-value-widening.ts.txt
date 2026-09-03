@@ -1,0 +1,2 @@
+const value = { id: 1 } satisfies { id: number };
+void value;

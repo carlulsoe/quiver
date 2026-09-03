@@ -1,0 +1,4 @@
+function parse(value: string): void {
+  void value;
+}
+void parse;

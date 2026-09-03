@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCliOptions } from "./cli-options.ts";
+import { CLI_HELP, parseCliOptions } from "./cli-options.ts";
 
 describe("prototype CLI options", () => {
   it("accepts a report path without changing the target", () => {
@@ -89,5 +89,11 @@ describe("prototype CLI options", () => {
     expect(() => parseCliOptions(["http://127.0.0.1:8888", "http://localhost:8888"])).toThrow(
       "Only one target URL is allowed",
     );
+  });
+
+  it("documents the process exit-code contract", () => {
+    expect(CLI_HELP).toContain("0  Campaign completed with at least one confirmed finding");
+    expect(CLI_HELP).toContain("1  Campaign failed");
+    expect(CLI_HELP).toContain("2  Campaign completed without a confirmed finding");
   });
 });

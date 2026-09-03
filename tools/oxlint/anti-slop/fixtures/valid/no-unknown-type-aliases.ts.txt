@@ -1,0 +1,3 @@
+type Input = string;
+const value: Input = "ready";
+void value;

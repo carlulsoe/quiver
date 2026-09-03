@@ -1,0 +1,2 @@
+const parsed = ({ id: 1 } as object) as { id: number };
+void parsed;

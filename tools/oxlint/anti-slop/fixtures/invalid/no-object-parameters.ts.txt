@@ -1,0 +1,4 @@
+function read(value: object): void {
+  void value;
+}
+void read;

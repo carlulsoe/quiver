@@ -92,7 +92,14 @@ or are explicitly authorized to assess.
 
 ## Run a campaign
 
-This requires Bun, Chromium, Docker Compose, and an `OPENROUTER_API_KEY`. Models are routed per
+Development and CI use Bun 1.4.0. Install the locked dependencies without changing their resolved
+versions:
+
+```sh
+bun install --frozen-lockfile
+```
+
+Running a campaign also requires Chromium, Docker Compose, and an `OPENROUTER_API_KEY`. Models are routed per
 mission. Ordinary route triage takes the cheapest compatible route, while fresh specialists declare
 requirements for browser-backed authentication reasoning, payload generation, or large context.
 Validators use an independent route. Each route has an ordered compatible fallback chain; provider
@@ -147,8 +154,9 @@ bun run campaign -- http://127.0.0.1:8888 \
   --report .prototype/runs/latest.md
 ```
 
-Run `bun run campaign -- --help` for all options. Stop crAPI without deleting its
-database volumes with `bun run target:down`.
+Run `bun run campaign -- --help` for all options. A campaign exits with status 0 when it completes
+with at least one confirmed finding, 1 when it fails, and 2 when it completes without a confirmed
+finding. Stop crAPI without deleting its database volumes with `bun run target:down`.
 
 ## Additional test targets
 
@@ -426,6 +434,11 @@ bun run evals             # isolated live GLM profile matrix (set XBOW_EVAL_TRIA
 bun run verify            # formatting, linting, types, and fast tests
 bun run security:secrets  # scan committable files for credentials (requires Docker)
 ```
+
+`bun run verify` is the deterministic fast gate and does not require a live target or model access.
+The integration tier requires its corresponding local target, while the evaluation tier requires
+live model access through `OPENROUTER_API_KEY`; run those expensive tiers separately with
+`bun run test:integration` and `bun run evals`.
 
 ## Security and disclosure
 
