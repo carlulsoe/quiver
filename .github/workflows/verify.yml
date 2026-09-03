@@ -19,6 +19,13 @@ jobs:
           bun-version: 1.4.0
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Restore Playwright browser cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ hashFiles('bun.lock') }}
+      - name: Install matching Chromium and system dependencies
+        run: bun run browser:install --with-deps
       - name: Run fast verification
         run: bun run verify
 

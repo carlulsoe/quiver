@@ -99,12 +99,22 @@ versions:
 bun install --frozen-lockfile
 ```
 
-Running a campaign also requires Chromium, Docker Compose, and an `OPENROUTER_API_KEY`. Models are routed per
-mission. Ordinary route triage takes the cheapest compatible route, while fresh specialists declare
-requirements for browser-backed authentication reasoning, payload generation, or large context.
-Validators use an independent route. Each route has an ordered compatible fallback chain; provider
-availability failures may advance the chain only before the mission invokes a tool, so fallback can
-never silently replay a state-changing request.
+Install the Chromium release matched to the pinned Playwright client, then provide Docker Compose and
+an `OPENROUTER_API_KEY` to run a campaign:
+
+```sh
+bun run browser:install
+```
+
+The managed browser occupies a few hundred megabytes in Playwright's operating-system cache. In an
+offline or centrally managed environment, skip the browser-install command and set
+`QUIVER_BROWSER_PATH` to a Playwright-compatible Chromium executable. Quiver checks that override and
+does not silently fall back to the managed browser when it is missing or incompatible. Models are
+routed per mission. Ordinary route triage takes the cheapest compatible route, while fresh
+specialists declare requirements for browser-backed authentication reasoning, payload generation, or
+large context. Validators use an independent route. Each route has an ordered compatible fallback
+chain; provider availability failures may advance the chain only before the mission invokes a tool,
+so fallback can never silently replay a state-changing request.
 
 Start the pinned OWASP crAPI 1.1.5 checkout and run a campaign:
 
@@ -130,9 +140,9 @@ bun run campaign -- http://127.0.0.1:8888 \
   --budget 36
 ```
 
-OpenAPI operations are merged with browser-observed methods and paths. Context is
-shown to explorers as target data, not treated as tool instructions. Set
-`QUIVER_BROWSER_PATH` when Chromium is not installed in a standard location.
+OpenAPI operations are merged with browser-observed methods and paths. Context is shown to explorers
+as target data, not treated as tool instructions. On launch, Quiver reports the selected Chromium
+version and executable path so local and CI runs can be compared directly.
 
 Write the complete finding set, outcomes, budget usage, HTTP activity, and Flue
 tool trace to JSON without the live terminal view:

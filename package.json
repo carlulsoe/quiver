@@ -23,6 +23,7 @@
     "test:integration": "bun --bun vitest run --config vitest.integration.config.ts",
     "test:watch": "bun --bun vitest --config vitest.config.ts",
     "test:lint-plugin": "bun tools/oxlint/anti-slop/fixtures/verify-fixtures.ts",
+    "browser:install": "playwright-core install chromium",
     "verify": "bun run check && bun run test:lint-plugin && bun run test",
     "security:secrets": "bash scripts/check-secrets.sh",
     "check": "oxfmt --check . && oxlint && bun run check:types",
@@ -31,7 +32,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "0.83.0",
     "@flue/runtime": "2.0.3",
-    "playwright-core": "^1.62.1",
+    "playwright-core": "1.62.1",
     "valibot": "^1.4.2",
     "yaml": "^2.9.0"
   },
