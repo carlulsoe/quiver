@@ -90,9 +90,17 @@ describe("scoped target", () => {
         return response("unexpected", "text/plain");
       },
     });
-
     await expect(target.request({ path: "/api/state-changing-read?value=1" })).rejects.toThrow(
       "GET /api/state-changing-read is denied by the target profile",
+    );
+    await expect(target.request({ path: "/api/%ZZ" })).rejects.toThrow(
+      "contains malformed encoding",
+    );
+    await expect(target.request({ path: "/api/%252Fadmin" })).rejects.toThrow(
+      "contains ambiguous encoding",
+    );
+    await expect(target.request({ path: "/api/%2e%2e/admin" })).rejects.toThrow(
+      "contains ambiguous encoding",
     );
     expect(requests).toBe(0);
     await expect(target.request({ path: "/safe" })).resolves.toMatchObject({ status: 200 });
@@ -107,6 +115,11 @@ describe("scoped target", () => {
       deniedRequests: [{ method: "GET", path: "/api/state-changing-read" }],
       attackSurfaceMapper: async (options) => {
         expect(options.decideRequest("GET", "/api/state-changing-read").allowed).toBe(false);
+        expect(options.decideRequest("GET", "/api/state%2Dchanging%2Dread/").allowed).toBe(false);
+        expect(options.decideRequest("GET", "/api/%2Fstate-changing-read")).toMatchObject({
+          allowed: false,
+          reason: "Target operation path contains ambiguous encoding",
+        });
         expect(options.decideRequest("POST", "/api/runtime-operation").allowed).toBe(true);
         requested.push("POST /api/runtime-operation");
         return {
@@ -117,9 +130,7 @@ describe("scoped target", () => {
         };
       },
     });
-
     const map = await target.mapAttackSurface();
-
     expect(map.routes).toContain("/api/state-changing-read");
     expect(requested).toEqual(["POST /api/runtime-operation"]);
   });

@@ -44,7 +44,7 @@ export class ExplorationExecutor {
     const { profile, session, modelRouter } = this.#options;
     const dispatch = session.dispatch.bind(session);
     if (profile.authenticate)
-      await this.target.runProfileSetup(() => profile.authenticate!(this.target));
+      await this.target.runProfileSetup("authentication", () => profile.authenticate!(this.target));
     dispatch({ type: "phase", phase: "exploring" });
     await Promise.all(
       this.#explorers.flatMap((worker) => {

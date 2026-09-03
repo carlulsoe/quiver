@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ScopedTarget } from "../prototype/scoped-target.ts";
 import { brokenCrystalsProfile } from "./broken-crystals.ts";
+import { crapiProfile } from "./crapi.ts";
 import { heldOutProfile } from "./held-out.ts";
 import { vampiVulnerableProfile } from "./vampi.ts";
 import { vulnerableAppProfile } from "./vulnerableapp.ts";
@@ -65,6 +66,44 @@ describe("additional target profiles", () => {
     await expect(target.request({ path: "/createdb" })).rejects.toThrow(
       "denied by the target profile",
     );
+  });
+
+  it("blocks router-equivalent crAPI mechanic-report routes but allows neighbors", async () => {
+    const requested: string[] = [];
+    const target = new ScopedTarget({
+      target: new URL("http://127.0.0.1:8888"),
+      requestBudget: 3,
+      deniedRequests: crapiProfile.deniedRequests,
+      transport: async (input) => {
+        requested.push(new URL(String(input)).pathname);
+        return Response.json({ ok: true });
+      },
+    });
+    const denied = [
+      "/workshop/api/mechanic/receive_report",
+      "/workshop/api/mechanic/receive_report/",
+      "/workshop/api/%6dechanic/receive%5freport",
+      "/workshop/api/mechanic/mechanic_report?format=json",
+      "/workshop/api/mechanic/mechanic%5freport/",
+    ];
+
+    for (const path of denied) {
+      await expect(target.request({ path })).rejects.toThrow("denied by the target profile");
+    }
+    await expect(
+      target.request({ path: "/workshop/api/mechanic/receive_reports" }),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      target.request({ path: "/workshop/api/mechanics/mechanic_report" }),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      target.request({ path: "/identity/api/v2/user/dashboard" }),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(requested).toEqual([
+      "/workshop/api/mechanic/receive_reports",
+      "/workshop/api/mechanics/mechanic_report",
+      "/identity/api/v2/user/dashboard",
+    ]);
   });
 
   it("binds VulnerableApp injection proofs to vulnerable and secure-control levels", () => {

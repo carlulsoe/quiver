@@ -19,6 +19,7 @@ import type {
   AttackSurfaceMapperOptions,
   HttpTransport,
   ScopedTargetOptions,
+  TargetRequestContext,
   TargetRequestEvent,
 } from "./scoped-target-types.ts";
 
@@ -33,6 +34,7 @@ export interface ScopedTargetState {
   readonly mappedOperations: Set<string>;
   readonly deniedRequests: Set<string>;
   readonly onRequest?: (request: TargetRequestEvent) => void;
+  readonly requestContext: Extract<TargetRequestContext, "discovery" | "replay">;
   readonly transport: HttpTransport;
   readonly timeoutMs: number;
   readonly maxResponseChars: number;
@@ -51,6 +53,7 @@ export interface ScopedTargetState {
   readonly sessions: Sessions;
   readonly inMemorySessions?: InMemorySessions;
   setupAccess: boolean;
+  setupContext?: Extract<TargetRequestContext, "authentication" | "validation-reset">;
   requestsUsed: number;
   browserActorId: ActorId;
   attackSurfaceResult?: Promise<AttackSurfaceMap>;
@@ -82,9 +85,10 @@ export function createScopedTargetState(options: ScopedTargetOptions): ScopedTar
     browserAllowedOperations: new Set(allowedRequests),
     mappedOperations: new Set(),
     deniedRequests: new Set(
-      options.deniedRequests?.map(({ method, path }) => `${method} ${path}`) ?? [],
+      options.deniedRequests?.map(({ method, path }) => operationKey(method, path)) ?? [],
     ),
     onRequest: options.onRequest,
+    requestContext: options.requestContext ?? "replay",
     transport: options.transport ?? fetch,
     timeoutMs: options.timeoutMs ?? 10_000,
     maxResponseChars: options.maxResponseChars ?? 12_000,
