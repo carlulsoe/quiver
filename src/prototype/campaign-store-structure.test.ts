@@ -46,6 +46,9 @@ describe("durable campaign store structure", () => {
     expect(Array.from({ length: 100 }, () => store.controlStatus())).toEqual(
       Array.from({ length: 100 }, () => "running"),
     );
+    expect(Array.from({ length: 100 }, () => store.controlSnapshot())).toEqual(
+      Array.from({ length: 100 }, () => ({ control: "running", controlReason: undefined })),
+    );
     expect(store.statistics()).toEqual(beforeControlReads);
     store.close();
 

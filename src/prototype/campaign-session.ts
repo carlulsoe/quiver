@@ -8,6 +8,7 @@ import {
 } from "./campaign-history.ts";
 import { assertCampaignIdentity, createCampaignIdentity } from "./campaign-identity.ts";
 import type { CampaignSessionOptions } from "./campaign-session-options.ts";
+import { synchronizeCampaignControl } from "./campaign-control-snapshot.ts";
 import { InMemoryCampaignStore, type CampaignStore } from "./campaign-store.ts";
 import type { ModelRoute, RoutedModel } from "./model-routing.ts";
 import {
@@ -77,6 +78,7 @@ export class CampaignSession {
   }
 
   get state(): CampaignState {
+    this.#state = synchronizeCampaignControl(this.#state, this.#store.controlSnapshot());
     return this.#state;
   }
 
@@ -89,6 +91,7 @@ export class CampaignSession {
   }
 
   recover(): void {
+    this.#state = synchronizeCampaignControl(this.#state, this.#store.controlSnapshot());
     if (
       this.#state.agents.some(({ status }) => status === "running") ||
       this.#state.runtime.jobs.some(({ status }) => status === "running")
@@ -104,6 +107,7 @@ export class CampaignSession {
   }
 
   dispatch(action: CampaignAction): void {
+    this.#state = synchronizeCampaignControl(this.#state, this.#store.controlSnapshot());
     const next = reduceCampaign(this.#state, action);
     const event = createRunEvent(this.events.at(-1)?.sequence ?? 0, this.elapsedMs(), "state", {
       action: action.type,
@@ -115,17 +119,20 @@ export class CampaignSession {
       exploitChainCount: next.exploitChains.length,
     });
     const historyAction = { type: "run-event", event } as const;
-    this.#store.applyBatch([action, historyAction]);
+    const result = this.#store.applyBatch([action, historyAction]);
     this.#state = reduceCampaign(next, historyAction);
+    this.#state = synchronizeCampaignControl(this.#state, result);
     this.events.push(event);
     this.#onState?.(this.#state, action);
   }
 
   record(type: RunEvent["type"], data: RunEventData): void {
+    this.#state = synchronizeCampaignControl(this.#state, this.#store.controlSnapshot());
     const event = createRunEvent(this.events.at(-1)?.sequence ?? 0, this.elapsedMs(), type, data);
     const action = { type: "run-event", event } as const;
-    this.#store.apply(action);
+    const result = this.#store.apply(action);
     this.#state = reduceCampaign(this.#state, action);
+    this.#state = synchronizeCampaignControl(this.#state, result);
     this.events.push(event);
   }
 
@@ -185,7 +192,9 @@ export class CampaignSession {
   }
 
   private applyHistory(action: CampaignAction): void {
-    this.#store.apply(action);
+    this.#state = synchronizeCampaignControl(this.#state, this.#store.controlSnapshot());
+    const result = this.#store.apply(action);
     this.#state = reduceCampaign(this.#state, action);
+    this.#state = synchronizeCampaignControl(this.#state, result);
   }
 }

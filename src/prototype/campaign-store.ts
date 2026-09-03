@@ -5,14 +5,21 @@ import {
   type CampaignControlStatus,
   type CampaignState,
 } from "./state.ts";
+import {
+  snapshotCampaignControl,
+  type CampaignControlSnapshot,
+} from "./campaign-control-snapshot.ts";
+
+export type { CampaignControlSnapshot } from "./campaign-control-snapshot.ts";
 
 export interface CampaignStore {
   create(campaignId: string, state: CampaignState): CampaignState;
   load(campaignId: string): CampaignState;
-  apply(action: CampaignAction): void;
-  applyBatch(actions: readonly CampaignAction[]): void;
+  apply(action: CampaignAction): CampaignControlSnapshot;
+  applyBatch(actions: readonly CampaignAction[]): CampaignControlSnapshot;
   checkpoint(): CampaignState;
   controlStatus(): CampaignControlStatus;
+  controlSnapshot(): CampaignControlSnapshot;
 }
 
 export class InMemoryCampaignStore implements CampaignStore {
@@ -34,20 +41,24 @@ export class InMemoryCampaignStore implements CampaignStore {
     this.#activeCampaignId = campaignId;
     return this.checkpoint();
   }
-  apply(action: CampaignAction): void {
-    this.applyBatch([action]);
+  apply(action: CampaignAction): CampaignControlSnapshot {
+    return this.applyBatch([action]);
   }
-  applyBatch(actions: readonly CampaignAction[]): void {
+  applyBatch(actions: readonly CampaignAction[]): CampaignControlSnapshot {
     const id = this.#requireActiveCampaign();
     let state = this.#campaigns.get(id)!;
     for (const action of actions) state = reduceCampaign(state, action);
     this.#campaigns.set(id, state);
+    return snapshotCampaignControl(state);
   }
   checkpoint(): CampaignState {
     return structuredClone(this.#campaigns.get(this.#requireActiveCampaign())!);
   }
   controlStatus(): CampaignControlStatus {
     return this.#campaigns.get(this.#requireActiveCampaign())!.runtime.control;
+  }
+  controlSnapshot(): CampaignControlSnapshot {
+    return snapshotCampaignControl(this.#campaigns.get(this.#requireActiveCampaign())!);
   }
   #requireActiveCampaign(): string {
     if (!this.#activeCampaignId) throw new Error("Load a campaign before using the store");

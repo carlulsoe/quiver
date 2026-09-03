@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createCampaignIdentity } from "./campaign-identity.ts";
+import type { CampaignOrchestrationFactory } from "./campaign-orchestration.ts";
 import { JsonlCampaignStore } from "./campaign-store.ts";
 import { runCampaign } from "./runner.ts";
 import { createCampaignBudget, createCampaignState, reduceCampaign } from "./state.ts";
@@ -67,6 +68,56 @@ describe("campaign runner history", () => {
       expect(repeated.events).toHaveLength(1);
     } finally {
       campaignStore.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("returns authoritative external control state after finalizing history", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "quiver-runner-control-"));
+    const store = new JsonlCampaignStore(join(directory, "campaigns.jsonl"));
+    const orchestrationFactory: CampaignOrchestrationFactory = ({ runtimeSafety }) => ({
+      async startRuntime() {
+        return { async [Symbol.asyncDispose]() {} };
+      },
+      async restoreAuthentication() {},
+      async runExploration() {
+        store.apply({ type: "halt", reason: "external safety system" });
+        runtimeSafety.assertReady();
+      },
+      async drainValidation() {},
+      reclaimExplorationBudget() {},
+      async runPendingFindings() {},
+      async runExploitChains() {},
+      assertAllJobsFinished() {},
+    });
+    try {
+      const run = await runCampaign({
+        target: new URL("http://127.0.0.1:8888/"),
+        profile: {
+          id: "returned-control",
+          displayName: "Returned control",
+          objective: "Report authoritative external control state.",
+        },
+        requestBudget: 6,
+        explorerCount: 1,
+        campaignStore: store,
+        orchestrationFactory,
+      });
+
+      expect(run.state.runtime).toMatchObject({
+        control: "halted",
+        controlReason: "external safety system",
+      });
+      expect(store.load("returned-control").runtime).toMatchObject(run.state.runtime);
+      expect(store.statistics()).toMatchObject({
+        durableWrites: 3,
+        records: 5,
+        actionRecords: 2,
+        checkpointRecords: 2,
+        fullStateRecords: 3,
+      });
+    } finally {
+      store.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });

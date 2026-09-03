@@ -1,7 +1,15 @@
 import { closeSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  snapshotCampaignControl,
+  type CampaignControlSnapshot,
+} from "./campaign-control-snapshot.ts";
 import { replayCampaignLog, type DurableCampaign } from "./campaign-store-replay.ts";
 import { assertCampaignId, type CampaignStore } from "./campaign-store.ts";
+import type {
+  CampaignStoreStatistics,
+  JsonlCampaignStoreOptions,
+} from "./campaign-store-jsonl-types.ts";
 import {
   acquireLogLock,
   appendDurably,
@@ -22,19 +30,10 @@ import {
 
 export const DEFAULT_CHECKPOINT_ACTION_INTERVAL = 32;
 
-export interface CampaignStoreStatistics {
-  durableWrites: number;
-  records: number;
-  actionRecords: number;
-  checkpointRecords: number;
-  fullStateRecords: number;
-  bytes: number;
-}
-
-export interface JsonlCampaignStoreOptions {
-  checkpointActionInterval?: number;
-  durableAppend?: DurableAppend;
-}
+export type {
+  CampaignStoreStatistics,
+  JsonlCampaignStoreOptions,
+} from "./campaign-store-jsonl-types.ts";
 
 export class JsonlCampaignStore implements CampaignStore {
   readonly path: string;
@@ -104,13 +103,13 @@ export class JsonlCampaignStore implements CampaignStore {
     this.#activeCampaignId = campaignId;
     return structuredClone(campaign.state);
   }
-  apply(action: CampaignAction): void {
-    this.applyBatch([action]);
+  apply(action: CampaignAction): CampaignControlSnapshot {
+    return this.applyBatch([action]);
   }
-  applyBatch(actions: readonly CampaignAction[]): void {
+  applyBatch(actions: readonly CampaignAction[]): CampaignControlSnapshot {
     this.#assertOpen();
-    if (actions.length === 0) return;
     const [campaignId, campaign] = this.#requireActiveCampaign();
+    if (actions.length === 0) return snapshotCampaignControl(campaign.state);
     let next = campaign.state;
     let sequence = campaign.sequence;
     let actionCount = campaign.actionsSinceCheckpoint;
@@ -135,6 +134,7 @@ export class JsonlCampaignStore implements CampaignStore {
     campaign.state = next;
     campaign.sequence = sequence;
     campaign.actionsSinceCheckpoint = actionCount;
+    return snapshotCampaignControl(next);
   }
   checkpoint(): CampaignState {
     this.#assertOpen();
@@ -145,6 +145,10 @@ export class JsonlCampaignStore implements CampaignStore {
   controlStatus(): CampaignControlStatus {
     this.#assertOpen();
     return this.#requireActiveCampaign()[1].state.runtime.control;
+  }
+  controlSnapshot(): CampaignControlSnapshot {
+    this.#assertOpen();
+    return snapshotCampaignControl(this.#requireActiveCampaign()[1].state);
   }
   statistics(): CampaignStoreStatistics {
     return { ...this.#statistics };
