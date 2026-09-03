@@ -63,7 +63,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<Campaign
   const verification = new DefaultVerificationEngine(options.profile, artifacts);
   const modelRouter = options.modelRouter ?? createModelRouter();
   const runtimeSafety = new RuntimeSafetyController(options.profile.runtimeSafety, {
-    controlStatus: () => session.checkpoint().runtime.control,
+    controlStatus: () => session.controlStatus(),
     initialConsecutiveFailures: session.state.runtime.consecutiveFailures,
     initialDisruptiveResponses: session.state.runtime.disruptiveResponses,
     onSuccess: () => dispatch({ type: "runtime-success" }),

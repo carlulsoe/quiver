@@ -7,33 +7,25 @@ import {
   type RunEventData,
 } from "./campaign-history.ts";
 import { assertCampaignIdentity, createCampaignIdentity } from "./campaign-identity.ts";
+import type { CampaignSessionOptions } from "./campaign-session-options.ts";
 import { InMemoryCampaignStore, type CampaignStore } from "./campaign-store.ts";
 import type { ModelRoute, RoutedModel } from "./model-routing.ts";
-import { redactCredentials } from "./security/redaction.ts";
 import {
   createCampaignBudget,
   createCampaignState,
+  reduceCampaign,
   type CampaignAction,
+  type CampaignControlStatus,
   type CampaignState,
 } from "./state.ts";
-import type { TargetProfile } from "./target-profile.ts";
 import {
   agentStreamEvent,
   assertCampaignTarget,
+  createRunEvent,
   parsePromptMetadata,
 } from "./campaign-session-support.ts";
 
-export interface CampaignSessionOptions {
-  target: URL;
-  profile: TargetProfile;
-  requestBudget: number;
-  explorerCount: number;
-  openApi?: unknown;
-  context?: string;
-  campaignId?: string;
-  campaignStore?: CampaignStore;
-  onState?: (state: CampaignState, action?: CampaignAction) => void;
-}
+export type { CampaignSessionOptions } from "./campaign-session-options.ts";
 
 /** Owns durable campaign state and its cumulative reporting history. */
 export class CampaignSession {
@@ -92,6 +84,10 @@ export class CampaignSession {
     return this.#store.checkpoint();
   }
 
+  controlStatus(): CampaignControlStatus {
+    return this.#store.controlStatus();
+  }
+
   recover(): void {
     if (
       this.#state.agents.some(({ status }) => status === "running") ||
@@ -108,29 +104,29 @@ export class CampaignSession {
   }
 
   dispatch(action: CampaignAction): void {
-    this.#store.apply(action);
-    this.#state = this.#store.checkpoint();
-    this.record("state", {
+    const next = reduceCampaign(this.#state, action);
+    const event = createRunEvent(this.events.at(-1)?.sequence ?? 0, this.elapsedMs(), "state", {
       action: action.type,
-      phase: this.#state.phase,
-      requestsUsed: this.#state.requests.total,
-      testedRequestCount: this.#state.testedRequests.length,
-      findingCount: this.#state.findings.length,
-      validationCount: this.#state.validations.length,
-      exploitChainCount: this.#state.exploitChains.length,
+      phase: next.phase,
+      requestsUsed: next.requests.total,
+      testedRequestCount: next.testedRequests.length,
+      findingCount: next.findings.length,
+      validationCount: next.validations.length,
+      exploitChainCount: next.exploitChains.length,
     });
+    const historyAction = { type: "run-event", event } as const;
+    this.#store.applyBatch([action, historyAction]);
+    this.#state = reduceCampaign(next, historyAction);
+    this.events.push(event);
     this.#onState?.(this.#state, action);
   }
 
   record(type: RunEvent["type"], data: RunEventData): void {
-    const event: RunEvent = {
-      sequence: (this.events.at(-1)?.sequence ?? 0) + 1,
-      elapsedMs: this.elapsedMs(),
-      type,
-      data: redactCredentials(data),
-    };
+    const event = createRunEvent(this.events.at(-1)?.sequence ?? 0, this.elapsedMs(), type, data);
+    const action = { type: "run-event", event } as const;
+    this.#store.apply(action);
+    this.#state = reduceCampaign(this.#state, action);
     this.events.push(event);
-    this.applyHistory({ type: "run-event", event });
   }
 
   captureAgentEvent(agentId: string, chunk: ConversationStreamChunk): void {
@@ -190,6 +186,6 @@ export class CampaignSession {
 
   private applyHistory(action: CampaignAction): void {
     this.#store.apply(action);
-    this.#state = this.#store.checkpoint();
+    this.#state = reduceCampaign(this.#state, action);
   }
 }

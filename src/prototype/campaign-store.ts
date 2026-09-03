@@ -2,6 +2,7 @@ import {
   reduceCampaign,
   withRuntimeState,
   type CampaignAction,
+  type CampaignControlStatus,
   type CampaignState,
 } from "./state.ts";
 
@@ -9,7 +10,9 @@ export interface CampaignStore {
   create(campaignId: string, state: CampaignState): CampaignState;
   load(campaignId: string): CampaignState;
   apply(action: CampaignAction): void;
+  applyBatch(actions: readonly CampaignAction[]): void;
   checkpoint(): CampaignState;
+  controlStatus(): CampaignControlStatus;
 }
 
 export class InMemoryCampaignStore implements CampaignStore {
@@ -32,11 +35,19 @@ export class InMemoryCampaignStore implements CampaignStore {
     return this.checkpoint();
   }
   apply(action: CampaignAction): void {
+    this.applyBatch([action]);
+  }
+  applyBatch(actions: readonly CampaignAction[]): void {
     const id = this.#requireActiveCampaign();
-    this.#campaigns.set(id, reduceCampaign(this.#campaigns.get(id)!, action));
+    let state = this.#campaigns.get(id)!;
+    for (const action of actions) state = reduceCampaign(state, action);
+    this.#campaigns.set(id, state);
   }
   checkpoint(): CampaignState {
     return structuredClone(this.#campaigns.get(this.#requireActiveCampaign())!);
+  }
+  controlStatus(): CampaignControlStatus {
+    return this.#campaigns.get(this.#requireActiveCampaign())!.runtime.control;
   }
   #requireActiveCampaign(): string {
     if (!this.#activeCampaignId) throw new Error("Load a campaign before using the store");

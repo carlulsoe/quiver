@@ -268,7 +268,9 @@ unused exploration capacity is reclaimed.
 
 For resumable runs, `--campaign-store <path>` selects an append-only JSONL store
 and `--campaign-id <id>` selects the stable campaign checkpoint. Every action is
-flushed before use and periodic full-state checkpoints are checksum verified.
+flushed before use; an originating transition and its derived state telemetry share one durable
+write. Checksum-verified full-state checkpoints follow at most 32 action records and every lifecycle
+boundary, including normal store closure.
 The JSONL adapter uses the OS-released `flock` command to enforce one writer
 across processes. A checkpoint is bound to its target profile and safety-relevant
 campaign configuration; Quiver rejects a resume when either changes. Event history,
