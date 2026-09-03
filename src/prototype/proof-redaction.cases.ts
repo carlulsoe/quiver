@@ -85,12 +85,15 @@ describe("proof evidence redaction", () => {
         proof: {
           type: "internal-field-exposure",
           requestIndex: 1,
-          evidencePointers: ["/message"],
+          evidencePointers: ["/message", "/diagnosticValue"],
         },
       }),
       [
-        observation("/session", { apiToken: "cross-observation-secret" }),
-        observation("/account", { message: "received cross-observation-secret" }),
+        observation("/session", { apiToken: "cross-observation-secret", otp: 200 }),
+        observation("/account", {
+          message: "received cross-observation-secret",
+          diagnosticValue: 200,
+        }),
       ],
     );
 
@@ -100,6 +103,73 @@ describe("proof evidence redaction", () => {
       passed: true,
       actual: "received [REDACTED]",
     });
+    expect(result.checks).toContainEqual({
+      description: "response contains /diagnosticValue",
+      passed: true,
+      actual: "[REDACTED]",
+    });
     expect(JSON.stringify(result)).not.toContain("cross-observation-secret");
+  });
+
+  it("redacts untrusted typed evidence while preserving proof decisions", () => {
+    const result = evaluateProof(
+      finding({
+        category: "sensitive-data-exposure",
+        endpoint: "/account",
+        reproduction: [{ path: "/account", actorId: actorIds.userA }],
+        proof: {
+          type: "internal-field-exposure",
+          requestIndex: 0,
+          evidencePointers: [
+            "/pin",
+            "/status",
+            "/diagnosticValue",
+            "/token",
+            "/enabled",
+            "/message",
+          ],
+        },
+      }),
+      [
+        observation("/account", {
+          pin: 200,
+          status: 200,
+          diagnosticValue: 200,
+          token: true,
+          enabled: true,
+          message: "PIN 200 and token true were observed",
+        }),
+      ],
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ description: "response contains /pin", actual: "[REDACTED]" }),
+        expect.objectContaining({
+          description: "response contains /status",
+          actual: "[REDACTED]",
+        }),
+        expect.objectContaining({
+          description: "response contains /diagnosticValue",
+          actual: "[REDACTED]",
+        }),
+        expect.objectContaining({ description: "response contains /token", actual: "[REDACTED]" }),
+        expect.objectContaining({
+          description: "response contains /enabled",
+          actual: "[REDACTED]",
+        }),
+        expect.objectContaining({
+          description: "response contains /message",
+          actual: "PIN [REDACTED] and token [REDACTED] were observed",
+        }),
+      ]),
+    );
+    expect(result.checks).toContainEqual({
+      description: "evidence response returned a successful response",
+      passed: true,
+      actual: "[REDACTED]",
+    });
+    expect(result.checks.every(({ passed }) => passed)).toBe(true);
   });
 });

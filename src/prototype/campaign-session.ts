@@ -9,7 +9,7 @@ import {
 import { assertCampaignIdentity, createCampaignIdentity } from "./campaign-identity.ts";
 import { InMemoryCampaignStore, type CampaignStore } from "./campaign-store.ts";
 import type { ModelRoute, RoutedModel } from "./model-routing.ts";
-import { redactCredentials } from "./security/redaction.ts";
+import { redactStructuredCredentials } from "./security/redaction.ts";
 import {
   createCampaignBudget,
   createCampaignState,
@@ -127,7 +127,7 @@ export class CampaignSession {
       sequence: (this.events.at(-1)?.sequence ?? 0) + 1,
       elapsedMs: this.elapsedMs(),
       type,
-      data: redactCredentials(data),
+      data: redactStructuredCredentials(data),
     };
     this.events.push(event);
     this.applyHistory({ type: "run-event", event });

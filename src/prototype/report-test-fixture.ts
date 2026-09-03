@@ -76,6 +76,12 @@ export function confirmedCampaignRun(): CampaignRun {
             email: "owner@example.com",
             apiToken: reportCredentialSentinel,
             buildId: "build-7",
+            pin: 200,
+            otp: 1,
+            token: false,
+            counter: 200,
+            diagnosticCount: 1,
+            enabled: false,
           },
           truncated: false,
           redirectLocation: `https://redirect.invalid/landing?access_token=${reportCredentialSentinel}`,
@@ -84,7 +90,7 @@ export function confirmedCampaignRun(): CampaignRun {
       ],
       reviewer: {
         assessment: "supported",
-        evidence: `Fresh replay supports the claim. Credential ${reportCredentialSentinel} was present.`,
+        evidence: `Fresh replay supports the claim. Credential ${reportCredentialSentinel}, PIN 200, OTP 1, and token false were present.`,
       },
     },
   });
@@ -132,7 +138,15 @@ export function confirmedCampaignRun(): CampaignRun {
         sequence: 1,
         elapsedMs: 10,
         type: "tool-call",
-        data: { author: "Ada", input: { body: "access_token=event-secret" } },
+        data: {
+          author: "Ada",
+          requestsUsed: 200,
+          findingCount: 1,
+          durationMs: 200,
+          input: {
+            body: JSON.stringify({ accessToken: "event-secret", pin: 200, otp: 1 }),
+          },
+        },
       },
     ],
   };

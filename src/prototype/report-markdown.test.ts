@@ -27,6 +27,13 @@ describe("Markdown campaign report", () => {
     expect(markdown).toContain("[REDACTED] == [REDACTED]");
     expect(markdown).toContain('"apiToken": "[REDACTED]"');
     expect(markdown).toContain('"buildId": "build-7"');
+    expect(markdown).toContain('"pin": "[REDACTED]"');
+    expect(markdown).toContain('"otp": "[REDACTED]"');
+    expect(markdown).toContain('"token": "[REDACTED]"');
+    expect(markdown).toContain('"counter": "[REDACTED]"');
+    expect(markdown).toContain('"diagnosticCount": "[REDACTED]"');
+    expect(markdown).toContain('"enabled": "[REDACTED]"');
+    expect(markdown).toContain("PIN [REDACTED], OTP [REDACTED], and token [REDACTED]");
     expect(markdown).toContain("→ **200**");
   });
 });

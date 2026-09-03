@@ -20,18 +20,18 @@ export const crossPrincipalAccessHandler: ProofCheckHandler<"cross-principal-acc
     support.check(
       actor.found && support.isScalar(actor.value),
       "actor identity exists",
-      support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value),
+      support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value, observations),
     ),
     support.check(
       owner.found && support.isScalar(owner.value),
       "resource-owner identity exists",
-      support.selectedEvidence(finding.proof.resourceOwner.jsonPointer, owner.value),
+      support.selectedEvidence(finding.proof.resourceOwner.jsonPointer, owner.value, observations),
     ),
     support.check(
       actor.found && owner.found && !support.sameValue(actor.value, owner.value),
       "actor and resource owner are different principals",
       actor.found && owner.found
-        ? `${String(support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value))} != ${String(support.selectedEvidence(finding.proof.resourceOwner.jsonPointer, owner.value))}`
+        ? `${String(support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value, observations))} != ${String(support.selectedEvidence(finding.proof.resourceOwner.jsonPointer, owner.value, observations))}`
         : undefined,
     ),
     support.check(
@@ -49,7 +49,7 @@ export const crossPrincipalAccessHandler: ProofCheckHandler<"cross-principal-acc
         finding.reproduction[finding.proof.accessRequestIndex]?.actorId !== actorIds.anonymous,
       "cross-principal access used the identified actor session",
     ),
-    ...support.pointerChecks(access, finding.proof.evidencePointers),
+    ...support.pointerChecks(access, finding.proof.evidencePointers, observations),
   );
 };
 export const authenticationBypassHandler: ProofCheckHandler<"authentication-bypass"> = (

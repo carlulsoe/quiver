@@ -28,7 +28,7 @@ export const unauthenticatedSuccessHandler: ProofCheckHandler<"unauthenticated-s
       "unauthenticated request returned a successful response",
       observation?.status,
     ),
-    ...support.pointerChecks(observation, finding.proof.evidencePointers),
+    ...support.pointerChecks(observation, finding.proof.evidencePointers, observations),
   );
 };
 export const crossPrincipalDataExposureHandler: ProofCheckHandler<
@@ -46,18 +46,22 @@ export const crossPrincipalDataExposureHandler: ProofCheckHandler<
     support.check(
       actor.found && support.isScalar(actor.value),
       "actor identity exists",
-      support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value),
+      support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value, observations),
     ),
     support.check(
       subject.found && support.isScalar(subject.value),
       "exposed-subject identity exists",
-      support.selectedEvidence(finding.proof.exposedSubject.jsonPointer, subject.value),
+      support.selectedEvidence(
+        finding.proof.exposedSubject.jsonPointer,
+        subject.value,
+        observations,
+      ),
     ),
     support.check(
       actor.found && subject.found && !support.sameValue(actor.value, subject.value),
       "actor and exposed subject are different principals",
       actor.found && subject.found
-        ? `${String(support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value))} != ${String(support.selectedEvidence(finding.proof.exposedSubject.jsonPointer, subject.value))}`
+        ? `${String(support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value, observations))} != ${String(support.selectedEvidence(finding.proof.exposedSubject.jsonPointer, subject.value, observations))}`
         : undefined,
     ),
     support.check(
@@ -75,7 +79,7 @@ export const crossPrincipalDataExposureHandler: ProofCheckHandler<
         finding.reproduction[finding.proof.responseRequestIndex]?.actorId !== actorIds.anonymous,
       "cross-principal data was observed in the identified actor session",
     ),
-    ...support.pointerChecks(observation, finding.proof.evidencePointers),
+    ...support.pointerChecks(observation, finding.proof.evidencePointers, observations),
   );
 };
 export const internalFieldExposureHandler: ProofCheckHandler<"internal-field-exposure"> = (
@@ -99,7 +103,7 @@ export const internalFieldExposureHandler: ProofCheckHandler<"internal-field-exp
       finding.proof.evidencePointers.length > 0,
       "at least one exposed field was declared",
     ),
-    ...support.pointerChecks(observation, finding.proof.evidencePointers),
+    ...support.pointerChecks(observation, finding.proof.evidencePointers, observations),
   );
 };
 export const responseDifferentialHandler: ProofCheckHandler<"response-differential"> = () =>

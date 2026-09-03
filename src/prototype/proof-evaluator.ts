@@ -2,7 +2,7 @@ import { compatiblePredicates } from "./proof-compatibility.ts";
 import { proofCheckHandlers } from "./proof-handlers.ts";
 import { check } from "./proof-json.ts";
 import { affectedOperationIsRepresented } from "./proof-operation.ts";
-import { redactCredentialsWithContext } from "./security/redaction.ts";
+import { redactStructuredCredentialsWithContext } from "./security/redaction.ts";
 import type { ProofEvaluationContext, ProofEvaluationFinding, ProofType } from "./proof-types.ts";
 import { impactSafetyChecks } from "./impact.ts";
 import type { Finding, ProofCheck, ProofResult, ValidationObservation } from "./state.ts";
@@ -57,7 +57,7 @@ export function evaluateProof(
       : `Deterministic ${finding.proof.type} predicate failed ${checks.filter((item) => !item.passed).length}/${checks.length} checks.`,
     checks,
   };
-  return redactCredentialsWithContext(result, { finding, observations });
+  return redactStructuredCredentialsWithContext(result, { finding, observations });
 }
 
 function predicateIsCompatible(

@@ -11,6 +11,39 @@ describe("campaign report", () => {
       outcome: { findingCount: 1, confirmedCount: 1, rejectedCount: 0, unvalidatedCount: 0 },
       findings: [{ title: "Cross-owner vehicle location", validation: { status: "confirmed" } }],
     });
+    expect(report.findings[0]?.validation).toMatchObject({
+      reviewer: {
+        evidence:
+          "Fresh replay supports the claim. Credential [REDACTED], PIN [REDACTED], OTP [REDACTED], and token [REDACTED] were present.",
+      },
+      observations: [
+        {
+          status: 200,
+          truncated: false,
+          redirected: false,
+          body: {
+            pin: "[REDACTED]",
+            otp: "[REDACTED]",
+            token: "[REDACTED]",
+            counter: "[REDACTED]",
+            diagnosticCount: "[REDACTED]",
+            enabled: "[REDACTED]",
+          },
+        },
+      ],
+    });
+    expect(report.events[0]).toMatchObject({
+      sequence: 1,
+      elapsedMs: 10,
+      data: {
+        requestsUsed: 200,
+        findingCount: 1,
+        durationMs: 200,
+        input: {
+          body: '{"accessToken":"[REDACTED]","pin":"[REDACTED]","otp":"[REDACTED]"}',
+        },
+      },
+    });
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain("report-secret");
     expect(serialized).not.toContain("body-secret");
@@ -22,6 +55,9 @@ describe("campaign report", () => {
     );
     expect(serialized).toContain('"buildId":"build-7"');
     expect(serialized).toContain('"status":200');
+    expect(serialized).toContain('"findingCount":1');
+    expect(serialized).toContain('"truncated":false');
+    expect(serialized).toContain('"redirected":false');
     expect(serialized).toContain('"author":"Ada"');
   });
 });
