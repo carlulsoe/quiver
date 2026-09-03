@@ -1,4 +1,8 @@
-import type { CampaignAction } from "./state-actions.ts";
+import {
+  isRuntimeReducerAction,
+  type CampaignAction,
+  type CampaignReducerAction,
+} from "./state-actions.ts";
 import {
   campaignJob,
   completeJob,
@@ -23,9 +27,12 @@ const nextPhases = {
 
 export function reduceCampaign(input: CampaignState, action: CampaignAction): CampaignState {
   const state = withRuntimeState(input);
-  const runtimeResult = reduceRuntimeAction(state, action);
-  if (runtimeResult) return runtimeResult;
+  if (isRuntimeReducerAction(action)) return reduceRuntimeAction(state, action);
   if (state.phase === "complete" || state.phase === "failed") return state;
+  return reduceCampaignAction(state, action);
+}
+
+function reduceCampaignAction(state: CampaignState, action: CampaignReducerAction): CampaignState {
   switch (action.type) {
     case "phase":
       return action.phase !== state.phase &&
@@ -105,9 +112,12 @@ export function reduceCampaign(input: CampaignState, action: CampaignAction): Ca
       };
     case "failed":
       return { ...state, phase: "failed", error: action.error };
-    default:
-      return state;
   }
+  return unhandledCampaignAction(action);
+}
+
+function unhandledCampaignAction(action: never): never {
+  throw new Error(`Unhandled campaign action: ${JSON.stringify(action)}`);
 }
 
 function reclaimExplorationBudget(state: CampaignState): CampaignState {
@@ -125,7 +135,7 @@ function reclaimExplorationBudget(state: CampaignState): CampaignState {
 
 function addFinding(
   state: CampaignState,
-  input: Extract<CampaignAction, { type: "finding" }>["finding"],
+  input: Extract<CampaignReducerAction, { type: "finding" }>["finding"],
 ): CampaignState {
   const normalized = normalizeFindingInput(input);
   const finding = { ...normalized, fingerprint: fingerprintFinding(normalized) };
@@ -145,7 +155,7 @@ function addFinding(
 
 function addExploitChain(
   state: CampaignState,
-  input: Extract<CampaignAction, { type: "exploit-chain" }>["chain"],
+  input: Extract<CampaignReducerAction, { type: "exploit-chain" }>["chain"],
 ): CampaignState {
   const chain = { ...input, fingerprint: fingerprintExploitChain(input) };
   if (state.exploitChains.some(({ fingerprint }) => fingerprint === chain.fingerprint))
