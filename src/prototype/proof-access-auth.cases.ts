@@ -56,7 +56,7 @@ describe("deterministic access and authentication proof", () => {
         type: "authentication-bypass",
         authenticatedRequestIndex: 0,
         anonymousRequestIndex: 1,
-        evidencePointers: ["/account/id", "/account/plan"],
+        evidencePointers: ["/account/id", "/account/plan", "/account/accessToken"],
       },
     });
     const context = {
@@ -77,12 +77,12 @@ describe("deterministic access and authentication proof", () => {
     const observations = [
       observation(
         "/account",
-        { account: { id: "account-7", plan: "internal" } },
+        { account: { id: "account-7", plan: "internal", accessToken: "auth-token-sentinel" } },
         { actorId: actorIds.userA },
       ),
       observation(
         "/account",
-        { account: { id: "account-7", plan: "internal" } },
+        { account: { id: "account-7", plan: "internal", accessToken: "auth-token-sentinel" } },
         { actorId: actorIds.anonymous },
       ),
     ];
@@ -91,6 +91,9 @@ describe("deterministic access and authentication proof", () => {
       passed: true,
       predicate: "authentication-bypass",
     });
+    expect(JSON.stringify(evaluateProof(bypass, observations, context))).not.toContain(
+      "auth-token-sentinel",
+    );
     expect(
       evaluateProof(
         bypass,

@@ -12,6 +12,10 @@ export const unauthenticatedSuccessHandler: ProofCheckHandler<"unauthenticated-s
   const request = finding.reproduction[finding.proof.requestIndex];
   checks.push(
     support.check(
+      support.affectedOperationMatches(finding, request),
+      "unauthenticated request matches the affected operation",
+    ),
+    support.check(
       request !== undefined &&
         request.actorId === actorIds.anonymous &&
         ["GET", "HEAD"].includes(request.method ?? "GET") &&
@@ -24,7 +28,7 @@ export const unauthenticatedSuccessHandler: ProofCheckHandler<"unauthenticated-s
       "unauthenticated request returned a successful response",
       observation?.status,
     ),
-    ...support.pointerChecks(observation, finding.proof.evidencePointers),
+    ...support.pointerChecks(observation, finding.proof.evidencePointers, observations),
   );
 };
 export const crossPrincipalDataExposureHandler: ProofCheckHandler<
@@ -33,6 +37,7 @@ export const crossPrincipalDataExposureHandler: ProofCheckHandler<
   const actor = support.selectedValue(observations, finding.proof.actor);
   const subject = support.selectedValue(observations, finding.proof.exposedSubject);
   const observation = observations[finding.proof.responseRequestIndex];
+  const responseRequest = finding.reproduction[finding.proof.responseRequestIndex];
   checks.push(
     support.check(
       finding.reproduction[finding.proof.actor.requestIndex]?.actorId !== actorIds.anonymous,
@@ -41,18 +46,22 @@ export const crossPrincipalDataExposureHandler: ProofCheckHandler<
     support.check(
       actor.found && support.isScalar(actor.value),
       "actor identity exists",
-      actor.value,
+      support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value, observations),
     ),
     support.check(
       subject.found && support.isScalar(subject.value),
       "exposed-subject identity exists",
-      subject.value,
+      support.selectedEvidence(
+        finding.proof.exposedSubject.jsonPointer,
+        subject.value,
+        observations,
+      ),
     ),
     support.check(
       actor.found && subject.found && !support.sameValue(actor.value, subject.value),
       "actor and exposed subject are different principals",
       actor.found && subject.found
-        ? `${String(actor.value)} != ${String(subject.value)}`
+        ? `${String(support.selectedEvidence(finding.proof.actor.jsonPointer, actor.value, observations))} != ${String(support.selectedEvidence(finding.proof.exposedSubject.jsonPointer, subject.value, observations))}`
         : undefined,
     ),
     support.check(
@@ -61,12 +70,16 @@ export const crossPrincipalDataExposureHandler: ProofCheckHandler<
       observation?.status,
     ),
     support.check(
+      support.affectedOperationMatches(finding, responseRequest),
+      "cross-principal data response matches the affected operation",
+    ),
+    support.check(
       finding.reproduction[finding.proof.responseRequestIndex]?.actorId ===
         finding.reproduction[finding.proof.actor.requestIndex]?.actorId &&
         finding.reproduction[finding.proof.responseRequestIndex]?.actorId !== actorIds.anonymous,
       "cross-principal data was observed in the identified actor session",
     ),
-    ...support.pointerChecks(observation, finding.proof.evidencePointers),
+    ...support.pointerChecks(observation, finding.proof.evidencePointers, observations),
   );
 };
 export const internalFieldExposureHandler: ProofCheckHandler<"internal-field-exposure"> = (
@@ -75,7 +88,12 @@ export const internalFieldExposureHandler: ProofCheckHandler<"internal-field-exp
   checks,
 ) => {
   const observation = observations[finding.proof.requestIndex];
+  const request = finding.reproduction[finding.proof.requestIndex];
   checks.push(
+    support.check(
+      support.affectedOperationMatches(finding, request),
+      "internal-field evidence response matches the affected operation",
+    ),
     support.check(
       observation !== undefined && support.isSuccess(observation.status),
       "evidence response returned a successful response",
@@ -85,7 +103,7 @@ export const internalFieldExposureHandler: ProofCheckHandler<"internal-field-exp
       finding.proof.evidencePointers.length > 0,
       "at least one exposed field was declared",
     ),
-    ...support.pointerChecks(observation, finding.proof.evidencePointers),
+    ...support.pointerChecks(observation, finding.proof.evidencePointers, observations),
   );
 };
 export const responseDifferentialHandler: ProofCheckHandler<"response-differential"> = () =>

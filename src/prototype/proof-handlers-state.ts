@@ -78,12 +78,12 @@ export const stateTransitionHandler: ProofCheckHandler<"state-transition"> = (
     support.check(
       before.found && support.sameValue(before.value, policy?.before),
       "protected state starts at policy value",
-      before.value,
+      support.selectedEvidence(policy?.jsonPointer ?? "", before.value, observations),
     ),
     support.check(
       after.found && support.sameValue(after.value, policy?.after),
       "protected state reaches policy value",
-      after.value,
+      support.selectedEvidence(policy?.jsonPointer ?? "", after.value, observations),
     ),
   );
 };
@@ -169,12 +169,12 @@ export const browserStateTransitionHandler: ProofCheckHandler<"browser-state-tra
     support.check(
       before.found && support.sameValue(before.value, policy?.before),
       "protected state starts at the policy value",
-      before.value,
+      support.selectedEvidence(policy?.jsonPointer ?? "", before.value, observations),
     ),
     support.check(
       after.found && support.sameValue(after.value, policy?.after),
       "protected state reaches the policy value",
-      after.value,
+      support.selectedEvidence(policy?.jsonPointer ?? "", after.value, observations),
     ),
   );
 };

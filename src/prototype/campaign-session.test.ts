@@ -49,6 +49,12 @@ describe("campaign session", () => {
       }),
     );
     session.record("request", { path: "/authors?token=request-secret" });
+    session.record("request", {
+      requestsUsed: 200,
+      findingCount: 1,
+      durationMs: 200,
+      input: { pin: 200, otp: 1, diagnosticValue: 200 },
+    });
 
     const persisted = JSON.stringify(session.state.history.events);
     expect(persisted).not.toContain("input-secret");
@@ -59,6 +65,16 @@ describe("campaign session", () => {
     expect(persisted).not.toContain("request-secret");
     expect(persisted).toContain("other:GET:/authors");
     expect(persisted).toContain("Ada");
+    expect(session.state.history.events.at(-1)?.data).toMatchObject({
+      requestsUsed: 200,
+      findingCount: 1,
+      durationMs: 200,
+      input: {
+        pin: "[REDACTED]",
+        otp: "[REDACTED]",
+        diagnosticValue: "[REDACTED]",
+      },
+    });
   });
 });
 

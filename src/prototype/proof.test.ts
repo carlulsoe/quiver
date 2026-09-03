@@ -1,5 +1,7 @@
 import "./proof-access-auth.cases.ts";
 import "./proof-data.cases.ts";
+import "./proof-operation-binding.cases.ts";
+import "./proof-redaction.cases.ts";
 import "./proof-response-differential-basic.cases.ts";
 import "./proof-response-differential-contamination.cases.ts";
 import "./proof-role.cases.ts";
