@@ -68,6 +68,19 @@ export function agentStreamEvent(
     };
   return undefined;
 }
+export function createRunEvent(
+  previousSequence: number,
+  elapsedMs: number,
+  type: RunEvent["type"],
+  data: RunEventData,
+): RunEvent {
+  return {
+    sequence: previousSequence + 1,
+    elapsedMs,
+    type,
+    data: redactCredentials(data),
+  };
+}
 export function assertCampaignTarget(state: CampaignState, campaignId: string, target: URL): void {
   const expected = `${target.origin}${target.pathname}${target.search}`;
   if (state.target !== expected)

@@ -1,11 +1,11 @@
 import { aggregateMissionUsage } from "./campaign-history.ts";
-import type { CampaignAction } from "./state-actions.ts";
+import type { RuntimeReducerAction } from "./state-actions.ts";
 import type { CampaignJob, CampaignState } from "./state-types.ts";
 
 export function reduceRuntimeAction(
   state: CampaignState,
-  action: CampaignAction,
-): CampaignState | undefined {
+  action: RuntimeReducerAction,
+): CampaignState {
   switch (action.type) {
     case "run-event":
       return {
@@ -112,9 +112,12 @@ export function reduceRuntimeAction(
           disruptiveResponses: state.runtime.disruptiveResponses + (action.disruptive ? 1 : 0),
         },
       };
-    default:
-      return undefined;
   }
+  return unhandledRuntimeAction(action);
+}
+
+function unhandledRuntimeAction(action: never): never {
+  throw new Error(`Unhandled runtime action: ${JSON.stringify(action)}`);
 }
 
 function recoverCampaign(state: CampaignState): CampaignState {

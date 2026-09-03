@@ -1,0 +1,3 @@
+const value = { id: 1 };
+const identifier = value.id;
+void identifier;

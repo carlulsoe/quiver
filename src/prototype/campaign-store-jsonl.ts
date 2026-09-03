@@ -1,13 +1,22 @@
-import { closeSync, existsSync, readFileSync, truncateSync } from "node:fs";
+import { closeSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  snapshotCampaignControl,
+  type CampaignControlSnapshot,
+} from "./campaign-control-snapshot.ts";
+import { replayCampaignLog, type DurableCampaign } from "./campaign-store-replay.ts";
 import { assertCampaignId, type CampaignStore } from "./campaign-store.ts";
+import type {
+  CampaignStoreStatistics,
+  JsonlCampaignStoreOptions,
+} from "./campaign-store-jsonl-types.ts";
 import {
   acquireLogLock,
   appendDurably,
-  assertRecord,
-  assertStateChecksum,
-  checksumState,
-  type JsonlActionRecord,
+  createStateRecord,
+  isCheckpointBoundary,
+  openDurableLog,
+  type DurableAppend,
   type JsonlRecord,
   type JsonlStateRecord,
 } from "./campaign-store-log.ts";
@@ -15,30 +24,61 @@ import {
   reduceCampaign,
   withRuntimeState,
   type CampaignAction,
+  type CampaignControlStatus,
   type CampaignState,
 } from "./state.ts";
 
-interface DurableCampaign {
-  state: CampaignState;
-  sequence: number;
-  dirty: boolean;
-}
+export const DEFAULT_CHECKPOINT_ACTION_INTERVAL = 32;
+
+export type {
+  CampaignStoreStatistics,
+  JsonlCampaignStoreOptions,
+} from "./campaign-store-jsonl-types.ts";
 
 export class JsonlCampaignStore implements CampaignStore {
   readonly path: string;
   readonly #lockDescriptor: number;
-  readonly #campaigns = new Map<string, DurableCampaign>();
+  readonly #logDescriptor: number;
+  readonly #campaigns: Map<string, DurableCampaign>;
+  readonly #checkpointActionInterval: number;
+  readonly #durableAppend: DurableAppend;
+  readonly #statistics: CampaignStoreStatistics = {
+    durableWrites: 0,
+    records: 0,
+    actionRecords: 0,
+    checkpointRecords: 0,
+    fullStateRecords: 0,
+    bytes: 0,
+  };
   #activeCampaignId?: string;
   #closed = false;
-  constructor(path: string, campaigns: Iterable<readonly [string, CampaignState]> = []) {
+  constructor(
+    path: string,
+    campaigns: Iterable<readonly [string, CampaignState]> = [],
+    options: JsonlCampaignStoreOptions = {},
+  ) {
     this.path = resolve(path);
+    this.#checkpointActionInterval =
+      options.checkpointActionInterval ?? DEFAULT_CHECKPOINT_ACTION_INTERVAL;
+    this.#durableAppend = options.durableAppend ?? appendDurably;
+    if (
+      !Number.isSafeInteger(this.#checkpointActionInterval) ||
+      this.#checkpointActionInterval < 1
+    ) {
+      throw new Error("Checkpoint action interval must be a positive safe integer");
+    }
     this.#lockDescriptor = acquireLogLock(`${this.path}.lock`);
+    let logDescriptor: number | undefined;
     try {
-      this.#replay();
+      this.#campaigns = replayCampaignLog(this.path);
+      logDescriptor = openDurableLog(this.path);
+      this.#logDescriptor = logDescriptor;
       for (const [campaignId, state] of campaigns)
         if (!this.#campaigns.has(campaignId)) this.create(campaignId, state);
     } catch (error) {
-      this.close();
+      if (logDescriptor !== undefined) closeSync(logDescriptor);
+      closeSync(this.#lockDescriptor);
+      this.#closed = true;
       throw error;
     }
   }
@@ -49,7 +89,7 @@ export class JsonlCampaignStore implements CampaignStore {
     const durable: DurableCampaign = {
       state: structuredClone(withRuntimeState(state)),
       sequence: 0,
-      dirty: false,
+      actionsSinceCheckpoint: 0,
     };
     this.#appendState(campaignId, "created", durable);
     this.#campaigns.set(campaignId, durable);
@@ -63,27 +103,55 @@ export class JsonlCampaignStore implements CampaignStore {
     this.#activeCampaignId = campaignId;
     return structuredClone(campaign.state);
   }
-  apply(action: CampaignAction): void {
+  apply(action: CampaignAction): CampaignControlSnapshot {
+    return this.applyBatch([action]);
+  }
+  applyBatch(actions: readonly CampaignAction[]): CampaignControlSnapshot {
     this.#assertOpen();
     const [campaignId, campaign] = this.#requireActiveCampaign();
-    const next = reduceCampaign(campaign.state, action);
-    const record: JsonlActionRecord = {
-      version: 1,
-      campaignId,
-      sequence: campaign.sequence + 1,
-      kind: "action",
-      action,
-    };
-    appendDurably(this.path, record);
+    if (actions.length === 0) return snapshotCampaignControl(campaign.state);
+    let next = campaign.state;
+    let sequence = campaign.sequence;
+    let actionCount = campaign.actionsSinceCheckpoint;
+    const records: JsonlRecord[] = [];
+    for (const action of actions) {
+      next = reduceCampaign(next, action);
+      sequence += 1;
+      records.push({ version: 1, campaignId, sequence, kind: "action", action });
+      actionCount += 1;
+      if (actionCount >= this.#checkpointActionInterval) {
+        sequence += 1;
+        records.push(createStateRecord(campaignId, sequence, "checkpoint", next));
+        actionCount = 0;
+      }
+    }
+    if (actionCount > 0 && actions.some(isCheckpointBoundary)) {
+      sequence += 1;
+      records.push(createStateRecord(campaignId, sequence, "checkpoint", next));
+      actionCount = 0;
+    }
+    this.#append(records);
     campaign.state = next;
-    campaign.sequence = record.sequence;
-    campaign.dirty = true;
+    campaign.sequence = sequence;
+    campaign.actionsSinceCheckpoint = actionCount;
+    return snapshotCampaignControl(next);
   }
   checkpoint(): CampaignState {
     this.#assertOpen();
     const [campaignId, campaign] = this.#requireActiveCampaign();
-    if (campaign.dirty) this.#appendState(campaignId, "checkpoint", campaign);
+    if (campaign.actionsSinceCheckpoint > 0) this.#appendState(campaignId, "checkpoint", campaign);
     return structuredClone(campaign.state);
+  }
+  controlStatus(): CampaignControlStatus {
+    this.#assertOpen();
+    return this.#requireActiveCampaign()[1].state.runtime.control;
+  }
+  controlSnapshot(): CampaignControlSnapshot {
+    this.#assertOpen();
+    return snapshotCampaignControl(this.#requireActiveCampaign()[1].state);
+  }
+  statistics(): CampaignStoreStatistics {
+    return { ...this.#statistics };
   }
   #appendState(
     campaignId: string,
@@ -91,73 +159,35 @@ export class JsonlCampaignStore implements CampaignStore {
     campaign: DurableCampaign,
   ): void {
     const sequence = campaign.sequence + 1;
-    const state = structuredClone(campaign.state);
-    appendDurably(this.path, {
-      version: 1,
-      campaignId,
-      sequence,
-      kind,
-      state,
-      checksum: checksumState(state),
-    });
+    this.#append([createStateRecord(campaignId, sequence, kind, campaign.state)]);
     campaign.sequence = sequence;
-    campaign.dirty = false;
+    campaign.actionsSinceCheckpoint = 0;
   }
-  #replay(): void {
-    if (!existsSync(this.path)) return;
-    const contents = readFileSync(this.path);
-    const completeLength =
-      contents.at(-1) === 0x0a ? contents.length : contents.lastIndexOf(0x0a) + 1;
-    const complete = contents.subarray(0, completeLength).toString("utf8");
-    if (completeLength !== contents.length) truncateSync(this.path, completeLength);
-    for (const [index, line] of complete.split("\n").entries()) {
-      if (!line) continue;
-      let record: JsonlRecord;
-      try {
-        record = JSON.parse(line) as JsonlRecord;
-      } catch {
-        throw new Error(`Invalid campaign JSONL record on line ${index + 1}`);
-      }
-      assertRecord(record, index + 1);
-      this.#replayRecord(record);
-    }
-  }
-  #replayRecord(record: JsonlRecord): void {
-    const current = this.#campaigns.get(record.campaignId);
-    const expected = (current?.sequence ?? 0) + 1;
-    if (record.sequence !== expected)
-      throw new Error(
-        `Campaign ${record.campaignId} sequence ${record.sequence} is not ${expected}`,
-      );
-    if (record.kind === "created") {
-      if (current) throw new Error(`Campaign ${record.campaignId} was created more than once`);
-      assertStateChecksum(record);
-      this.#campaigns.set(record.campaignId, {
-        state: structuredClone(withRuntimeState(record.state)),
-        sequence: record.sequence,
-        dirty: false,
-      });
-      return;
-    }
-    if (!current) throw new Error(`Campaign ${record.campaignId} has no creation record`);
-    if (record.kind === "action") current.state = reduceCampaign(current.state, record.action);
-    else {
-      assertStateChecksum(record);
-      const checkpoint = withRuntimeState(record.state);
-      if (checksumState(current.state) !== checksumState(checkpoint))
-        throw new Error(`Campaign ${record.campaignId} checkpoint does not match its action log`);
-      current.state = structuredClone(checkpoint);
-      current.dirty = false;
-    }
-    current.sequence = record.sequence;
+  #append(records: readonly JsonlRecord[]): void {
+    this.#statistics.bytes += this.#durableAppend(this.#logDescriptor, records);
+    this.#statistics.durableWrites += 1;
+    this.#statistics.records += records.length;
+    this.#statistics.actionRecords += records.filter(({ kind }) => kind === "action").length;
+    this.#statistics.checkpointRecords += records.filter(
+      ({ kind }) => kind === "checkpoint",
+    ).length;
+    this.#statistics.fullStateRecords += records.filter(({ kind }) => kind !== "action").length;
   }
   #requireActiveCampaign(): [string, DurableCampaign] {
     if (!this.#activeCampaignId) throw new Error("Load a campaign before using the store");
     return [this.#activeCampaignId, this.#campaigns.get(this.#activeCampaignId)!];
   }
   close(): void {
-    if (!this.#closed) {
+    if (this.#closed) return;
+    try {
+      for (const [campaignId, campaign] of this.#campaigns) {
+        if (campaign.actionsSinceCheckpoint > 0) {
+          this.#appendState(campaignId, "checkpoint", campaign);
+        }
+      }
+    } finally {
       this.#closed = true;
+      closeSync(this.#logDescriptor);
       closeSync(this.#lockDescriptor);
     }
   }

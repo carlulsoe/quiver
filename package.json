@@ -16,15 +16,17 @@
     "campaign": "bun src/prototype/cli.ts",
     "evals": "bun scripts/run-evals.ts",
     "evals:json": "bun scripts/run-evals.ts",
-    "evals:single": "bunx --bun vitest run --config vitest.evals.config.ts",
-    "evals:report": "bunx --bun vitest-evals serve .prototype/eval-results.json",
-    "test": "bunx --bun vitest run --config vitest.config.ts",
+    "evals:single": "bun --bun vitest run --config vitest.evals.config.ts",
+    "evals:report": "bun --bun vitest-evals serve .prototype/eval-results.json",
+    "test": "bun --bun vitest run --config vitest.config.ts",
     "test:all": "bun run test && bun run test:integration",
-    "test:integration": "bunx --bun vitest run --config vitest.integration.config.ts",
-    "test:watch": "bunx --bun vitest --config vitest.config.ts",
-    "verify": "bun run check && bun run test",
+    "test:integration": "bun --bun vitest run --config vitest.integration.config.ts",
+    "test:watch": "bun --bun vitest --config vitest.config.ts",
+    "test:lint-plugin": "bun tools/oxlint/anti-slop/fixtures/verify-fixtures.ts",
+    "verify": "bun run check && bun run test:lint-plugin && bun run test",
     "security:secrets": "bash scripts/check-secrets.sh",
-    "check": "oxfmt --check . && oxlint && tsc --noEmit"
+    "check": "oxfmt --check . && oxlint && bun run check:types",
+    "check:types": "tsc --noEmit && tsc --project tsconfig.tools.json"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.83.0",
@@ -35,11 +37,12 @@
   },
   "devDependencies": {
     "@oxlint/plugins": "1.81.0",
-    "@types/bun": "latest",
-    "oxfmt": "latest",
+    "@types/bun": "1.4.0",
+    "oxfmt": "0.65.0",
     "oxlint": "1.81.0",
-    "typescript": "latest",
+    "typescript": "7.0.2",
     "vitest": "4.1.11",
     "vitest-evals": "0.16.1"
-  }
+  },
+  "packageManager": "bun@1.4.0"
 }

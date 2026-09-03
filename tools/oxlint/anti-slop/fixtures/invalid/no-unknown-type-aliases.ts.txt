@@ -1,0 +1,3 @@
+type Input = unknown;
+const value: Input = "ready";
+void value;

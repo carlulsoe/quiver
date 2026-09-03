@@ -19,15 +19,33 @@ export interface JsonlActionRecord extends JsonlBaseRecord {
   action: CampaignAction;
 }
 export type JsonlRecord = JsonlStateRecord | JsonlActionRecord;
-export function appendDurably(path: string, record: JsonlRecord): void {
+export type DurableAppend = (descriptor: number, records: readonly JsonlRecord[]) => number;
+export function openDurableLog(path: string): number {
   mkdirSync(dirname(path), { recursive: true });
-  const descriptor = openSync(path, "a", 0o600);
-  try {
-    writeAll(descriptor, Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
+  return openSync(path, "a", 0o600);
+}
+export function appendDurably(descriptor: number, records: readonly JsonlRecord[]): number {
+  const bytes = serializeJsonlRecords(records);
+  writeAll(descriptor, bytes);
+  fsyncSync(descriptor);
+  return bytes.length;
+}
+export function serializeJsonlRecords(records: readonly JsonlRecord[]): Buffer {
+  return Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+}
+export function createStateRecord(
+  campaignId: string,
+  sequence: number,
+  kind: JsonlStateRecord["kind"],
+  current: CampaignState,
+): JsonlStateRecord {
+  const state = structuredClone(current);
+  return { version: 1, campaignId, sequence, kind, state, checksum: checksumState(state) };
+}
+export function isCheckpointBoundary(action: CampaignAction): boolean {
+  return (
+    ["phase", "pause", "resume", "cancel", "halt", "recover", "history-elapsed"] as const
+  ).some((type) => type === action.type);
 }
 function writeAll(descriptor: number, bytes: Buffer): void {
   let offset = 0;

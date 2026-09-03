@@ -1,0 +1,2 @@
+const parsed = { id: 1 } satisfies { id: number };
+void parsed;

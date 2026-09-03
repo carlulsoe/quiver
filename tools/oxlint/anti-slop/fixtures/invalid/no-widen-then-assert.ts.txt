@@ -1,0 +1,4 @@
+const original = { id: 1 };
+const value: unknown = original;
+const restored = value as { id: number };
+void restored;

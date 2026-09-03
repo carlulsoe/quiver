@@ -1,0 +1,4 @@
+function parse(value: unknown): void {
+  void value;
+}
+void parse;

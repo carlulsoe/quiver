@@ -1,0 +1,2 @@
+const kind = typeof globalThis;
+void kind;

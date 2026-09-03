@@ -27,6 +27,22 @@ describe("campaign store", () => {
     expect(campaignStore.checkpoint().phase).toBe("exploring");
   });
 
+  it("returns detached authoritative control snapshots from writes and reads", () => {
+    const initial = createCampaignState("http://127.0.0.1:8888", createCampaignBudget(6), 1);
+    const campaignStore: CampaignStore = new InMemoryCampaignStore([["campaign-1", initial]]);
+
+    campaignStore.load("campaign-1");
+    const result = campaignStore.apply({ type: "pause", reason: "operator pause" });
+    const snapshot = campaignStore.controlSnapshot();
+
+    expect(result).toEqual({ control: "paused", controlReason: "operator pause" });
+    expect(snapshot).toEqual(result);
+    expect(snapshot).not.toBe(result);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(campaignStore.controlStatus()).toBe("paused");
+  });
+
   it("keeps campaigns isolated when the active campaign changes", () => {
     const budget = createCampaignBudget(6);
     const campaignStore = new InMemoryCampaignStore([

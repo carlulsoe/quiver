@@ -1,10 +1,10 @@
 import type { ConversationStreamChunk } from "@flue/runtime";
 import { describe, expect, it } from "vitest";
-import { CampaignSession } from "./campaign-session.ts";
+import { CampaignSession, type CampaignSessionOptions } from "./campaign-session.ts";
 
 describe("campaign session", () => {
   it("redacts tool inputs and omits tool results before persisting history", () => {
-    const session = new CampaignSession({
+    const options: CampaignSessionOptions = {
       target: new URL("http://127.0.0.1:8888/"),
       profile: {
         id: "history-redaction",
@@ -13,7 +13,8 @@ describe("campaign session", () => {
       },
       requestBudget: 6,
       explorerCount: 1,
-    });
+    };
+    const session = new CampaignSession(options);
     session.captureAgentEvent(
       "explorer-1",
       chunk({

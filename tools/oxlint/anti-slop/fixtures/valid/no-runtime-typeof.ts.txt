@@ -1,0 +1,2 @@
+const kind = "object";
+void kind;
